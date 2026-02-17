@@ -36,10 +36,18 @@ export const buildCli = () => {
   cli
     .command("enqueue")
     .requiredOption("--symbol <symbol>", "Ticker symbol")
-    .action(async (opts: { symbol: string }) => {
+    .option("--force", "Bypass hourly idempotency dedupe for immediate reruns")
+    .action(async (opts: { symbol: string; force?: boolean }) => {
       const runtime = await createRuntime();
-      await runtime.orchestratorService.enqueueForSymbol(opts.symbol, "ingest");
-      logger.info({ symbol: opts.symbol }, "Enqueued ingest task");
+      await runtime.orchestratorService.enqueueForSymbol(
+        opts.symbol,
+        "ingest",
+        Boolean(opts.force),
+      );
+      logger.info(
+        { symbol: opts.symbol, force: Boolean(opts.force) },
+        "Enqueued ingest task",
+      );
       process.exit(0);
     });
 
@@ -82,6 +90,7 @@ export const buildCli = () => {
           troubleshooting: [
             "Use AAPL (not APPL).",
             "snapshot is read-only and does not trigger a run.",
+            "Use enqueue --force to bypass hourly idempotency for the same symbol.",
             "If no snapshot appears, keep worker terminal open and check worker logs for failed jobs.",
           ],
         },

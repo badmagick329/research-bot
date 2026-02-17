@@ -14,17 +14,22 @@ export class ResearchOrchestratorService {
   ) {}
 
   /**
-   * Enqueues symbol work through a single policy point to preserve idempotency semantics.
+   * Enqueues symbol work through one policy point while allowing explicit dedupe bypass for operator reruns.
    */
   async enqueueForSymbol(
     symbol: string,
     stage: JobStage = "ingest",
+    force = false,
   ): Promise<void> {
     const task = this.taskFactory.create(symbol, stage);
+    const idempotencyKey = force
+      ? `${task.idempotencyKey}:force:${task.id}`
+      : task.idempotencyKey;
+
     await this.queue.enqueue(stage, {
       taskId: task.id,
       symbol: task.symbol,
-      idempotencyKey: task.idempotencyKey,
+      idempotencyKey,
       requestedAt: task.requestedAt.toISOString(),
     });
   }
