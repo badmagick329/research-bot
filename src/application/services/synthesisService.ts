@@ -20,6 +20,31 @@ export class SynthesisService {
   ) {}
 
   /**
+   * Removes repeated source references so snapshot citations stay concise and easier to audit.
+   */
+  private uniqueSources(
+    docs: Awaited<ReturnType<DocumentRepositoryPort["listBySymbol"]>>,
+  ) {
+    const seen = new Set<string>();
+
+    return docs
+      .map((doc) => ({
+        provider: doc.provider,
+        url: doc.url,
+        title: doc.title,
+      }))
+      .filter((source) => {
+        const key = `${source.provider}|${source.url ?? ""}|${source.title}`;
+        if (seen.has(key)) {
+          return false;
+        }
+
+        seen.add(key);
+        return true;
+      });
+  }
+
+  /**
    * Materializes the latest thesis snapshot to provide a stable read model for downstream consumers.
    */
   async run(payload: JobPayload): Promise<void> {
@@ -43,11 +68,7 @@ export class SynthesisService {
       catalysts: ["Product cycle", "Margin expansion"],
       valuationView: "Neutral until more evidence",
       confidence: docs.length > 0 ? 0.62 : 0.4,
-      sources: docs.map((doc) => ({
-        provider: doc.provider,
-        url: doc.url,
-        title: doc.title,
-      })),
+      sources: this.uniqueSources(docs),
       createdAt: this.clock.now(),
     });
   }

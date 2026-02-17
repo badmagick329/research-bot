@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { existsSync } from "node:fs";
 import { z } from "zod";
 
 const envSchema = z.object({
@@ -19,6 +20,8 @@ const envSchema = z.object({
   OLLAMA_BASE_URL: z.string().default("http://localhost:11434"),
   OLLAMA_CHAT_MODEL: z.string().default("qwen2.5:7b-instruct"),
   OLLAMA_EMBED_MODEL: z.string().default("nomic-embed-text"),
+  OLLAMA_CHAT_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+  OLLAMA_EMBED_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   QUEUE_CONCURRENCY_INGEST: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_NORMALIZE: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_EMBED: z.coerce.number().int().positive().default(2),
@@ -28,6 +31,50 @@ const envSchema = z.object({
 export type AppEnv = z.infer<typeof envSchema>;
 
 export const env: AppEnv = envSchema.parse(process.env);
+
+const isRunningInContainer = (): boolean => existsSync("/.dockerenv");
+
+const tryGetHostname = (rawUrl: string): string | null => {
+  try {
+    return new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Warns early when host-run commands accidentally use Docker DNS names.
+ * This avoids repeated ENOTFOUND errors by pointing to the correct env profile.
+ */
+const warnIfHostUsesContainerDns = (appEnv: AppEnv): void => {
+  if (appEnv.NODE_ENV === "test" || isRunningInContainer()) {
+    return;
+  }
+
+  const redisHost = tryGetHostname(appEnv.REDIS_URL);
+  const postgresHost = tryGetHostname(appEnv.POSTGRES_URL);
+  const dockerOnlyHostnames = new Set(["redis", "postgres"]);
+
+  const mismatches: string[] = [];
+
+  if (redisHost && dockerOnlyHostnames.has(redisHost)) {
+    mismatches.push(`REDIS_URL uses '${redisHost}'`);
+  }
+
+  if (postgresHost && dockerOnlyHostnames.has(postgresHost)) {
+    mismatches.push(`POSTGRES_URL uses '${postgresHost}'`);
+  }
+
+  if (mismatches.length > 0) {
+    console.warn(
+      `[config] Host runtime detected with container DNS settings: ${mismatches.join(
+        "; ",
+      )}. Use .env with localhost URLs for host CLI/worker.`,
+    );
+  }
+};
+
+warnIfHostUsesContainerDns(env);
 
 /**
  * Normalizes configured symbols once so scheduling logic stays deterministic across environments.

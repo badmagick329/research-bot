@@ -30,24 +30,6 @@ services:
       timeout: 5s
       retries: 10
 
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: research-bot-app
-    command: ["bun", "run", "src/index.ts", "run"]
-    env_file:
-      - .env
-    environment:
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
   worker:
     build:
       context: .
@@ -55,9 +37,7 @@ services:
     container_name: research-bot-worker
     command: ["bun", "run", "src/workers/main.ts"]
     env_file:
-      - .env
-    environment:
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      - .env.docker.example
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

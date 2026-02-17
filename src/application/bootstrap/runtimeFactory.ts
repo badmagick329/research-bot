@@ -54,11 +54,16 @@ export const createRuntime = async () => {
   const embeddingsRepo = new PgVectorEmbeddingRepositoryService(sql);
   const snapshotsRepo = new PostgresSnapshotRepositoryService(db);
 
-  const llm = new OllamaLlm(env.OLLAMA_BASE_URL, env.OLLAMA_CHAT_MODEL);
+  const llm = new OllamaLlm(
+    env.OLLAMA_BASE_URL,
+    env.OLLAMA_CHAT_MODEL,
+    env.OLLAMA_CHAT_TIMEOUT_MS,
+  );
   const embedder = new OllamaEmbedding(
     env.OLLAMA_BASE_URL,
     env.OLLAMA_EMBED_MODEL,
     VECTOR_DIMENSION,
+    env.OLLAMA_EMBED_TIMEOUT_MS,
   );
 
   const newsProvider = new MockNewsProvider();
