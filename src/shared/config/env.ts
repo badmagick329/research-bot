@@ -13,6 +13,10 @@ const envSchema = z.object({
     .positive()
     .default(300),
   APP_LOOKBACK_DAYS: z.coerce.number().int().positive().default(7),
+  NEWS_PROVIDER: z.enum(["mock", "finnhub"]).default("mock"),
+  FINNHUB_BASE_URL: z.string().default("https://finnhub.io"),
+  FINNHUB_API_KEY: z.string().default(""),
+  FINNHUB_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   REDIS_URL: z.string().default("redis://localhost:6379"),
   POSTGRES_URL: z
     .string()

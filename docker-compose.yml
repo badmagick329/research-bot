@@ -30,22 +30,6 @@ services:
       timeout: 5s
       retries: 10
 
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: research-bot-worker
-    command: ["bun", "run", "src/workers/main.ts"]
-    env_file:
-      - .env.docker.example
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
 volumes:
   postgres_data:
   redis_data:

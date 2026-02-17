@@ -64,13 +64,26 @@ export const buildCli = () => {
     .command("status")
     .description("Report scheduler configuration")
     .action(() => {
+      const startupWorkflow = [
+        "docker compose up -d postgres redis",
+        "bun run src/workers/main.ts",
+        "bun run src/index.ts enqueue --symbol AAPL",
+      ];
+
       logger.info(
         {
           symbols: appSymbols(),
           intervalSeconds: env.APP_RESEARCH_INTERVAL_SECONDS,
+          newsProvider: env.NEWS_PROVIDER,
           redis: env.REDIS_URL,
           postgres: env.POSTGRES_URL,
           ollama: env.OLLAMA_BASE_URL,
+          startupWorkflow,
+          troubleshooting: [
+            "Use AAPL (not APPL).",
+            "snapshot is read-only and does not trigger a run.",
+            "If no snapshot appears, keep worker terminal open and check worker logs for failed jobs.",
+          ],
         },
         "Runtime status",
       );

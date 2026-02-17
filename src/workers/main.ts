@@ -29,6 +29,17 @@ const run = async (): Promise<void> => {
   const runtime = await createRuntime();
   const redis = redisConfigFromUrl(env.REDIS_URL);
 
+  logger.info(
+    {
+      newsProvider: env.NEWS_PROVIDER,
+      finnhubBaseUrl: env.FINNHUB_BASE_URL,
+      finnhubApiKeyConfigured: env.FINNHUB_API_KEY.trim().length > 0,
+      redisUrl: env.REDIS_URL,
+      postgresUrl: env.POSTGRES_URL,
+    },
+    "Worker runtime configuration",
+  );
+
   const ingestWorker = createStageWorker(
     "ingest",
     redis,

@@ -14,6 +14,7 @@ import {
 } from "../../infra/db/repositories";
 import { OllamaEmbedding } from "../../infra/llm/ollamaEmbedding";
 import { OllamaLlm } from "../../infra/llm/ollamaLlm";
+import { FinnhubNewsProvider } from "../../infra/providers/finnhub/finnhubNewsProvider";
 import { MockFilingsProvider } from "../../infra/providers/mocks/mockFilingsProvider";
 import { MockMarketMetricsProvider } from "../../infra/providers/mocks/mockMarketMetricsProvider";
 import { MockNewsProvider } from "../../infra/providers/mocks/mockNewsProvider";
@@ -66,7 +67,14 @@ export const createRuntime = async () => {
     env.OLLAMA_EMBED_TIMEOUT_MS,
   );
 
-  const newsProvider = new MockNewsProvider();
+  const newsProvider =
+    env.NEWS_PROVIDER === "finnhub"
+      ? new FinnhubNewsProvider(
+          env.FINNHUB_BASE_URL,
+          env.FINNHUB_API_KEY,
+          env.FINNHUB_TIMEOUT_MS,
+        )
+      : new MockNewsProvider();
   const metricsProvider = new MockMarketMetricsProvider();
   const filingsProvider = new MockFilingsProvider();
 
