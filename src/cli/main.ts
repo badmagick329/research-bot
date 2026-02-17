@@ -1,7 +1,58 @@
 import { Command } from "commander";
 import { createRuntime } from "../application/bootstrap/runtimeFactory";
+import type { ResearchSnapshotEntity } from "../core/entities/research";
 import { appSymbols, env } from "../shared/config/env";
 import { logger } from "../shared/logger/logger";
+
+/**
+ * Formats snapshot data into a compact terminal report for easier manual inspection.
+ */
+const formatSnapshotReport = (snapshot: ResearchSnapshotEntity): string => {
+  const lines: string[] = [];
+
+  lines.push(`Snapshot for ${snapshot.symbol}`);
+  lines.push(`Created: ${new Date(snapshot.createdAt).toISOString()}`);
+  lines.push(`Horizon: ${snapshot.horizon}`);
+  lines.push(`Score: ${snapshot.score.toFixed(1)} / 100`);
+  lines.push(`Confidence: ${(snapshot.confidence * 100).toFixed(1)}%`);
+  lines.push("");
+  lines.push("Thesis:");
+  lines.push(snapshot.thesis);
+  lines.push("");
+  lines.push("Valuation view:");
+  lines.push(snapshot.valuationView);
+  lines.push("");
+
+  lines.push("Risks:");
+  if (snapshot.risks.length === 0) {
+    lines.push("- none");
+  } else {
+    snapshot.risks.forEach((risk) => lines.push(`- ${risk}`));
+  }
+
+  lines.push("");
+  lines.push("Catalysts:");
+  if (snapshot.catalysts.length === 0) {
+    lines.push("- none");
+  } else {
+    snapshot.catalysts.forEach((catalyst) => lines.push(`- ${catalyst}`));
+  }
+
+  lines.push("");
+  lines.push("Sources:");
+  if (snapshot.sources.length === 0) {
+    lines.push("- none");
+  } else {
+    snapshot.sources.forEach((source, index) => {
+      const title = source.title?.trim() ? source.title : "(untitled)";
+      const url = source.url?.trim() ? source.url : "(no url)";
+      lines.push(`${index + 1}. [${source.provider}] ${title}`);
+      lines.push(`   ${url}`);
+    });
+  }
+
+  return lines.join("\n");
+};
 
 /**
  * Defines a single command surface so operational tasks use the same orchestration policies.
@@ -54,7 +105,8 @@ export const buildCli = () => {
   cli
     .command("snapshot")
     .requiredOption("--symbol <symbol>", "Ticker symbol")
-    .action(async (opts: { symbol: string }) => {
+    .option("--prettify", "Render a human-friendly snapshot report")
+    .action(async (opts: { symbol: string; prettify?: boolean }) => {
       const runtime = await createRuntime();
       const snapshot = await runtime.snapshotsRepo.latestBySymbol(
         opts.symbol.toUpperCase(),
@@ -64,7 +116,11 @@ export const buildCli = () => {
         process.exit(0);
       }
 
-      logger.info({ snapshot }, "Latest snapshot");
+      if (opts.prettify) {
+        console.log(formatSnapshotReport(snapshot));
+      } else {
+        logger.info({ snapshot }, "Latest snapshot");
+      }
       process.exit(0);
     });
 
