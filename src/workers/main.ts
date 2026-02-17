@@ -1,6 +1,6 @@
 import { createRuntime } from "../application/bootstrap/runtimeFactory";
 import { createStageWorker } from "../infra/queue/bullMqQueue";
-import { env } from "../shared/config/env";
+import { env, newsProviders } from "../shared/config/env";
 import { logger } from "../shared/logger/logger";
 
 const toErrorDetails = (error: unknown) => {
@@ -32,8 +32,11 @@ const run = async (): Promise<void> => {
   logger.info(
     {
       newsProvider: env.NEWS_PROVIDER,
+      newsProviders: newsProviders(),
       finnhubBaseUrl: env.FINNHUB_BASE_URL,
       finnhubApiKeyConfigured: env.FINNHUB_API_KEY.trim().length > 0,
+      alphaVantageBaseUrl: env.ALPHA_VANTAGE_BASE_URL,
+      alphaVantageApiKeyConfigured: env.ALPHA_VANTAGE_API_KEY.trim().length > 0,
       redisUrl: env.REDIS_URL,
       postgresUrl: env.POSTGRES_URL,
     },

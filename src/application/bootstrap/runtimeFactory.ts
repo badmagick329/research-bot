@@ -3,7 +3,7 @@ import { IngestionService } from "../services/ingestionService";
 import { NormalizationService } from "../services/normalizationService";
 import { EmbeddingService } from "../services/embeddingService";
 import { SynthesisService } from "../services/synthesisService";
-import { env } from "../../shared/config/env";
+import { env, newsProviders } from "../../shared/config/env";
 import { createDb } from "../../infra/db/client";
 import {
   PgVectorEmbeddingRepositoryService,
@@ -14,16 +14,19 @@ import {
 } from "../../infra/db/repositories";
 import { OllamaEmbedding } from "../../infra/llm/ollamaEmbedding";
 import { OllamaLlm } from "../../infra/llm/ollamaLlm";
+import { AlphaVantageNewsProvider } from "../../infra/providers/alphavantage/alphaVantageNewsProvider";
 import { FinnhubNewsProvider } from "../../infra/providers/finnhub/finnhubNewsProvider";
 import { MockFilingsProvider } from "../../infra/providers/mocks/mockFilingsProvider";
 import { MockMarketMetricsProvider } from "../../infra/providers/mocks/mockMarketMetricsProvider";
 import { MockNewsProvider } from "../../infra/providers/mocks/mockNewsProvider";
+import { MultiNewsProvider } from "../../infra/providers/multiNewsProvider";
 import { BullMqQueue } from "../../infra/queue/bullMqQueue";
 import {
   SystemClock,
   TaskFactory,
   UuidIdGenerator,
 } from "../../infra/system/systemPorts";
+import type { NewsProviderPort } from "../../core/ports/inboundPorts";
 
 const redisConfigFromUrl = (url: string) => {
   const parsed = new URL(url);
@@ -36,6 +39,38 @@ const redisConfigFromUrl = (url: string) => {
 };
 
 export const VECTOR_DIMENSION = 1024;
+
+const createNewsProvider = (): NewsProviderPort => {
+  const providers = newsProviders().map((providerName) => {
+    if (providerName === "finnhub") {
+      return new FinnhubNewsProvider(
+        env.FINNHUB_BASE_URL,
+        env.FINNHUB_API_KEY,
+        env.FINNHUB_TIMEOUT_MS,
+      );
+    }
+
+    if (providerName === "alphavantage") {
+      return new AlphaVantageNewsProvider(
+        env.ALPHA_VANTAGE_BASE_URL,
+        env.ALPHA_VANTAGE_API_KEY,
+        env.ALPHA_VANTAGE_TIMEOUT_MS,
+      );
+    }
+
+    return new MockNewsProvider();
+  });
+
+  if (providers.length === 1) {
+    const provider = providers.at(0);
+    if (!provider) {
+      throw new Error("No news provider resolved from configuration.");
+    }
+    return provider;
+  }
+
+  return new MultiNewsProvider(providers);
+};
 
 /**
  * Centralizes runtime wiring so app and worker entry points share one composition root.
@@ -67,14 +102,7 @@ export const createRuntime = async () => {
     env.OLLAMA_EMBED_TIMEOUT_MS,
   );
 
-  const newsProvider =
-    env.NEWS_PROVIDER === "finnhub"
-      ? new FinnhubNewsProvider(
-          env.FINNHUB_BASE_URL,
-          env.FINNHUB_API_KEY,
-          env.FINNHUB_TIMEOUT_MS,
-        )
-      : new MockNewsProvider();
+  const newsProvider = createNewsProvider();
   const metricsProvider = new MockMarketMetricsProvider();
   const filingsProvider = new MockFilingsProvider();
 

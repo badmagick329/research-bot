@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { createRuntime } from "../application/bootstrap/runtimeFactory";
 import type { ResearchSnapshotEntity } from "../core/entities/research";
-import { appSymbols, env } from "../shared/config/env";
+import { appSymbols, env, newsProviders } from "../shared/config/env";
 import { logger } from "../shared/logger/logger";
 
 /**
@@ -139,6 +139,7 @@ export const buildCli = () => {
           symbols: appSymbols(),
           intervalSeconds: env.APP_RESEARCH_INTERVAL_SECONDS,
           newsProvider: env.NEWS_PROVIDER,
+          newsProviders: newsProviders(),
           redis: env.REDIS_URL,
           postgres: env.POSTGRES_URL,
           ollama: env.OLLAMA_BASE_URL,

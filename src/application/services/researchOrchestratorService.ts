@@ -23,7 +23,7 @@ export class ResearchOrchestratorService {
   ): Promise<void> {
     const task = this.taskFactory.create(symbol, stage);
     const idempotencyKey = force
-      ? `${task.idempotencyKey}:force:${task.id}`
+      ? `${task.idempotencyKey}-force-${task.id}`
       : task.idempotencyKey;
 
     await this.queue.enqueue(stage, {

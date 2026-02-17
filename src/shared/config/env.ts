@@ -2,6 +2,10 @@ import "dotenv/config";
 import { existsSync } from "node:fs";
 import { z } from "zod";
 
+const supportedNewsProviders = ["mock", "finnhub", "alphavantage"] as const;
+
+export type NewsProviderName = (typeof supportedNewsProviders)[number];
+
 const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -13,10 +17,14 @@ const envSchema = z.object({
     .positive()
     .default(300),
   APP_LOOKBACK_DAYS: z.coerce.number().int().positive().default(7),
-  NEWS_PROVIDER: z.enum(["mock", "finnhub"]).default("mock"),
+  NEWS_PROVIDER: z.enum(supportedNewsProviders).default("mock"),
+  NEWS_PROVIDERS: z.string().default(""),
   FINNHUB_BASE_URL: z.string().default("https://finnhub.io"),
   FINNHUB_API_KEY: z.string().default(""),
   FINNHUB_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  ALPHA_VANTAGE_BASE_URL: z.string().default("https://www.alphavantage.co"),
+  ALPHA_VANTAGE_API_KEY: z.string().default(""),
+  ALPHA_VANTAGE_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   REDIS_URL: z.string().default("redis://localhost:6379"),
   POSTGRES_URL: z
     .string()
@@ -87,3 +95,26 @@ export const appSymbols = (): string[] =>
   env.APP_SYMBOLS.split(",")
     .map((item) => item.trim().toUpperCase())
     .filter(Boolean);
+
+/**
+ * Resolves active news providers once so runtime wiring can support both legacy single-provider and new list-based config.
+ */
+export const newsProviders = (): NewsProviderName[] => {
+  const configured = env.NEWS_PROVIDERS.split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (configured.length === 0) {
+    return [env.NEWS_PROVIDER];
+  }
+
+  const validProviders = configured.filter((name): name is NewsProviderName =>
+    supportedNewsProviders.includes(name as NewsProviderName),
+  );
+
+  if (validProviders.length === 0) {
+    return [env.NEWS_PROVIDER];
+  }
+
+  return Array.from(new Set(validProviders));
+};

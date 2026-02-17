@@ -33,6 +33,7 @@ export class BullMqQueue implements QueuePort {
 
   /**
    * Enforces stage-specific routing and idempotent job identity at one infrastructure boundary.
+   * BullMQ rejects custom job ids containing colon because colon is reserved in its Redis key format.
    */
   async enqueue(stage: JobStage, payload: JobPayload): Promise<void> {
     const queue = this.queues.get(stage);

@@ -43,17 +43,19 @@ export class TaskFactory implements TaskFactoryPort {
 
   /**
    * Creates canonical task metadata used by queueing and observability flows.
+   * Uses hyphen delimiters because BullMQ custom job ids cannot include colon.
    */
   create(symbol: string, stage: JobStage): ResearchTaskEntity {
     const id = this.ids.next();
     const now = this.clock.now();
+    const hourBucket = now.toISOString().slice(0, 13);
     return {
       id,
       symbol: symbol.toUpperCase(),
       requestedAt: now,
       priority: 3,
       stage,
-      idempotencyKey: `${symbol.toUpperCase()}:${stage}:${now.toISOString().slice(0, 13)}`,
+      idempotencyKey: `${symbol.toUpperCase()}-${stage}-${hourBucket}`,
     };
   }
 }
