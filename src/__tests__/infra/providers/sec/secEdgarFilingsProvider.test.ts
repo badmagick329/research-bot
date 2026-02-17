@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { SecEdgarFilingsProvider } from "./secEdgarFilingsProvider";
+import { SecEdgarFilingsProvider } from "../../../../infra/providers/sec/secEdgarFilingsProvider";
 
 const originalFetch = globalThis.fetch;
 

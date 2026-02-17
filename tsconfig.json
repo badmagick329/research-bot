@@ -21,9 +21,20 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
 
-    // Some stricter flags (disabled by default)
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noPropertyAccessFromIndexSignature": false
+    // Catch unused code for better maintainability
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noPropertyAccessFromIndexSignature": false,
+
+    // Path aliases for cleaner imports
+    "baseUrl": ".",
+    "paths": {
+      "@/core/*": ["src/core/*"],
+      "@/application/*": ["src/application/*"],
+      "@/infra/*": ["src/infra/*"],
+      "@/shared/*": ["src/shared/*"],
+      "@/workers/*": ["src/workers/*"],
+      "@/cli/*": ["src/cli/*"]
+    }
   }
 }

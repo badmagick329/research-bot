@@ -3,6 +3,7 @@ import type {
   NewsSearchRequest,
   NormalizedNewsItem,
 } from "../../../core/ports/inboundPorts";
+import { toIsoDate } from "../utils/dateUtils";
 
 type FinnhubNewsItem = {
   category?: string;
@@ -15,8 +16,6 @@ type FinnhubNewsItem = {
   summary?: string;
   url?: string;
 };
-
-const toIsoDate = (value: Date): string => value.toISOString().slice(0, 10);
 
 /**
  * Translates Finnhub company-news payloads into the app's normalized news contract.

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { SynthesisService } from "./synthesisService";
-import type { DocumentEntity } from "../../core/entities/document";
-import type { FilingEntity } from "../../core/entities/filing";
-import type { MetricPointEntity } from "../../core/entities/metric";
-import type { ResearchSnapshotEntity } from "../../core/entities/research";
+import { SynthesisService } from "../../../application/services/synthesisService";
+import type { DocumentEntity } from "../../../core/entities/document";
+import type { FilingEntity } from "../../../core/entities/filing";
+import type { MetricPointEntity } from "../../../core/entities/metric";
+import type { ResearchSnapshotEntity } from "../../../core/entities/research";
 import type {
   DocumentRepositoryPort,
   FilingsRepositoryPort,
@@ -13,7 +13,7 @@ import type {
   SnapshotRepositoryPort,
   ClockPort,
   IdGeneratorPort,
-} from "../../core/ports/outboundPorts";
+} from "../../../core/ports/outboundPorts";
 
 const payload: JobPayload = {
   taskId: "task-1",

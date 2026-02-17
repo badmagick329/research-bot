@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { AlphaVantageNewsProvider } from "./alphaVantageNewsProvider";
+import { AlphaVantageNewsProvider } from "../../../../infra/providers/alphavantage/alphaVantageNewsProvider";
 
 const originalFetch = globalThis.fetch;
 

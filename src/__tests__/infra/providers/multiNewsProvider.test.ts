@@ -3,8 +3,8 @@ import type {
   NewsProviderPort,
   NewsSearchRequest,
   NormalizedNewsItem,
-} from "../../core/ports/inboundPorts";
-import { MultiNewsProvider } from "./multiNewsProvider";
+} from "../../../core/ports/inboundPorts";
+import { MultiNewsProvider } from "../../../infra/providers/multiNewsProvider";
 
 class StubNewsProvider implements NewsProviderPort {
   constructor(private readonly items: NormalizedNewsItem[]) {}
