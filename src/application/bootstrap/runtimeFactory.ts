@@ -178,6 +178,8 @@ export const createRuntime = async () => {
   );
   const synthesisService = new SynthesisService(
     documentRepo,
+    metricsRepo,
+    filingsRepo,
     snapshotsRepo,
     llm,
     clock,

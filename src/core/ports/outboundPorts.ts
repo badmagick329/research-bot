@@ -25,10 +25,12 @@ export interface DocumentRepositoryPort {
 
 export interface MetricsRepositoryPort {
   upsertMany(metrics: MetricPointEntity[]): Promise<void>;
+  listBySymbol(symbol: string, limit: number): Promise<MetricPointEntity[]>;
 }
 
 export interface FilingsRepositoryPort {
   upsertMany(filings: FilingEntity[]): Promise<void>;
+  listBySymbol(symbol: string, limit: number): Promise<FilingEntity[]>;
 }
 
 export interface EmbeddingRepositoryPort {

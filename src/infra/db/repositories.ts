@@ -95,6 +95,31 @@ export class PostgresMetricsRepositoryService implements MetricsRepositoryPort {
         },
       });
   }
+
+  /**
+   * Exposes latest metric points so synthesis can reason over numeric evidence, not only headlines.
+   */
+  async listBySymbol(
+    symbol: string,
+    limit: number,
+  ): Promise<MetricPointEntity[]> {
+    const rows = await this.db
+      .select()
+      .from(metricsTable)
+      .where(eq(metricsTable.symbol, symbol.toUpperCase()))
+      .orderBy(desc(metricsTable.asOf), desc(metricsTable.createdAt))
+      .limit(limit);
+
+    return rows.map((row) => ({
+      ...row,
+      metricUnit: row.metricUnit ?? undefined,
+      currency: row.currency ?? undefined,
+      periodStart: row.periodStart ?? undefined,
+      periodEnd: row.periodEnd ?? undefined,
+      confidence: row.confidence ?? undefined,
+      periodType: row.periodType as MetricPointEntity["periodType"],
+    }));
+  }
 }
 
 /**
@@ -109,6 +134,24 @@ export class PostgresFilingsRepositoryService implements FilingsRepositoryPort {
   async upsertMany(filings: FilingEntity[]): Promise<void> {
     if (filings.length === 0) return;
     await this.db.insert(filingsTable).values(filings).onConflictDoNothing();
+  }
+
+  /**
+   * Exposes latest filing metadata so synthesis can include regulatory context alongside news flow.
+   */
+  async listBySymbol(symbol: string, limit: number): Promise<FilingEntity[]> {
+    const rows = await this.db
+      .select()
+      .from(filingsTable)
+      .where(eq(filingsTable.symbol, symbol.toUpperCase()))
+      .orderBy(desc(filingsTable.filedAt), desc(filingsTable.createdAt))
+      .limit(limit);
+
+    return rows.map((row) => ({
+      ...row,
+      accessionNo: row.accessionNo ?? undefined,
+      periodEnd: row.periodEnd ?? undefined,
+    }));
   }
 }
 

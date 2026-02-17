@@ -29,6 +29,14 @@
   - embedding path is fail-fast on transport and dimension mismatch.
   - no silent zero-vector fallback.
 - Added `embeddings` table definition to Drizzle schema source for schema/migration parity.
+- Updated synthesis evidence model:
+  - synthesis now reads and uses `news + metrics + filings` (not news-only).
+  - snapshot score/confidence are now evidence-based (not fixed defaults).
+  - source attribution can include metric/filing evidence entries.
+- Added real-over-mock filtering at synthesis time:
+  - if real provider evidence exists for a type (`documents`, `metrics`, or `filings`), mock evidence for that type is excluded.
+  - mock evidence is retained only when it is the only available evidence for that type.
+  - practical implication: you may still see `mock-edgar` filing sources when SEC EDGAR returns no filings for the window/symbol.
 
 ### Code map: what to understand first
 
@@ -111,6 +119,7 @@
   - It returns latest stored snapshot for a symbol.
   - It does **not** trigger a new pipeline run.
   - If you see old fallback output, enqueue again and wait for a new synthesis completion.
+  - If code changed but snapshot still shows old behavior, the latest completed synthesis likely came from a prior worker run; enqueue again after restarting worker.
 
 - Queue names in BullMQ cannot contain `:`.
   - Keep queue names like `research-ingest`, not `research:ingest`.
@@ -148,6 +157,30 @@
 
 - Scheduler command (`run`) is an infinite loop.
   - Use one-off commands (`enqueue`, `snapshot`) for smoke tests.
+
+- Historical mock rows can appear in old snapshots.
+  - Filtering applies during synthesis execution, not retroactively to existing snapshots.
+  - To validate filtering changes, enqueue a fresh run and wait for `research-synthesize` completion.
+
+### Real-vs-mock filtering verification (quick check)
+
+1. Enqueue a fresh symbol run:
+
+- `bun run src/index.ts enqueue --symbol TTWO --force`
+
+2. Wait until synth is done:
+
+- `bun run src/index.ts status`
+- confirm `synthesize.active=0` and `synthesize.completed` incremented
+
+3. Read latest snapshot:
+
+- `bun run src/index.ts snapshot --symbol TTWO --prettify`
+
+4. Interpret expected output:
+
+- `mock-fundamentals` should be absent when real metrics are present.
+- `mock-edgar` can still appear if no real filings were returned for the run.
 
 ## 2) Managing migrations with Drizzle for this service
 
