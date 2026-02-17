@@ -31,6 +31,12 @@ export class EmbeddingService {
       docs.map((doc) => `${doc.title}\n${doc.content.slice(0, 1_000)}`),
     );
 
+    if (vectors.length !== docs.length) {
+      throw new Error(
+        `Embedding result count mismatch. Expected ${docs.length}, got ${vectors.length}.`,
+      );
+    }
+
     for (let index = 0; index < docs.length; index += 1) {
       const doc = docs[index];
       const vector = vectors[index];

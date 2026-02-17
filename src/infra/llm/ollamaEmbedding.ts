@@ -11,15 +11,17 @@ export class OllamaEmbedding implements EmbeddingPort {
   constructor(
     private readonly baseUrl: string,
     private readonly model: string,
-    private readonly fallbackDimension: number,
+    private readonly expectedDimension: number,
     private readonly timeoutMs = 15_000,
   ) {}
 
   /**
-   * Returns dimension-safe vectors to protect storage and retrieval paths from model output drift.
+   * Returns embeddings only when transport and vector shape are valid to prevent silent quality degradation.
    */
   async embedTexts(texts: string[]): Promise<number[][]> {
-    if (texts.length === 0) return [];
+    if (texts.length === 0) {
+      return [];
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -33,34 +35,50 @@ export class OllamaEmbedding implements EmbeddingPort {
       });
 
       if (!response.ok) {
-        return texts.map(() => this.zeroVector());
+        throw new Error(
+          `Ollama embedding request failed with status ${response.status}.`,
+        );
       }
 
       const payload = (await response.json()) as OllamaEmbedResponse;
       const vectors = payload.embeddings ?? [];
-      if (vectors.length === 0) {
-        return texts.map(() => this.zeroVector());
+
+      if (vectors.length !== texts.length) {
+        throw new Error(
+          `Ollama embedding response size mismatch. Expected ${texts.length}, got ${vectors.length}.`,
+        );
       }
 
-      return vectors.map((vector) => this.fitVector(vector));
-    } catch {
-      return texts.map(() => this.zeroVector());
+      return vectors.map((vector, index) =>
+        this.assertVectorShape(vector, index),
+      );
+    } catch (error) {
+      if (error instanceof Error) {
+        throw error;
+      }
+
+      throw new Error("Ollama embedding request failed with an unknown error.");
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  private fitVector(vector: number[]): number[] {
-    if (vector.length === this.fallbackDimension) return vector;
-    if (vector.length > this.fallbackDimension)
-      return vector.slice(0, this.fallbackDimension);
-    return [
-      ...vector,
-      ...new Array(this.fallbackDimension - vector.length).fill(0),
-    ];
-  }
+  /**
+   * Validates embedding shape so storage dimension and model output stay contract-compatible.
+   */
+  private assertVectorShape(vector: number[], index: number): number[] {
+    if (vector.length !== this.expectedDimension) {
+      throw new Error(
+        `Embedding dimension mismatch for index ${index}. Expected ${this.expectedDimension}, got ${vector.length}.`,
+      );
+    }
 
-  private zeroVector(): number[] {
-    return new Array(this.fallbackDimension).fill(0);
+    if (vector.some((value) => !Number.isFinite(value))) {
+      throw new Error(
+        `Embedding vector contains non-finite values at index ${index}.`,
+      );
+    }
+
+    return vector;
   }
 }

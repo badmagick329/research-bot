@@ -1,8 +1,25 @@
 import { Command } from "commander";
 import { createRuntime } from "../application/bootstrap/runtimeFactory";
 import type { ResearchSnapshotEntity } from "../core/entities/research";
-import { appSymbols, env, newsProviders } from "../shared/config/env";
+import {
+  appSymbols,
+  env,
+  filingsProvider,
+  metricsProvider,
+  newsProviders,
+} from "../shared/config/env";
+import { BullMqQueue } from "../infra/queue/bullMqQueue";
 import { logger } from "../shared/logger/logger";
+
+const redisConfigFromUrl = (url: string) => {
+  const parsed = new URL(url);
+  return {
+    host: parsed.hostname,
+    port: Number(parsed.port || 6379),
+    username: parsed.username || undefined,
+    password: parsed.password || undefined,
+  };
+};
 
 /**
  * Formats snapshot data into a compact terminal report for easier manual inspection.
@@ -127,12 +144,16 @@ export const buildCli = () => {
   cli
     .command("status")
     .description("Report scheduler configuration")
-    .action(() => {
+    .action(async () => {
       const startupWorkflow = [
         "docker compose up -d postgres redis",
         "bun run src/workers/main.ts",
         "bun run src/index.ts enqueue --symbol AAPL",
       ];
+
+      const queue = new BullMqQueue(redisConfigFromUrl(env.REDIS_URL));
+      const queueCounts = await queue.getQueueCounts();
+      await queue.close();
 
       logger.info(
         {
@@ -140,9 +161,12 @@ export const buildCli = () => {
           intervalSeconds: env.APP_RESEARCH_INTERVAL_SECONDS,
           newsProvider: env.NEWS_PROVIDER,
           newsProviders: newsProviders(),
+          metricsProvider: metricsProvider(),
+          filingsProvider: filingsProvider(),
           redis: env.REDIS_URL,
           postgres: env.POSTGRES_URL,
           ollama: env.OLLAMA_BASE_URL,
+          queueCounts,
           startupWorkflow,
           troubleshooting: [
             "Use AAPL (not APPL).",

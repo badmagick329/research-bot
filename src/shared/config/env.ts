@@ -3,8 +3,12 @@ import { existsSync } from "node:fs";
 import { z } from "zod";
 
 const supportedNewsProviders = ["mock", "finnhub", "alphavantage"] as const;
+const supportedMetricsProviders = ["mock", "alphavantage"] as const;
+const supportedFilingsProviders = ["mock", "sec-edgar"] as const;
 
 export type NewsProviderName = (typeof supportedNewsProviders)[number];
+export type MetricsProviderName = (typeof supportedMetricsProviders)[number];
+export type FilingsProviderName = (typeof supportedFilingsProviders)[number];
 
 const envSchema = z.object({
   NODE_ENV: z
@@ -25,6 +29,19 @@ const envSchema = z.object({
   ALPHA_VANTAGE_BASE_URL: z.string().default("https://www.alphavantage.co"),
   ALPHA_VANTAGE_API_KEY: z.string().default(""),
   ALPHA_VANTAGE_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  METRICS_PROVIDER: z.enum(supportedMetricsProviders).default("mock"),
+  FILINGS_PROVIDER: z.enum(supportedFilingsProviders).default("mock"),
+  SEC_EDGAR_BASE_URL: z.string().default("https://data.sec.gov"),
+  SEC_EDGAR_ARCHIVES_BASE_URL: z
+    .string()
+    .default("https://www.sec.gov/Archives/edgar/data"),
+  SEC_EDGAR_TICKERS_URL: z
+    .string()
+    .default("https://www.sec.gov/files/company_tickers.json"),
+  SEC_EDGAR_USER_AGENT: z
+    .string()
+    .default("research-bot/1.0 (contact: devnull@example.com)"),
+  SEC_EDGAR_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
   REDIS_URL: z.string().default("redis://localhost:6379"),
   POSTGRES_URL: z
     .string()
@@ -118,3 +135,13 @@ export const newsProviders = (): NewsProviderName[] => {
 
   return Array.from(new Set(validProviders));
 };
+
+/**
+ * Resolves the configured market-metrics adapter so runtime wiring remains declarative and testable.
+ */
+export const metricsProvider = (): MetricsProviderName => env.METRICS_PROVIDER;
+
+/**
+ * Resolves the configured filings adapter so ingestion can switch providers without use-case changes.
+ */
+export const filingsProvider = (): FilingsProviderName => env.FILINGS_PROVIDER;

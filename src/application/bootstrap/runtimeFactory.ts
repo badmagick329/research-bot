@@ -3,7 +3,12 @@ import { IngestionService } from "../services/ingestionService";
 import { NormalizationService } from "../services/normalizationService";
 import { EmbeddingService } from "../services/embeddingService";
 import { SynthesisService } from "../services/synthesisService";
-import { env, newsProviders } from "../../shared/config/env";
+import {
+  env,
+  filingsProvider,
+  metricsProvider,
+  newsProviders,
+} from "../../shared/config/env";
 import { createDb } from "../../infra/db/client";
 import {
   PgVectorEmbeddingRepositoryService,
@@ -14,19 +19,25 @@ import {
 } from "../../infra/db/repositories";
 import { OllamaEmbedding } from "../../infra/llm/ollamaEmbedding";
 import { OllamaLlm } from "../../infra/llm/ollamaLlm";
+import { AlphaVantageMetricsProvider } from "../../infra/providers/alphavantage/alphaVantageMetricsProvider";
 import { AlphaVantageNewsProvider } from "../../infra/providers/alphavantage/alphaVantageNewsProvider";
 import { FinnhubNewsProvider } from "../../infra/providers/finnhub/finnhubNewsProvider";
 import { MockFilingsProvider } from "../../infra/providers/mocks/mockFilingsProvider";
 import { MockMarketMetricsProvider } from "../../infra/providers/mocks/mockMarketMetricsProvider";
 import { MockNewsProvider } from "../../infra/providers/mocks/mockNewsProvider";
 import { MultiNewsProvider } from "../../infra/providers/multiNewsProvider";
+import { SecEdgarFilingsProvider } from "../../infra/providers/sec/secEdgarFilingsProvider";
 import { BullMqQueue } from "../../infra/queue/bullMqQueue";
 import {
   SystemClock,
   TaskFactory,
   UuidIdGenerator,
 } from "../../infra/system/systemPorts";
-import type { NewsProviderPort } from "../../core/ports/inboundPorts";
+import type {
+  FilingsProviderPort,
+  MarketMetricsProviderPort,
+  NewsProviderPort,
+} from "../../core/ports/inboundPorts";
 
 const redisConfigFromUrl = (url: string) => {
   const parsed = new URL(url);
@@ -73,6 +84,38 @@ const createNewsProvider = (): NewsProviderPort => {
 };
 
 /**
+ * Resolves the configured metrics adapter while preserving a mock fallback for local development.
+ */
+const createMetricsProvider = (): MarketMetricsProviderPort => {
+  if (metricsProvider() === "alphavantage") {
+    return new AlphaVantageMetricsProvider(
+      env.ALPHA_VANTAGE_BASE_URL,
+      env.ALPHA_VANTAGE_API_KEY,
+      env.ALPHA_VANTAGE_TIMEOUT_MS,
+    );
+  }
+
+  return new MockMarketMetricsProvider();
+};
+
+/**
+ * Resolves the configured filings adapter while preserving a mock fallback for local development.
+ */
+const createFilingsProvider = (): FilingsProviderPort => {
+  if (filingsProvider() === "sec-edgar") {
+    return new SecEdgarFilingsProvider(
+      env.SEC_EDGAR_BASE_URL,
+      env.SEC_EDGAR_ARCHIVES_BASE_URL,
+      env.SEC_EDGAR_TICKERS_URL,
+      env.SEC_EDGAR_USER_AGENT,
+      env.SEC_EDGAR_TIMEOUT_MS,
+    );
+  }
+
+  return new MockFilingsProvider();
+};
+
+/**
  * Centralizes runtime wiring so app and worker entry points share one composition root.
  */
 export const createRuntime = async () => {
@@ -103,8 +146,8 @@ export const createRuntime = async () => {
   );
 
   const newsProvider = createNewsProvider();
-  const metricsProvider = new MockMarketMetricsProvider();
-  const filingsProvider = new MockFilingsProvider();
+  const metricsProviderAdapter = createMetricsProvider();
+  const filingsProviderAdapter = createFilingsProvider();
 
   const orchestratorService = new ResearchOrchestratorService(
     queue,
@@ -112,8 +155,8 @@ export const createRuntime = async () => {
   );
   const ingestionService = new IngestionService(
     newsProvider,
-    metricsProvider,
-    filingsProvider,
+    metricsProviderAdapter,
+    filingsProviderAdapter,
     documentRepo,
     metricsRepo,
     filingsRepo,

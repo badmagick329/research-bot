@@ -7,7 +7,7 @@
 - Style: clean architecture with strict boundaries.
 - Runtime shape: host CLI (`run`/`enqueue`/`snapshot`/`status`) + host worker + infra (`postgres`, `redis`).
 - Pipeline: `ingest -> normalize -> embed -> synthesize`.
-- Current provider state: real news providers (Finnhub + Alpha Vantage) plus mock metrics/filings.
+- Current provider state: real news providers (Finnhub + Alpha Vantage), optional real SEC EDGAR filings, optional real Alpha Vantage metrics.
 
 ### Why this shape
 
@@ -15,6 +15,20 @@
 - Core/application layers stay provider-agnostic.
 - Infra adapters are replaceable (mock -> real provider) with minimal changes.
 - Local-first inference (Ollama) keeps inference self-hosted.
+
+### Sprint close-out (Feb 2026)
+
+- Added real adapter options for filings + metrics:
+  - SEC EDGAR filings provider (`FILINGS_PROVIDER=sec-edgar`)
+  - Alpha Vantage metrics provider (`METRICS_PROVIDER=alphavantage`)
+- Added provider contract tests for both adapters.
+- Added queue observability baseline:
+  - `status` now includes per-stage queue counters.
+  - worker logs include stage start/completion/failure with duration and task metadata.
+- Tightened embedding reliability:
+  - embedding path is fail-fast on transport and dimension mismatch.
+  - no silent zero-vector fallback.
+- Added `embeddings` table definition to Drizzle schema source for schema/migration parity.
 
 ### Code map: what to understand first
 
@@ -62,20 +76,29 @@
 
 - `src/infra/providers/finnhub/finnhubNewsProvider.ts`
 - `src/infra/providers/alphavantage/alphaVantageNewsProvider.ts`
+- `src/infra/providers/alphavantage/alphaVantageMetricsProvider.ts`
+- `src/infra/providers/sec/secEdgarFilingsProvider.ts`
 - `src/infra/providers/multiNewsProvider.ts`
 - `src/infra/providers/mocks/*`
 
+9. Provider contract tests
+
+- `src/infra/providers/finnhub/finnhubNewsProvider.test.ts`
+- `src/infra/providers/alphavantage/alphaVantageNewsProvider.test.ts`
+- `src/infra/providers/alphavantage/alphaVantageMetricsProvider.test.ts`
+- `src/infra/providers/sec/secEdgarFilingsProvider.test.ts`
+- `src/infra/providers/multiNewsProvider.test.ts`
+
 ### Current best-guess evolution path
 
-1. Replace remaining mock providers (metrics + filings) with real adapters (no application/core changes expected).
-2. Add contract tests per provider adapter (payload-to-normalized DTO).
-3. Add queue observability (job counts, DLQ inspection, stage latency).
-4. Improve synthesis reliability:
+1. Improve provider coverage depth (better filings section extraction and richer metric mapping).
+2. Add deeper queue observability (DLQ inspection, stage latency histograms, alerting).
+3. Improve synthesis reliability:
    - structured output schema
    - stronger citation tracking
    - confidence calibration.
-5. Make embeddings dimension explicit per configured model and add migration strategy when model changes.
-6. Add a dedicated migrator service in compose/CI so schema upgrades are deterministic.
+4. Make embeddings dimension configurable per model and add migration strategy when model changes.
+5. Add a dedicated migrator service in compose/CI so schema upgrades are deterministic.
 
 ### Hidden gotchas / traps
 
@@ -109,10 +132,16 @@
   - Current compose no longer runs migration or scheduler automatically.
   - Use `bun run db:migrate` before starting worker/scheduler flows.
 
-- Ollama fallback behavior can hide model outages.
-  - Current adapters timeout and return fallback strings/zero vectors.
+- Ollama embedding behavior is strict by design.
+  - Embedding adapter now fails fast on transport failure and vector-dimension mismatch.
+  - This avoids silent quality degradation when embedding model output shape drifts.
   - Defaults: `OLLAMA_CHAT_TIMEOUT_MS=180000`, `OLLAMA_EMBED_TIMEOUT_MS=30000`.
-  - Good for liveness; bad for silently degraded quality.
+  - Worker retries via BullMQ attempts/backoff; repeated failures require model/config fix.
+
+- Ollama model pull + dimension compatibility are operational requirements.
+  - `OLLAMA_EMBED_MODEL` must exist locally (`ollama pull <model>`).
+  - Current storage/runtime expects 1024-d embeddings.
+  - `nomic-embed-text` currently returns 768 dimensions and will fail embed stage unless runtime/schema are migrated.
 
 - `ivfflat` index warning with tiny data is expected.
   - pgvector may log “index created with little data”; not fatal for v0.
@@ -160,6 +189,9 @@
 - Bun installed.
 - Docker + Docker Compose installed.
 - Ollama running on host at `http://localhost:11434`.
+- Required Ollama models pulled locally:
+  - chat model from `OLLAMA_CHAT_MODEL` (default `qwen2.5:7b-instruct`)
+  - embed model from `OLLAMA_EMBED_MODEL` (must match runtime/storage dimension)
 
 ### First-time setup
 
@@ -169,7 +201,12 @@
 
 2. Install deps:
    - `bun install`
-3. Choose news provider mode in `.env`:
+3. Pull required Ollama models:
+
+- `ollama pull qwen2.5:7b-instruct`
+- `ollama pull mxbai-embed-large` (recommended for current 1024-d setup)
+
+4. Choose news provider mode in `.env`:
 
 - mock (default): `NEWS_PROVIDER=mock`
 - real Finnhub news: `NEWS_PROVIDER=finnhub` and set `FINNHUB_API_KEY=<your_key>`
@@ -179,13 +216,22 @@
 - optional overrides: `FINNHUB_BASE_URL`, `FINNHUB_TIMEOUT_MS`
 - optional overrides: `ALPHA_VANTAGE_BASE_URL`, `ALPHA_VANTAGE_TIMEOUT_MS`
 
-4. Start infra:
+5. Choose metrics + filings provider mode in `.env`:
+
+- metrics mock (default): `METRICS_PROVIDER=mock`
+- metrics real (Alpha Vantage): `METRICS_PROVIDER=alphavantage` and set `ALPHA_VANTAGE_API_KEY=<your_key>`
+- filings mock (default): `FILINGS_PROVIDER=mock`
+- filings real (SEC EDGAR): `FILINGS_PROVIDER=sec-edgar`
+- required for SEC EDGAR mode: `SEC_EDGAR_USER_AGENT=<app/version (contact: you@example.com)>`
+- optional SEC overrides: `SEC_EDGAR_BASE_URL`, `SEC_EDGAR_ARCHIVES_BASE_URL`, `SEC_EDGAR_TICKERS_URL`, `SEC_EDGAR_TIMEOUT_MS`
+
+6. Start infra:
    - `docker compose up -d postgres redis`
-5. Run migrations once:
+7. Run migrations once:
 
 - `bun run db:migrate`
 
-6. Start execution mode (host only):
+8. Start execution mode (host only):
 
 - run `bun run src/index.ts run` + `bun run src/workers/main.ts`
 
@@ -234,10 +280,12 @@ Common gotchas:
   - `bun run src/index.ts snapshot --symbol AAPL`
 - Get latest snapshot in human-readable format:
   - `bun run src/index.ts snapshot --symbol AAPL --prettify`
-- Show runtime config:
+- Show runtime config + queue counters:
   - `bun run src/index.ts status`
 - Ollama connectivity probe (same chat path as runtime):
   - `bun run src/cli/ollamaProbe.ts`
+- Ollama embed API quick check (PowerShell):
+  - `$body = @{ model = 'mxbai-embed-large'; input = @('test') } | ConvertTo-Json -Depth 5; $resp = Invoke-RestMethod -Uri 'http://localhost:11434/api/embed' -Method Post -ContentType 'application/json' -Body $body; $resp.embeddings[0].Count`
 - Check service status:
   - `docker compose ps`
 
@@ -265,6 +313,8 @@ If snapshot says “No snapshot found”, check:
 - host env uses `localhost` for `POSTGRES_URL` and `REDIS_URL`
 - Ollama reachability (`OLLAMA_BASE_URL`)
 - probe command result: `bun run src/cli/ollamaProbe.ts`
+- `OLLAMA_EMBED_MODEL` is pulled locally (`ollama pull <model>`)
+- embed model dimension matches current runtime/storage expectation (1024)
 - idempotency collision (same symbol/stage/hour)
 - if using Finnhub: `NEWS_PROVIDER=finnhub` is set and `FINNHUB_API_KEY` is non-empty
 - if using Alpha Vantage: `ALPHA_VANTAGE_API_KEY` is non-empty

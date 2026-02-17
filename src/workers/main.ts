@@ -1,6 +1,11 @@
 import { createRuntime } from "../application/bootstrap/runtimeFactory";
 import { createStageWorker } from "../infra/queue/bullMqQueue";
-import { env, newsProviders } from "../shared/config/env";
+import {
+  env,
+  filingsProvider,
+  metricsProvider,
+  newsProviders,
+} from "../shared/config/env";
 import { logger } from "../shared/logger/logger";
 
 const toErrorDetails = (error: unknown) => {
@@ -28,6 +33,7 @@ const redisConfigFromUrl = (url: string) => {
 const run = async (): Promise<void> => {
   const runtime = await createRuntime();
   const redis = redisConfigFromUrl(env.REDIS_URL);
+  const startedAtByJobId = new Map<string, number>();
 
   logger.info(
     {
@@ -37,6 +43,11 @@ const run = async (): Promise<void> => {
       finnhubApiKeyConfigured: env.FINNHUB_API_KEY.trim().length > 0,
       alphaVantageBaseUrl: env.ALPHA_VANTAGE_BASE_URL,
       alphaVantageApiKeyConfigured: env.ALPHA_VANTAGE_API_KEY.trim().length > 0,
+      metricsProvider: metricsProvider(),
+      filingsProvider: filingsProvider(),
+      secEdgarBaseUrl: env.SEC_EDGAR_BASE_URL,
+      secEdgarApiUserAgentConfigured:
+        env.SEC_EDGAR_USER_AGENT.trim().length > 0,
       redisUrl: env.REDIS_URL,
       postgresUrl: env.POSTGRES_URL,
     },
@@ -70,15 +81,63 @@ const run = async (): Promise<void> => {
 
   [ingestWorker, normalizeWorker, embedWorker, synthesizeWorker].forEach(
     (worker) => {
+      worker.on("active", (job) => {
+        if (!job?.id) {
+          return;
+        }
+
+        startedAtByJobId.set(job.id, Date.now());
+
+        logger.info(
+          {
+            stage: worker.name,
+            jobId: job.id,
+            taskId: job.data.taskId,
+            symbol: job.data.symbol,
+            idempotencyKey: job.data.idempotencyKey,
+          },
+          "Worker job started",
+        );
+      });
+
       worker.on("failed", (job, error) => {
+        const startedAt = job?.id ? startedAtByJobId.get(job.id) : undefined;
+        const durationMs = startedAt ? Date.now() - startedAt : undefined;
+
+        if (job?.id) {
+          startedAtByJobId.delete(job.id);
+        }
+
         logger.error(
-          { stage: worker.name, jobId: job?.id, error },
+          {
+            stage: worker.name,
+            jobId: job?.id,
+            taskId: job?.data.taskId,
+            symbol: job?.data.symbol,
+            idempotencyKey: job?.data.idempotencyKey,
+            durationMs,
+            error: toErrorDetails(error),
+          },
           "Worker job failed",
         );
       });
       worker.on("completed", (job) => {
+        const startedAt = job.id ? startedAtByJobId.get(job.id) : undefined;
+        const durationMs = startedAt ? Date.now() - startedAt : undefined;
+
+        if (job.id) {
+          startedAtByJobId.delete(job.id);
+        }
+
         logger.info(
-          { stage: worker.name, jobId: job.id },
+          {
+            stage: worker.name,
+            jobId: job.id,
+            taskId: job.data.taskId,
+            symbol: job.data.symbol,
+            idempotencyKey: job.data.idempotencyKey,
+            durationMs,
+          },
           "Worker job completed",
         );
       });

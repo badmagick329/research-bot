@@ -1,10 +1,12 @@
 import {
+  index,
   jsonb,
   pgTable,
   real,
   text,
   timestamp,
   uniqueIndex,
+  vector,
 } from "drizzle-orm/pg-core";
 
 export const documentsTable = pgTable(
@@ -83,6 +85,23 @@ export const filingsTable = pgTable("filings", {
   rawPayload: jsonb("raw_payload").$type<unknown>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
+
+export const embeddingsTable = pgTable(
+  "embeddings",
+  {
+    documentId: text("document_id")
+      .primaryKey()
+      .references(() => documentsTable.id, { onDelete: "cascade" }),
+    symbol: text("symbol").notNull(),
+    content: text("content").notNull(),
+    embedding: vector("embedding", { dimensions: 1024 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => ({
+    symbolIdx: index("embeddings_symbol_idx").on(table.symbol),
+  }),
+);
 
 export const snapshotsTable = pgTable("snapshots", {
   id: text("id").primaryKey(),

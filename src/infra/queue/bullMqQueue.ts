@@ -4,6 +4,17 @@ import type { JobStage } from "../../core/entities/research";
 import type { JobPayload, QueuePort } from "../../core/ports/outboundPorts";
 import { queueNames } from "./queues";
 
+export type QueueStageCounts = {
+  waiting: number;
+  active: number;
+  completed: number;
+  failed: number;
+  delayed: number;
+  paused: number;
+};
+
+export type QueueCountsSnapshot = Record<JobStage, QueueStageCounts>;
+
 export const defaultJobOptions = {
   attempts: 3,
   removeOnComplete: 250,
@@ -53,6 +64,43 @@ export class BullMqQueue implements QueuePort {
     for (const queue of this.queues.values()) {
       await queue.close();
     }
+  }
+
+  /**
+   * Collects per-stage queue counters so status commands can expose current backlog and failure pressure.
+   */
+  async getQueueCounts(): Promise<QueueCountsSnapshot> {
+    const entries = await Promise.all(
+      (Object.keys(queueNames) as JobStage[]).map(async (stage) => {
+        const queue = this.queues.get(stage);
+        if (!queue) {
+          throw new Error(`Queue not configured for stage ${stage}`);
+        }
+
+        const counts = await queue.getJobCounts(
+          "waiting",
+          "active",
+          "completed",
+          "failed",
+          "delayed",
+          "paused",
+        );
+
+        return [
+          stage,
+          {
+            waiting: counts.waiting ?? 0,
+            active: counts.active ?? 0,
+            completed: counts.completed ?? 0,
+            failed: counts.failed ?? 0,
+            delayed: counts.delayed ?? 0,
+            paused: counts.paused ?? 0,
+          },
+        ] as const;
+      }),
+    );
+
+    return Object.fromEntries(entries) as QueueCountsSnapshot;
   }
 }
 
