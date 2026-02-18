@@ -4,6 +4,7 @@ import type { FilingEntity } from "../entities/filing";
 import type {
   JobStage,
   ResearchSnapshotEntity,
+  SnapshotMetricsDiagnostics,
   ResearchTaskEntity,
 } from "../entities/research";
 
@@ -13,6 +14,7 @@ export type JobPayload = {
   symbol: string;
   idempotencyKey: string;
   requestedAt: string;
+  metricsDiagnostics?: SnapshotMetricsDiagnostics;
 };
 
 export interface QueuePort {

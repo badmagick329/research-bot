@@ -165,11 +165,12 @@ export class SynthesisService {
     metricsCount: number,
     filingsCount: number,
   ): number {
-    const docsContribution = Math.min(40, docsCount * 2.5);
-    const metricsContribution = Math.min(30, metricsCount * 4);
-    const filingsContribution = Math.min(20, filingsCount * 5);
-    const triangulationBonus =
-      docsCount > 0 && metricsCount > 0 && filingsCount > 0 ? 10 : 0;
+    const docsContribution = Math.min(30, docsCount * 1.5);
+    const metricsContribution = Math.min(35, metricsCount * 4.5);
+    const filingsContribution = Math.min(25, filingsCount * 4);
+    const evidenceTypes = [docsCount > 0, metricsCount > 0, filingsCount > 0];
+    const coverageBonus =
+      (evidenceTypes.filter(Boolean).length / evidenceTypes.length) * 10;
 
     return Math.max(
       0,
@@ -180,7 +181,7 @@ export class SynthesisService {
             docsContribution +
             metricsContribution +
             filingsContribution +
-            triangulationBonus
+            coverageBonus
           ).toFixed(1),
         ),
       ),
@@ -196,11 +197,31 @@ export class SynthesisService {
     filings: FilingEntity[],
     now: Date,
   ): number {
-    let confidence = 0.3;
+    let confidence = 0.25;
 
-    confidence += Math.min(0.2, docs.length * 0.0125);
-    confidence += Math.min(0.25, metrics.length * 0.03);
-    confidence += Math.min(0.2, filings.length * 0.04);
+    const evidenceTypes = [
+      docs.length > 0,
+      metrics.length > 0,
+      filings.length > 0,
+    ];
+    confidence += evidenceTypes.filter(Boolean).length * 0.12;
+
+    const documentProviderCount = new Set(docs.map((doc) => doc.provider)).size;
+    confidence += Math.min(0.08, documentProviderCount * 0.03);
+
+    const coreMetricNames = new Set([
+      "market_cap",
+      "price_to_earnings",
+      "revenue_growth_yoy",
+      "profit_margin",
+      "eps",
+    ]);
+    const coveredMetricNames = new Set(
+      metrics
+        .map((metric) => metric.metricName)
+        .filter((metricName) => coreMetricNames.has(metricName)),
+    );
+    confidence += (coveredMetricNames.size / coreMetricNames.size) * 0.15;
 
     const latestDocTime = docs.at(0)?.publishedAt?.getTime() ?? 0;
     const latestMetricTime = metrics.at(0)?.asOf?.getTime() ?? 0;
@@ -220,13 +241,140 @@ export class SynthesisService {
         confidence += 0.05;
       } else if (hoursOld <= 30 * 24) {
         confidence += 0.02;
+      } else {
+        confidence -= 0.07;
       }
     }
 
+    if (docs.length === 0) {
+      confidence -= 0.06;
+    }
+
+    if (metrics.length === 0) {
+      confidence -= 0.08;
+    }
+
+    if (filings.length === 0) {
+      confidence -= 0.04;
+    }
+
     return Math.max(
-      0.15,
-      Math.min(0.95, Number.parseFloat(confidence.toFixed(2))),
+      0.1,
+      Math.min(0.9, Number.parseFloat(confidence.toFixed(2))),
     );
+  }
+
+  /**
+   * Converts a ratio metric into percentage points so narrative logic can avoid unit ambiguity.
+   */
+  private asPercent(metric: MetricPointEntity | undefined): number | null {
+    if (!metric || !Number.isFinite(metric.metricValue)) {
+      return null;
+    }
+
+    return metric.metricValue * 100;
+  }
+
+  /**
+   * Derives valuation framing from available core metrics so summary labels reflect evidence.
+   */
+  private deriveValuationView(metrics: MetricPointEntity[]): string {
+    const byName = new Map(
+      metrics.map((metric) => [metric.metricName, metric]),
+    );
+    const pe = byName.get("price_to_earnings")?.metricValue;
+    const growthPercent = this.asPercent(byName.get("revenue_growth_yoy"));
+
+    if (typeof pe !== "number") {
+      return "Neutral; valuation multiples unavailable";
+    }
+
+    if (pe >= 50 && (growthPercent === null || growthPercent < 12)) {
+      return "Cautious; elevated multiple requires stronger growth follow-through";
+    }
+
+    if (pe <= 25 && growthPercent !== null && growthPercent >= 10) {
+      return "Constructive; growth appears reasonable versus current multiple";
+    }
+
+    return "Neutral; valuation balanced versus current growth evidence";
+  }
+
+  /**
+   * Generates evidence-driven risk labels so downstream readers can audit risk rationale quickly.
+   */
+  private deriveRisks(
+    docs: Awaited<ReturnType<DocumentRepositoryPort["listBySymbol"]>>,
+    metrics: MetricPointEntity[],
+    filings: FilingEntity[],
+  ): string[] {
+    const risks: string[] = [];
+    const byName = new Map(
+      metrics.map((metric) => [metric.metricName, metric]),
+    );
+    const pe = byName.get("price_to_earnings")?.metricValue;
+    const growthPercent = this.asPercent(byName.get("revenue_growth_yoy"));
+
+    if (metrics.length === 0) {
+      risks.push("Data coverage risk (missing market metrics)");
+    }
+
+    if (filings.length === 0) {
+      risks.push("Regulatory evidence gap risk");
+    }
+
+    if (docs.length < 3) {
+      risks.push("Narrative concentration risk (limited headline breadth)");
+    }
+
+    if (
+      typeof pe === "number" &&
+      pe >= 50 &&
+      (growthPercent === null || growthPercent < 10)
+    ) {
+      risks.push("Multiple compression risk");
+    }
+
+    if (risks.length === 0) {
+      risks.push("Execution risk");
+      risks.push("Macro risk");
+    }
+
+    return risks.slice(0, 4);
+  }
+
+  /**
+   * Derives near-term catalysts from observed evidence coverage so catalysts avoid generic repetition.
+   */
+  private deriveCatalysts(
+    docs: Awaited<ReturnType<DocumentRepositoryPort["listBySymbol"]>>,
+    metrics: MetricPointEntity[],
+    filings: FilingEntity[],
+  ): string[] {
+    const catalysts: string[] = [];
+    const byName = new Map(
+      metrics.map((metric) => [metric.metricName, metric]),
+    );
+    const growthPercent = this.asPercent(byName.get("revenue_growth_yoy"));
+
+    if (growthPercent !== null && growthPercent >= 10) {
+      catalysts.push("Sustained top-line growth confirmation");
+    }
+
+    if (filings.length > 0) {
+      catalysts.push("Upcoming filing disclosures and guidance updates");
+    }
+
+    if (docs.length >= 5) {
+      catalysts.push("Execution updates from product and demand headlines");
+    }
+
+    if (catalysts.length === 0) {
+      catalysts.push("Product cycle");
+      catalysts.push("Margin expansion");
+    }
+
+    return catalysts.slice(0, 4);
   }
 
   /**
@@ -246,28 +394,37 @@ export class SynthesisService {
     const latestMetrics = this.latestMetricByName(metrics).slice(0, 8);
     const sourceLines = docs
       .slice(0, 10)
-      .map((doc) => `- ${doc.provider}: ${doc.title}`)
+      .map((doc, index) => `- N${index + 1} ${doc.provider}: ${doc.title}`)
       .join("\n");
 
     const metricLines = latestMetrics
       .map(
-        (metric) =>
-          `- ${metric.provider}: ${metric.metricName}=${this.formatMetricValue(metric)}${metric.metricUnit ? ` ${metric.metricUnit}` : ""} (${metric.periodType}, as of ${metric.asOf.toISOString().slice(0, 10)})`,
+        (metric, index) =>
+          `- M${index + 1} ${metric.provider}: ${metric.metricName}=${this.formatMetricValue(metric)}${metric.metricUnit ? ` ${metric.metricUnit}` : ""} (${metric.periodType}, as of ${metric.asOf.toISOString().slice(0, 10)})`,
       )
       .join("\n");
 
     const filingLines = filings
       .slice(0, 6)
       .map(
-        (filing) =>
-          `- ${filing.provider}: ${filing.filingType} filed ${filing.filedAt.toISOString().slice(0, 10)}${filing.accessionNo ? ` accession ${filing.accessionNo}` : ""}${filing.docUrl ? ` (${filing.docUrl})` : ""}`,
+        (filing, index) =>
+          `- F${index + 1} ${filing.provider}: ${filing.filingType} filed ${filing.filedAt.toISOString().slice(0, 10)}${filing.accessionNo ? ` accession ${filing.accessionNo}` : ""}${filing.docUrl ? ` (${filing.docUrl})` : ""}`,
       )
       .join("\n");
+
+    const metricsDiagnosticsLine = payload.metricsDiagnostics
+      ? `- provider=${payload.metricsDiagnostics.provider}, status=${payload.metricsDiagnostics.status}, metricCount=${payload.metricsDiagnostics.metricCount}${payload.metricsDiagnostics.reason ? `, reason=${payload.metricsDiagnostics.reason}` : ""}${typeof payload.metricsDiagnostics.httpStatus === "number" ? `, httpStatus=${payload.metricsDiagnostics.httpStatus}` : ""}`
+      : "- unavailable";
 
     const thesis = await this.llm.synthesize(
       [
         `Create an investing thesis for ${payload.symbol}.`,
         "Use only the evidence below.",
+        "Do not invent facts, numbers, shareholders, or events not present in evidence.",
+        "When evidence is missing or weak, explicitly state uncertainty and data gaps.",
+        "",
+        "Metrics fetch diagnostics:",
+        metricsDiagnosticsLine,
         "",
         "News headlines:",
         sourceLines || "- none",
@@ -279,10 +436,13 @@ export class SynthesisService {
         filingLines || "- none",
         "",
         "Output requirements:",
+        "- Return Markdown with headings: Overview, Shareholder/Institutional Dynamics, Valuation and Growth Interpretation, Regulatory Filings, Missing Evidence, Conclusion.",
+        "- For each section, tie claims to one or more evidence items (N#, M#, F# labels).",
         "- Explain what changed in shareholder/institutional dynamics.",
         "- Connect valuation or growth interpretation to provided metrics when available.",
         "- Use filings to support or challenge narrative when available.",
         "- Explicitly state missing evidence if a section is empty.",
+        "- If metrics diagnostics indicate missing or degraded metrics, mention that limitation in Missing Evidence.",
       ].join("\n"),
     );
 
@@ -307,11 +467,14 @@ export class SynthesisService {
       horizon: "12m",
       score,
       thesis,
-      risks: ["Execution risk", "Macro risk"],
-      catalysts: ["Product cycle", "Margin expansion"],
-      valuationView: "Neutral until more evidence",
+      risks: this.deriveRisks(docs, latestMetrics, filings),
+      catalysts: this.deriveCatalysts(docs, latestMetrics, filings),
+      valuationView: this.deriveValuationView(latestMetrics),
       confidence,
       sources: this.uniqueSources(docs, latestMetrics, filings),
+      diagnostics: {
+        metrics: payload.metricsDiagnostics,
+      },
       createdAt: now,
     });
   }

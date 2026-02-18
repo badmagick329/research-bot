@@ -44,6 +44,30 @@ export type NormalizedMarketMetricPoint = {
   rawPayload: unknown;
 };
 
+export type MetricsFetchStatus =
+  | "ok"
+  | "empty"
+  | "rate_limited"
+  | "timeout"
+  | "provider_error"
+  | "auth_invalid"
+  | "config_invalid"
+  | "malformed_response";
+
+export type MetricsFetchDiagnostics = {
+  provider: string;
+  symbol: string;
+  status: MetricsFetchStatus;
+  metricCount: number;
+  reason?: string;
+  httpStatus?: number;
+};
+
+export type MetricsFetchResult = {
+  metrics: NormalizedMarketMetricPoint[];
+  diagnostics: MetricsFetchDiagnostics;
+};
+
 export type FilingsRequest = {
   symbol: string;
   from: Date;
@@ -76,7 +100,7 @@ export interface NewsProviderPort {
 }
 
 export interface MarketMetricsProviderPort {
-  fetchMetrics(request: MetricsRequest): Promise<NormalizedMarketMetricPoint[]>;
+  fetchMetrics(request: MetricsRequest): Promise<MetricsFetchResult>;
 }
 
 export interface FilingsProviderPort {

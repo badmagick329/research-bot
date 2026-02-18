@@ -1,5 +1,6 @@
 import type {
   MarketMetricsProviderPort,
+  MetricsFetchResult,
   MetricsRequest,
   NormalizedMarketMetricPoint,
 } from "../../../core/ports/inboundPorts";
@@ -16,6 +17,9 @@ type AlphaVantageOverviewResponse = {
   RevenueTTM?: string;
   EBITDA?: string;
   QuarterlyRevenueGrowthYOY?: string;
+  Information?: string;
+  Note?: string;
+  "Error Message"?: string;
 };
 
 type MetricMapping = {
@@ -100,6 +104,8 @@ const parseNumericValue = (raw: string | undefined): number | null => {
   return parsed;
 };
 
+const fatalAuthErrorPrefix = "ALPHAVANTAGE_METRICS_FATAL_AUTH:";
+
 /**
  * Adapts Alpha Vantage fundamentals payloads into normalized metric points for ingestion.
  */
@@ -119,9 +125,7 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
   /**
    * Returns normalized metrics and yields an empty set on upstream faults so ingestion can continue.
    */
-  async fetchMetrics(
-    request: MetricsRequest,
-  ): Promise<NormalizedMarketMetricPoint[]> {
+  async fetchMetrics(request: MetricsRequest): Promise<MetricsFetchResult> {
     const symbol = request.symbol.toUpperCase();
     const asOf = request.asOf ?? new Date();
 
@@ -133,6 +137,11 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
+    const diagnosticsBase = {
+      provider: "alphavantage",
+      symbol,
+    } as const;
+
     try {
       const response = await fetch(url, {
         method: "GET",
@@ -140,12 +149,83 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
       });
 
       if (!response.ok) {
-        return [];
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(`${fatalAuthErrorPrefix} status ${response.status}`);
+        }
+
+        if (response.status === 429) {
+          return {
+            metrics: [],
+            diagnostics: {
+              ...diagnosticsBase,
+              status: "rate_limited",
+              metricCount: 0,
+              httpStatus: response.status,
+              reason: "Alpha Vantage rate limit reached",
+            },
+          };
+        }
+
+        return {
+          metrics: [],
+          diagnostics: {
+            ...diagnosticsBase,
+            status: "provider_error",
+            metricCount: 0,
+            httpStatus: response.status,
+            reason: "Alpha Vantage returned non-success status",
+          },
+        };
       }
 
       const payload = (await response.json()) as AlphaVantageOverviewResponse;
       if (!payload || typeof payload !== "object") {
-        return [];
+        return {
+          metrics: [],
+          diagnostics: {
+            ...diagnosticsBase,
+            status: "malformed_response",
+            metricCount: 0,
+            reason: "Overview payload was not an object",
+          },
+        };
+      }
+
+      const note = payload.Note?.trim() || payload.Information?.trim();
+      if (note) {
+        const isRateLimit = /rate|frequency|limit|calls per minute/i.test(note);
+
+        return {
+          metrics: [],
+          diagnostics: {
+            ...diagnosticsBase,
+            status: isRateLimit ? "rate_limited" : "provider_error",
+            metricCount: 0,
+            reason: note,
+          },
+        };
+      }
+
+      const errorMessage = payload["Error Message"]?.trim();
+      if (errorMessage) {
+        const isAuthError =
+          /api key|invalid api call|unauthorized|authentication/i.test(
+            errorMessage,
+          );
+
+        if (isAuthError) {
+          throw new Error(`${fatalAuthErrorPrefix} ${errorMessage}`);
+        }
+
+        return {
+          metrics: [],
+          diagnostics: {
+            ...diagnosticsBase,
+            status: "provider_error",
+            metricCount: 0,
+            reason: errorMessage,
+          },
+        };
       }
 
       const currency = payload.Currency?.trim() || "USD";
@@ -173,9 +253,41 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
         });
       }
 
-      return metrics;
-    } catch {
-      return [];
+      return {
+        metrics,
+        diagnostics: {
+          ...diagnosticsBase,
+          status: metrics.length > 0 ? "ok" : "empty",
+          metricCount: metrics.length,
+          reason:
+            metrics.length > 0
+              ? undefined
+              : "No numeric overview fundamentals were available for this symbol",
+        },
+      };
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.startsWith(fatalAuthErrorPrefix)
+      ) {
+        throw error;
+      }
+
+      const isTimeoutError =
+        error instanceof DOMException && error.name === "AbortError";
+
+      return {
+        metrics: [],
+        diagnostics: {
+          ...diagnosticsBase,
+          status: isTimeoutError ? "timeout" : "provider_error",
+          metricCount: 0,
+          reason:
+            error instanceof Error
+              ? error.message
+              : "Alpha Vantage metrics request failed",
+        },
+      };
     } finally {
       clearTimeout(timeout);
     }

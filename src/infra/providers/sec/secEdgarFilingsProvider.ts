@@ -179,6 +179,20 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
         continue;
       }
 
+      const docUrl = `${this.archivesBaseUrl}/${Number.parseInt(cik, 10)}/${asAccessionPathPart(accessionNo)}/${primaryDocument}`;
+      const sections = this.buildDerivedSections(
+        filingType,
+        filingDate,
+        periodEnd,
+        primaryDocument,
+      );
+      const extractedFacts = this.buildDerivedFacts(
+        filingType,
+        filingDate,
+        periodEnd,
+        accessionNo,
+      );
+
       results.push({
         id: `sec-edgar-${symbol}-${accessionNo}`,
         provider: "sec-edgar",
@@ -188,9 +202,9 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
         accessionNo,
         filedAt: filingDate,
         periodEnd,
-        docUrl: `${this.archivesBaseUrl}/${Number.parseInt(cik, 10)}/${asAccessionPathPart(accessionNo)}/${primaryDocument}`,
-        sections: [],
-        extractedFacts: [],
+        docUrl,
+        sections,
+        extractedFacts,
         rawPayload: {
           filingType,
           accessionNo,
@@ -202,6 +216,60 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
     }
 
     return results;
+  }
+
+  /**
+   * Derives compact filing sections from SEC metadata so synthesis gets structured filing context even without full-text parsing.
+   */
+  private buildDerivedSections(
+    filingType: string,
+    filingDate: Date,
+    periodEnd: Date | undefined,
+    primaryDocument: string,
+  ): Array<{ name: string; text: string }> {
+    const overviewText = [
+      `Form ${filingType} filed on ${filingDate.toISOString().slice(0, 10)}.`,
+      periodEnd
+        ? `Reported period end: ${periodEnd.toISOString().slice(0, 10)}.`
+        : "Reported period end: unavailable.",
+      `Primary SEC document: ${primaryDocument}.`,
+    ].join(" ");
+
+    return [
+      {
+        name: "edgar_metadata_overview",
+        text: overviewText,
+      },
+    ];
+  }
+
+  /**
+   * Emits normalized filing facts from EDGAR metadata so downstream prompts can reference concrete filing attributes.
+   */
+  private buildDerivedFacts(
+    filingType: string,
+    filingDate: Date,
+    periodEnd: Date | undefined,
+    accessionNo: string,
+  ): Array<{ name: string; value: string; unit?: string; period?: string }> {
+    return [
+      {
+        name: "filing_type",
+        value: filingType,
+      },
+      {
+        name: "filing_date",
+        value: filingDate.toISOString().slice(0, 10),
+      },
+      {
+        name: "accession_number",
+        value: accessionNo,
+      },
+      {
+        name: "reported_period_end",
+        value: periodEnd ? periodEnd.toISOString().slice(0, 10) : "unavailable",
+      },
+    ];
   }
 
   /**

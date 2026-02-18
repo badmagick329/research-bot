@@ -225,7 +225,10 @@ export class PostgresSnapshotRepositoryService implements SnapshotRepositoryPort
    * Stores each synthesis result as a point-in-time snapshot for reproducible downstream reads.
    */
   async save(snapshot: ResearchSnapshotEntity): Promise<void> {
-    await this.db.insert(snapshotsTable).values(snapshot);
+    await this.db.insert(snapshotsTable).values({
+      ...snapshot,
+      diagnostics: snapshot.diagnostics ?? {},
+    });
   }
 
   /**
@@ -257,6 +260,10 @@ export class PostgresSnapshotRepositoryService implements SnapshotRepositoryPort
       ...row,
       runId: row.runId ?? undefined,
       taskId: row.taskId ?? undefined,
+      diagnostics:
+        row.diagnostics && Object.keys(row.diagnostics).length > 0
+          ? row.diagnostics
+          : undefined,
     };
   }
 }

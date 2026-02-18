@@ -37,13 +37,13 @@ describe("AlphaVantageMetricsProvider", () => {
       5_000,
     );
 
-    const metrics = await provider.fetchMetrics({ symbol: "aapl", asOf });
+    const result = await provider.fetchMetrics({ symbol: "aapl", asOf });
 
     expect(requestedUrl).toContain("function=OVERVIEW");
     expect(requestedUrl).toContain("symbol=AAPL");
     expect(requestedUrl).toContain("apikey=test-key");
 
-    expect(metrics).toEqual([
+    expect(result.metrics).toEqual([
       {
         id: "alphavantage-AAPL-market_cap-2026-01-10T00:00:00.000Z",
         provider: "alphavantage",
@@ -102,9 +102,16 @@ describe("AlphaVantageMetricsProvider", () => {
         },
       },
     ]);
+
+    expect(result.diagnostics).toEqual({
+      provider: "alphavantage",
+      symbol: "AAPL",
+      status: "ok",
+      metricCount: 3,
+    });
   });
 
-  it("returns empty list on non-200 responses", async () => {
+  it("returns rate-limited diagnostics on 429 responses", async () => {
     setFetch(async () => new Response("too many requests", { status: 429 }));
 
     const provider = new AlphaVantageMetricsProvider(
@@ -113,9 +120,25 @@ describe("AlphaVantageMetricsProvider", () => {
       5_000,
     );
 
-    const metrics = await provider.fetchMetrics({ symbol: "AAPL" });
+    const result = await provider.fetchMetrics({ symbol: "AAPL" });
 
-    expect(metrics).toEqual([]);
+    expect(result.metrics).toEqual([]);
+    expect(result.diagnostics.status).toBe("rate_limited");
+    expect(result.diagnostics.httpStatus).toBe(429);
+  });
+
+  it("throws on auth failures", async () => {
+    setFetch(async () => new Response("forbidden", { status: 403 }));
+
+    const provider = new AlphaVantageMetricsProvider(
+      "https://www.alphavantage.co",
+      "test-key",
+      5_000,
+    );
+
+    await expect(provider.fetchMetrics({ symbol: "AAPL" })).rejects.toThrow(
+      "ALPHAVANTAGE_METRICS_FATAL_AUTH",
+    );
   });
 
   it("throws when api key is missing", () => {

@@ -62,7 +62,7 @@ export class IngestionService {
       now.getTime() - this.filingsLookbackDays * 24 * 60 * 60 * 1000,
     );
 
-    const [news, metrics, filings] = await Promise.all([
+    const [news, metricsResult, filings] = await Promise.all([
       this.newsProvider.fetchArticles({
         symbol: payload.symbol,
         from: newsFrom,
@@ -77,6 +77,8 @@ export class IngestionService {
         limit: 10,
       }),
     ]);
+
+    const metrics = metricsResult.metrics;
 
     const documents: DocumentEntity[] = news.map((item) => ({
       id: this.ids.next(),
@@ -146,6 +148,15 @@ export class IngestionService {
       this.filingsRepo.upsertMany(filingEntities),
     ]);
 
-    await this.queue.enqueue("normalize", payload);
+    await this.queue.enqueue("normalize", {
+      ...payload,
+      metricsDiagnostics: {
+        provider: metricsResult.diagnostics.provider,
+        status: metricsResult.diagnostics.status,
+        metricCount: metricsResult.diagnostics.metricCount,
+        reason: metricsResult.diagnostics.reason,
+        httpStatus: metricsResult.diagnostics.httpStatus,
+      },
+    });
   }
 }

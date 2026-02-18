@@ -1,5 +1,6 @@
 import type {
   MarketMetricsProviderPort,
+  MetricsFetchResult,
   MetricsRequest,
   NormalizedMarketMetricPoint,
 } from "../../../core/ports/inboundPorts";
@@ -11,13 +12,11 @@ export class MockMarketMetricsProvider implements MarketMetricsProviderPort {
   /**
    * Emits representative metric points to exercise repository upsert and scoring pathways.
    */
-  async fetchMetrics(
-    request: MetricsRequest,
-  ): Promise<NormalizedMarketMetricPoint[]> {
+  async fetchMetrics(request: MetricsRequest): Promise<MetricsFetchResult> {
     const asOf = request.asOf ?? new Date();
     const symbol = request.symbol.toUpperCase();
 
-    return [
+    const metrics: NormalizedMarketMetricPoint[] = [
       {
         id: `${symbol}-metric-revenue-growth`,
         provider: "mock-fundamentals",
@@ -58,5 +57,15 @@ export class MockMarketMetricsProvider implements MarketMetricsProviderPort {
         rawPayload: { field: "evToEbitda", value: 17.4 },
       },
     ];
+
+    return {
+      metrics,
+      diagnostics: {
+        provider: "mock-fundamentals",
+        symbol,
+        status: "ok",
+        metricCount: metrics.length,
+      },
+    };
   }
 }

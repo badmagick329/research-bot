@@ -9,6 +9,7 @@
 - Pipeline: `ingest -> normalize -> embed -> synthesize`.
 - Evidence model: synthesis consumes `news + metrics + filings` and writes snapshots with source attribution.
 - Lineage model: each enqueue creates a `runId`; stages carry `runId/taskId`; reads in normalize/embed/synthesize are run-scoped.
+- Diagnostics model: ingestion captures provider metrics fetch diagnostics and forwards them through stage payloads; synthesis persists diagnostics into snapshots.
 - Current provider state: real news providers (Finnhub + Alpha Vantage), optional real SEC EDGAR filings, optional real Alpha Vantage metrics.
 
 ### Why this shape
@@ -50,12 +51,15 @@
    - `src/application/services/synthesisService.ts`
    - `src/application/services/researchOrchestratorService.ts`
 
+- what to note: synthesis now uses stricter evidence-grounded prompting, dynamic `valuationView/risks/catalysts`, and calibrated score/confidence heuristics.
+
 6. Persistence and schema
    - `src/infra/db/schema.ts`
    - `src/infra/db/repositories.ts`
 
 - `drizzle/0000_init.sql`
 - `drizzle/0001_run_lineage_and_filing_dedupe.sql`
+- `drizzle/0002_snapshot_diagnostics.sql`
 
 7. Model adapters
 
@@ -93,10 +97,24 @@
   - this prevents stale cross-run mixing during synthesis.
   - if debugging a run, trace `runId` in worker logs.
 
+- Metrics fetch behavior is intentionally hybrid.
+  - Alpha Vantage metrics adapter degrades with diagnostics on transient/provider issues (for example rate limits/timeouts/non-success responses).
+  - Alpha Vantage metrics adapter fails fast on auth/config-invalid signals so retries surface real misconfiguration.
+  - This prevents silent missing-metrics ambiguity while keeping most runs resilient.
+
+- Missing metrics are now explicit in snapshot diagnostics.
+  - `snapshots.diagnostics.metrics` stores provider status, metric count, optional reason, and optional http status.
+  - synthesis prompt includes metrics diagnostics and should explicitly call out this gap in “Missing Evidence”.
+  - `snapshot --prettify` remains human-focused and does not currently render diagnostics; use raw `snapshot` output to inspect diagnostics fields.
+
 - Filing dedupe is natural-key based.
   - storage key is `(provider, dedupe_key)`.
   - `dedupe_key` prefers accession number; fallback is symbol-scoped doc URL.
   - migration keeps latest duplicate row when collapsing historical duplicates.
+
+- SEC filing extraction is metadata-derived at this stage.
+  - filings now include compact derived `sections` and `extractedFacts` from EDGAR metadata.
+  - this improves synthesis grounding versus empty filing payloads, but is not full filing body parsing yet.
 
 - Restart worker after config/code changes that affect provider behavior.
   - a long-running worker process keeps old env/code until restarted.
@@ -147,6 +165,10 @@
   - `run_id/task_id` lineage columns on evidence, embeddings, and snapshots.
   - filing `dedupe_key` + unique `(provider, dedupe_key)` index.
   - run-scope helper indexes for symbol+run read paths.
+
+- `0002_snapshot_diagnostics` adds:
+  - `snapshots.diagnostics jsonb` with default `{}`.
+  - persistence for metrics fetch diagnostics (`status`, `metricCount`, optional `reason/httpStatus`) used to explain missing metrics in downstream outputs.
 
 ### Recommended workflow (team-safe)
 
@@ -210,6 +232,7 @@
 
 - metrics mock (default): `METRICS_PROVIDER=mock`
 - metrics real (Alpha Vantage): `METRICS_PROVIDER=alphavantage` and set `ALPHA_VANTAGE_API_KEY=<your_key>`
+- metrics hybrid error policy note: auth/config-invalid metrics failures fail the ingest stage; transient/provider failures degrade with diagnostics and continue
 - filings mock (default): `FILINGS_PROVIDER=mock`
 - filings real (SEC EDGAR): `FILINGS_PROVIDER=sec-edgar`
 - required for SEC EDGAR mode: `SEC_EDGAR_USER_AGENT=<app/version (contact: you@example.com)>`
@@ -239,6 +262,7 @@
   - `bun run src/index.ts enqueue --symbol AAPL --force`
 - Get latest snapshot:
   - `bun run src/index.ts snapshot --symbol AAPL`
+  - note: raw snapshot output includes diagnostics metadata when present
 - Get latest snapshot in human-readable format:
   - `bun run src/index.ts snapshot --symbol AAPL --prettify`
 - Show runtime config + queue counters:
@@ -263,6 +287,7 @@
 4. `bun run src/index.ts enqueue --symbol TEST`
 5. Wait 2-4 minutes (LLM stage can be slow on cold model loads).
 6. `bun run src/index.ts snapshot --symbol TEST`
+7. Optional diagnostics check: `bun run src/index.ts snapshot --symbol TEST` (non-prettify) and inspect `diagnostics.metrics`
 
 If snapshot says “No snapshot found”, check:
 

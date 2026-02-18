@@ -15,6 +15,13 @@
       "when": 1771372800000,
       "tag": "0001_run_lineage_and_filing_dedupe",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1771470000000,
+      "tag": "0002_snapshot_diagnostics",
+      "breakpoints": true
     }
   ]
 }

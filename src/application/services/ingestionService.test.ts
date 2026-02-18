@@ -60,7 +60,15 @@ describe("IngestionService", () => {
     const metricsProvider: MarketMetricsProviderPort = {
       fetchMetrics: async (request) => {
         capturedMetricsRequest = request;
-        return [];
+        return {
+          metrics: [],
+          diagnostics: {
+            provider: "alphavantage",
+            symbol: request.symbol,
+            status: "empty",
+            metricCount: 0,
+          },
+        };
       },
     };
 
@@ -163,5 +171,10 @@ describe("IngestionService", () => {
     expect(upsertedFilingRunId).toBe("run-1");
     expect(upsertedFilingDedupeKey).toBe("accession:0000000000-26-000001");
     expect(queuedPayload?.runId).toBe("run-1");
+    expect(queuedPayload?.metricsDiagnostics).toEqual({
+      provider: "alphavantage",
+      status: "empty",
+      metricCount: 0,
+    });
   });
 });

@@ -84,8 +84,30 @@ describe("SecEdgarFilingsProvider", () => {
         periodEnd: new Date("2025-12-31T00:00:00.000Z"),
         docUrl:
           "https://www.sec.gov/Archives/edgar/data/320193/000032019326000010/aapl-20251231x10q.htm",
-        sections: [],
-        extractedFacts: [],
+        sections: [
+          {
+            name: "edgar_metadata_overview",
+            text: "Form 10-Q filed on 2026-01-30. Reported period end: 2025-12-31. Primary SEC document: aapl-20251231x10q.htm.",
+          },
+        ],
+        extractedFacts: [
+          {
+            name: "filing_type",
+            value: "10-Q",
+          },
+          {
+            name: "filing_date",
+            value: "2026-01-30",
+          },
+          {
+            name: "accession_number",
+            value: "0000320193-26-000010",
+          },
+          {
+            name: "reported_period_end",
+            value: "2025-12-31",
+          },
+        ],
         rawPayload: {
           filingType: "10-Q",
           accessionNo: "0000320193-26-000010",
@@ -105,8 +127,30 @@ describe("SecEdgarFilingsProvider", () => {
         periodEnd: new Date("2026-01-31T00:00:00.000Z"),
         docUrl:
           "https://www.sec.gov/Archives/edgar/data/320193/000032019326000011/aapl-8k.htm",
-        sections: [],
-        extractedFacts: [],
+        sections: [
+          {
+            name: "edgar_metadata_overview",
+            text: "Form 8-K filed on 2026-02-02. Reported period end: 2026-01-31. Primary SEC document: aapl-8k.htm.",
+          },
+        ],
+        extractedFacts: [
+          {
+            name: "filing_type",
+            value: "8-K",
+          },
+          {
+            name: "filing_date",
+            value: "2026-02-02",
+          },
+          {
+            name: "accession_number",
+            value: "0000320193-26-000011",
+          },
+          {
+            name: "reported_period_end",
+            value: "2026-01-31",
+          },
+        ],
         rawPayload: {
           filingType: "8-K",
           accessionNo: "0000320193-26-000011",

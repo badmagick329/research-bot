@@ -183,6 +183,7 @@ describe("SynthesisService", () => {
     expect(capturedPrompt).toContain("News headlines:");
     expect(capturedPrompt).toContain("Market metrics:");
     expect(capturedPrompt).toContain("Regulatory filings:");
+    expect(capturedPrompt).toContain("Metrics fetch diagnostics:");
     expect(capturedPrompt).toContain("market_cap");
     expect(capturedPrompt).toContain("8-K filed 2026-02-15");
 
@@ -192,8 +193,8 @@ describe("SynthesisService", () => {
     }
 
     expect(savedSnapshot.thesis).toBe("generated thesis");
-    expect(savedSnapshot.score).toBe(28);
-    expect(savedSnapshot.confidence).toBe(0.51);
+    expect(savedSnapshot.score).toBe(26);
+    expect(savedSnapshot.confidence).toBe(0.81);
     expect(savedSnapshot.runId).toBe("run-1");
     expect(savedSnapshot.taskId).toBe("task-1");
     expect(documentReadRunId).toBe("run-1");
@@ -276,6 +277,9 @@ describe("SynthesisService", () => {
     expect(capturedPrompt).toContain("News headlines:\n- none");
     expect(capturedPrompt).toContain("Market metrics:\n- none");
     expect(capturedPrompt).toContain("Regulatory filings:\n- none");
+    expect(capturedPrompt).toContain(
+      "Metrics fetch diagnostics:\n- unavailable",
+    );
 
     const savedSnapshot = savedSnapshots.at(0);
     if (!savedSnapshot) {
@@ -283,7 +287,7 @@ describe("SynthesisService", () => {
     }
 
     expect(savedSnapshot.score).toBe(0);
-    expect(savedSnapshot.confidence).toBe(0.3);
+    expect(savedSnapshot.confidence).toBe(0.1);
   });
 
   it("filters mock evidence when real evidence exists", async () => {
@@ -440,13 +444,13 @@ describe("SynthesisService", () => {
 
     await service.run(payload);
 
-    expect(capturedPrompt).toContain("alphavantage: Real provider headline");
+    expect(capturedPrompt).toContain("N1 alphavantage: Real provider headline");
     expect(capturedPrompt).not.toContain(
       "mock-news-wire: Mock provider headline",
     );
-    expect(capturedPrompt).toContain("alphavantage: market_cap");
+    expect(capturedPrompt).toContain("M1 alphavantage: market_cap");
     expect(capturedPrompt).not.toContain("mock-fundamentals: ev_to_ebitda");
-    expect(capturedPrompt).toContain("sec-edgar: 10-Q filed 2026-02-15");
+    expect(capturedPrompt).toContain("F1 sec-edgar: 10-Q filed 2026-02-15");
     expect(capturedPrompt).not.toContain("mock-edgar: 10-Q filed 2026-02-14");
 
     const savedSnapshot = savedSnapshots.at(0);

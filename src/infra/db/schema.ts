@@ -8,6 +8,7 @@ import {
   uniqueIndex,
   vector,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const documentsTable = pgTable(
   "documents",
@@ -136,5 +137,25 @@ export const snapshotsTable = pgTable("snapshots", {
   sources: jsonb("sources")
     .$type<Array<{ provider: string; url?: string; title?: string }>>()
     .notNull(),
+  diagnostics: jsonb("diagnostics")
+    .$type<{
+      metrics?: {
+        provider: string;
+        status:
+          | "ok"
+          | "empty"
+          | "rate_limited"
+          | "timeout"
+          | "provider_error"
+          | "auth_invalid"
+          | "config_invalid"
+          | "malformed_response";
+        metricCount: number;
+        reason?: string;
+        httpStatus?: number;
+      };
+    }>()
+    .notNull()
+    .default(sql`'{}'::jsonb`),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
