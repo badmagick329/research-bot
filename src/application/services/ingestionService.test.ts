@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { err, ok } from "neverthrow";
 import { IngestionService } from "./ingestionService";
 import type {
   FilingsProviderPort,
@@ -35,7 +36,7 @@ describe("IngestionService", () => {
     const newsProvider: NewsProviderPort = {
       fetchArticles: async (request) => {
         capturedNewsRequest = request;
-        return [
+        return ok([
           {
             id: "news-1",
             provider: "finnhub",
@@ -53,14 +54,14 @@ describe("IngestionService", () => {
             sourceType: "api",
             rawPayload: {},
           },
-        ];
+        ]);
       },
     };
 
     const metricsProvider: MarketMetricsProviderPort = {
       fetchMetrics: async (request) => {
         capturedMetricsRequest = request;
-        return {
+        return ok({
           metrics: [],
           diagnostics: {
             provider: "alphavantage",
@@ -68,14 +69,14 @@ describe("IngestionService", () => {
             status: "empty",
             metricCount: 0,
           },
-        };
+        });
       },
     };
 
     const filingsProvider: FilingsProviderPort = {
       fetchFilings: async (request) => {
         capturedFilingsRequest = request;
-        return [
+        return ok([
           {
             id: "filing-1",
             provider: "sec-edgar",
@@ -90,7 +91,7 @@ describe("IngestionService", () => {
             extractedFacts: [],
             rawPayload: {},
           },
-        ];
+        ]);
       },
     };
 
@@ -176,5 +177,85 @@ describe("IngestionService", () => {
       status: "empty",
       metricCount: 0,
     });
+  });
+
+  it("fails ingestion when all evidence sources fail", async () => {
+    const newsProvider: NewsProviderPort = {
+      fetchArticles: async () =>
+        err({
+          source: "news",
+          code: "provider_error",
+          provider: "finnhub",
+          message: "finnhub down",
+          retryable: true,
+        }),
+    };
+
+    const metricsProvider: MarketMetricsProviderPort = {
+      fetchMetrics: async () =>
+        err({
+          source: "metrics",
+          code: "provider_error",
+          provider: "alphavantage",
+          message: "metrics down",
+          retryable: true,
+        }),
+    };
+
+    const filingsProvider: FilingsProviderPort = {
+      fetchFilings: async () =>
+        err({
+          source: "filings",
+          code: "provider_error",
+          provider: "sec-edgar",
+          message: "filings down",
+          retryable: true,
+        }),
+    };
+
+    const documentRepo: DocumentRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+
+    const metricsRepo: MetricsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+
+    const filingsRepo: FilingsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+
+    const queue: QueuePort = {
+      enqueue: async () => {},
+    };
+
+    const clock: ClockPort = {
+      now: () => new Date("2026-02-18T12:00:00.000Z"),
+    };
+
+    const ids: IdGeneratorPort = {
+      next: () => "id-1",
+    };
+
+    const service = new IngestionService(
+      newsProvider,
+      metricsProvider,
+      filingsProvider,
+      documentRepo,
+      metricsRepo,
+      filingsRepo,
+      queue,
+      clock,
+      ids,
+      7,
+      90,
+    );
+
+    await expect(service.run(payload)).rejects.toThrow(
+      "all evidence sources returned errors",
+    );
   });
 });

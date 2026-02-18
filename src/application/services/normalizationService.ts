@@ -33,9 +33,15 @@ export class NormalizationService {
       .slice(0, 3)
       .map((doc) => `${doc.title}\n${doc.content.slice(0, 200)}`)
       .join("\n\n");
-    await this.llm.summarize(
+    const summaryResult = await this.llm.summarize(
       `Normalize and tag these items for investing context:\n${top}`,
     );
+
+    if (summaryResult.isErr()) {
+      throw new Error(
+        `Normalization failed due to LLM error: ${summaryResult.error.message}`,
+      );
+    }
 
     await this.queue.enqueue("embed", payload);
   }

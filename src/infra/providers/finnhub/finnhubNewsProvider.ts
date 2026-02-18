@@ -3,6 +3,9 @@ import type {
   NewsSearchRequest,
   NormalizedNewsItem,
 } from "../../../core/ports/inboundPorts";
+import type { AppBoundaryError } from "../../../core/entities/appError";
+import { err, ok, type Result } from "neverthrow";
+import { HttpJsonClient } from "../../http/httpJsonClient";
 
 type FinnhubNewsItem = {
   category?: string;
@@ -18,6 +21,17 @@ type FinnhubNewsItem = {
 
 const toIsoDate = (value: Date): string => value.toISOString().slice(0, 10);
 
+type FinnhubNewsError =
+  | { code: "config_invalid"; message: string }
+  | {
+      code: "http_failure";
+      message: string;
+      httpStatus?: number;
+      retryable: boolean;
+      cause?: unknown;
+    }
+  | { code: "malformed_response"; message: string; cause?: unknown };
+
 /**
  * Translates Finnhub company-news payloads into the app's normalized news contract.
  */
@@ -26,6 +40,7 @@ export class FinnhubNewsProvider implements NewsProviderPort {
     private readonly baseUrl: string,
     private readonly apiKey: string,
     private readonly timeoutMs = 10_000,
+    private readonly httpClient = new HttpJsonClient(),
   ) {
     if (!this.apiKey.trim()) {
       throw new Error(
@@ -39,42 +54,113 @@ export class FinnhubNewsProvider implements NewsProviderPort {
    */
   async fetchArticles(
     request: NewsSearchRequest,
-  ): Promise<NormalizedNewsItem[]> {
+  ): Promise<Result<NormalizedNewsItem[], AppBoundaryError>> {
     const url = new URL("/api/v1/company-news", this.baseUrl);
     url.searchParams.set("symbol", request.symbol.toUpperCase());
     url.searchParams.set("from", toIsoDate(request.from));
     url.searchParams.set("to", toIsoDate(request.to));
     url.searchParams.set("token", this.apiKey);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const payloadResult = await this.httpClient.requestJson<unknown>({
+      url: url.toString(),
+      method: "GET",
+      timeoutMs: this.timeoutMs,
+      retries: 2,
+      retryDelayMs: 250,
+    });
 
-    try {
-      const response = await fetch(url, {
-        method: "GET",
-        signal: controller.signal,
-      });
+    if (payloadResult.isErr()) {
+      return err(
+        this.mapToBoundaryError(
+          {
+            code: "http_failure",
+            message: payloadResult.error.message,
+            httpStatus: payloadResult.error.httpStatus,
+            retryable: payloadResult.error.retryable,
+            cause: payloadResult.error.cause,
+          },
+          request.symbol,
+        ),
+      );
+    }
 
-      if (!response.ok) {
-        return [];
-      }
+    const payload = payloadResult.value;
+    if (!Array.isArray(payload)) {
+      return err(
+        this.mapToBoundaryError(
+          {
+            code: "malformed_response",
+            message: "Finnhub news response was not an array.",
+          },
+          request.symbol,
+        ),
+      );
+    }
 
-      const payload = (await response.json()) as unknown;
-      if (!Array.isArray(payload)) {
-        return [];
-      }
-
-      return payload
+    return ok(
+      payload
         .slice(0, request.limit)
         .map((item, index) =>
           this.toNormalizedItem(request.symbol.toUpperCase(), item, index),
         )
-        .filter((item): item is NormalizedNewsItem => item !== null);
-    } catch {
-      return [];
-    } finally {
-      clearTimeout(timeout);
+        .filter((item): item is NormalizedNewsItem => item !== null),
+    );
+  }
+
+  private mapToBoundaryError(
+    failure: FinnhubNewsError,
+    symbol: string,
+  ): AppBoundaryError {
+    if (failure.code === "config_invalid") {
+      return {
+        source: "news",
+        code: "config_invalid",
+        provider: "finnhub",
+        message: failure.message,
+        retryable: false,
+        cause: { symbol },
+      };
     }
+
+    if (failure.code === "malformed_response") {
+      return {
+        source: "news",
+        code: "malformed_response",
+        provider: "finnhub",
+        message: failure.message,
+        retryable: false,
+        cause: failure.cause,
+      };
+    }
+
+    return {
+      source: "news",
+      code: this.mapHttpCode(failure.httpStatus, failure.message),
+      provider: "finnhub",
+      message: failure.message,
+      retryable: failure.retryable,
+      httpStatus: failure.httpStatus,
+      cause: failure.cause,
+    };
+  }
+
+  private mapHttpCode(
+    httpStatus: number | undefined,
+    message: string,
+  ): AppBoundaryError["code"] {
+    if (httpStatus === 429) {
+      return "rate_limited";
+    }
+
+    if (httpStatus === 401 || httpStatus === 403) {
+      return "auth_invalid";
+    }
+
+    if (/timed out/i.test(message)) {
+      return "timeout";
+    }
+
+    return "provider_error";
   }
 
   /**

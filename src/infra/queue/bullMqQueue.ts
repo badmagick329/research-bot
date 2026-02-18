@@ -15,8 +15,10 @@ export type QueueStageCounts = {
 
 export type QueueCountsSnapshot = Record<JobStage, QueueStageCounts>;
 
+const QUEUE_RETRIES = 2;
+
 export const defaultJobOptions = {
-  attempts: 3,
+  attempts: QUEUE_RETRIES + 1,
   removeOnComplete: 250,
   backoff: {
     type: "exponential",

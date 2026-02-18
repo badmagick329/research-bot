@@ -48,13 +48,19 @@ describe("FinnhubNewsProvider", () => {
       limit: 10,
     });
 
+    expect(items.isOk()).toBeTrue();
+    if (items.isErr()) {
+      throw new Error(items.error.message);
+    }
+    const values = items.value;
+
     expect(requestedUrl).toContain("symbol=AAPL");
     expect(requestedUrl).toContain("from=2026-01-01");
     expect(requestedUrl).toContain("to=2026-01-10");
     expect(requestedUrl).toContain("token=test-key");
 
-    expect(items).toHaveLength(1);
-    expect(items[0]).toEqual({
+    expect(values).toHaveLength(1);
+    expect(values[0]).toEqual({
       id: "finnhub-9001",
       provider: "finnhub",
       providerItemId: "9001",
@@ -109,13 +115,19 @@ describe("FinnhubNewsProvider", () => {
       limit: 5,
     });
 
-    expect(items).toHaveLength(1);
-    expect(items[0]?.providerItemId).toBe("MSFT-1705111111-0");
-    expect(items[0]?.content).toBe("MSFT update");
-    expect(items[0]?.symbols).toEqual(["MSFT"]);
-    expect(items[0]?.topics).toEqual(["market-news"]);
-    expect(items[0]?.authors).toEqual([]);
-    expect(items[0]?.url).toBe("");
+    expect(items.isOk()).toBeTrue();
+    if (items.isErr()) {
+      throw new Error(items.error.message);
+    }
+    const values = items.value;
+
+    expect(values).toHaveLength(1);
+    expect(values[0]?.providerItemId).toBe("MSFT-1705111111-0");
+    expect(values[0]?.content).toBe("MSFT update");
+    expect(values[0]?.symbols).toEqual(["MSFT"]);
+    expect(values[0]?.topics).toEqual(["market-news"]);
+    expect(values[0]?.authors).toEqual([]);
+    expect(values[0]?.url).toBe("");
   });
 
   it("enforces request limit and skips invalid rows", async () => {
@@ -144,8 +156,14 @@ describe("FinnhubNewsProvider", () => {
       limit: 2,
     });
 
-    expect(items).toHaveLength(1);
-    expect(items[0]?.title).toBe("Valid 1");
+    expect(items.isOk()).toBeTrue();
+    if (items.isErr()) {
+      throw new Error(items.error.message);
+    }
+    const values = items.value;
+
+    expect(values).toHaveLength(1);
+    expect(values[0]?.title).toBe("Valid 1");
   });
 
   it("returns empty list when provider responds with non-200", async () => {
@@ -164,7 +182,10 @@ describe("FinnhubNewsProvider", () => {
       limit: 5,
     });
 
-    expect(items).toEqual([]);
+    expect(items.isErr()).toBeTrue();
+    if (items.isErr()) {
+      expect(items.error.code).toBe("rate_limited");
+    }
   });
 
   it("throws when api key is missing", () => {

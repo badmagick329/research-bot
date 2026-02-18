@@ -19,6 +19,7 @@
     "dotenv": "^17.3.1",
     "drizzle-orm": "^0.44.7",
     "ioredis": "^5.9.3",
+    "neverthrow": "8.2.0",
     "pino": "^10.3.1",
     "postgres": "^3.4.8",
     "zod": "^4.3.6"

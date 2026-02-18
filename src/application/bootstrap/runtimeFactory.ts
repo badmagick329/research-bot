@@ -28,6 +28,7 @@ import { MockNewsProvider } from "../../infra/providers/mocks/mockNewsProvider";
 import { MultiNewsProvider } from "../../infra/providers/multiNewsProvider";
 import { SecEdgarFilingsProvider } from "../../infra/providers/sec/secEdgarFilingsProvider";
 import { BullMqQueue } from "../../infra/queue/bullMqQueue";
+import { HttpJsonClient } from "../../infra/http/httpJsonClient";
 import {
   SystemClock,
   TaskFactory,
@@ -51,13 +52,14 @@ const redisConfigFromUrl = (url: string) => {
 
 export const VECTOR_DIMENSION = 1024;
 
-const createNewsProvider = (): NewsProviderPort => {
+const createNewsProvider = (httpClient: HttpJsonClient): NewsProviderPort => {
   const providers = newsProviders().map((providerName) => {
     if (providerName === "finnhub") {
       return new FinnhubNewsProvider(
         env.FINNHUB_BASE_URL,
         env.FINNHUB_API_KEY,
         env.FINNHUB_TIMEOUT_MS,
+        httpClient,
       );
     }
 
@@ -66,6 +68,7 @@ const createNewsProvider = (): NewsProviderPort => {
         env.ALPHA_VANTAGE_BASE_URL,
         env.ALPHA_VANTAGE_API_KEY,
         env.ALPHA_VANTAGE_TIMEOUT_MS,
+        httpClient,
       );
     }
 
@@ -86,12 +89,15 @@ const createNewsProvider = (): NewsProviderPort => {
 /**
  * Resolves the configured metrics adapter while preserving a mock fallback for local development.
  */
-const createMetricsProvider = (): MarketMetricsProviderPort => {
+const createMetricsProvider = (
+  httpClient: HttpJsonClient,
+): MarketMetricsProviderPort => {
   if (metricsProvider() === "alphavantage") {
     return new AlphaVantageMetricsProvider(
       env.ALPHA_VANTAGE_BASE_URL,
       env.ALPHA_VANTAGE_API_KEY,
       env.ALPHA_VANTAGE_TIMEOUT_MS,
+      httpClient,
     );
   }
 
@@ -101,7 +107,9 @@ const createMetricsProvider = (): MarketMetricsProviderPort => {
 /**
  * Resolves the configured filings adapter while preserving a mock fallback for local development.
  */
-const createFilingsProvider = (): FilingsProviderPort => {
+const createFilingsProvider = (
+  httpClient: HttpJsonClient,
+): FilingsProviderPort => {
   if (filingsProvider() === "sec-edgar") {
     return new SecEdgarFilingsProvider(
       env.SEC_EDGAR_BASE_URL,
@@ -109,6 +117,7 @@ const createFilingsProvider = (): FilingsProviderPort => {
       env.SEC_EDGAR_TICKERS_URL,
       env.SEC_EDGAR_USER_AGENT,
       env.SEC_EDGAR_TIMEOUT_MS,
+      httpClient,
     );
   }
 
@@ -126,6 +135,7 @@ export const createRuntime = async () => {
   const taskFactory = new TaskFactory(clock, ids);
 
   const queue = new BullMqQueue(redisConfigFromUrl(env.REDIS_URL));
+  const httpClient = new HttpJsonClient();
 
   const documentRepo = new PostgresDocumentRepositoryService(db);
   const metricsRepo = new PostgresMetricsRepositoryService(db);
@@ -137,17 +147,19 @@ export const createRuntime = async () => {
     env.OLLAMA_BASE_URL,
     env.OLLAMA_CHAT_MODEL,
     env.OLLAMA_CHAT_TIMEOUT_MS,
+    httpClient,
   );
   const embedder = new OllamaEmbedding(
     env.OLLAMA_BASE_URL,
     env.OLLAMA_EMBED_MODEL,
     VECTOR_DIMENSION,
     env.OLLAMA_EMBED_TIMEOUT_MS,
+    httpClient,
   );
 
-  const newsProvider = createNewsProvider();
-  const metricsProviderAdapter = createMetricsProvider();
-  const filingsProviderAdapter = createFilingsProvider();
+  const newsProvider = createNewsProvider(httpClient);
+  const metricsProviderAdapter = createMetricsProvider(httpClient);
+  const filingsProviderAdapter = createFilingsProvider(httpClient);
 
   const orchestratorService = new ResearchOrchestratorService(
     queue,

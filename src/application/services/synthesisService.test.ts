@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { ok } from "neverthrow";
 import { SynthesisService } from "./synthesisService";
 import type { DocumentEntity } from "../../core/entities/document";
 import type { FilingEntity } from "../../core/entities/filing";
@@ -145,10 +146,10 @@ describe("SynthesisService", () => {
 
     let capturedPrompt = "";
     const llm: LlmPort = {
-      summarize: async () => "",
+      summarize: async () => ok(""),
       synthesize: async (prompt) => {
         capturedPrompt = prompt;
-        return "generated thesis";
+        return ok("generated thesis");
       },
     };
 
@@ -239,10 +240,10 @@ describe("SynthesisService", () => {
 
     let capturedPrompt = "";
     const llm: LlmPort = {
-      summarize: async () => "",
+      summarize: async () => ok(""),
       synthesize: async (prompt) => {
         capturedPrompt = prompt;
-        return "fallback thesis";
+        return ok("fallback thesis");
       },
     };
 
@@ -409,10 +410,10 @@ describe("SynthesisService", () => {
 
     let capturedPrompt = "";
     const llm: LlmPort = {
-      summarize: async () => "",
+      summarize: async () => ok(""),
       synthesize: async (prompt) => {
         capturedPrompt = prompt;
-        return "filtered thesis";
+        return ok("filtered thesis");
       },
     };
 

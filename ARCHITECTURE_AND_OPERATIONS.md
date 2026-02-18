@@ -102,6 +102,20 @@
   - Alpha Vantage metrics adapter fails fast on auth/config-invalid signals so retries surface real misconfiguration.
   - This prevents silent missing-metrics ambiguity while keeping most runs resilient.
 
+- Provider/LLM/embedding failures are now explicit at port boundaries.
+  - inbound providers and outbound model adapters return typed `Result` values (neverthrow) instead of masking transport failures as empty datasets or fallback prose.
+  - adapters keep provider-specific internal errors and map them to one app-level boundary union.
+  - ingestion applies best-effort policy across sources and degrades on partial failures.
+
+- Ingestion now requires at least one successful source call.
+  - source call success is call-level (`Result.ok`) and may still contain zero evidence rows.
+  - if all three sources fail (`news + metrics + filings`), ingest stage fails and worker retry policy applies.
+
+- Retry policy is bounded at both layers.
+  - HTTP adapter retries: `2` (total attempts `3`) for providers and Ollama adapters.
+  - BullMQ stage retries: `2` (total attempts `3`) with exponential backoff.
+  - this intentionally allows multiplicative retries while keeping both limits small and fixed.
+
 - Missing metrics are now explicit in snapshot diagnostics.
   - `snapshots.diagnostics.metrics` stores provider status, metric count, optional reason, and optional http status.
   - synthesis prompt includes metrics diagnostics and should explicitly call out this gap in “Missing Evidence”.

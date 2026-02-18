@@ -416,7 +416,7 @@ export class SynthesisService {
       ? `- provider=${payload.metricsDiagnostics.provider}, status=${payload.metricsDiagnostics.status}, metricCount=${payload.metricsDiagnostics.metricCount}${payload.metricsDiagnostics.reason ? `, reason=${payload.metricsDiagnostics.reason}` : ""}${typeof payload.metricsDiagnostics.httpStatus === "number" ? `, httpStatus=${payload.metricsDiagnostics.httpStatus}` : ""}`
       : "- unavailable";
 
-    const thesis = await this.llm.synthesize(
+    const thesisResult = await this.llm.synthesize(
       [
         `Create an investing thesis for ${payload.symbol}.`,
         "Use only the evidence below.",
@@ -445,6 +445,14 @@ export class SynthesisService {
         "- If metrics diagnostics indicate missing or degraded metrics, mention that limitation in Missing Evidence.",
       ].join("\n"),
     );
+
+    if (thesisResult.isErr()) {
+      throw new Error(
+        `Synthesis failed due to LLM error: ${thesisResult.error.message}`,
+      );
+    }
+
+    const thesis = thesisResult.value;
 
     const now = this.clock.now();
     const score = this.computeScore(

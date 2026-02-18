@@ -31,9 +31,17 @@ export class EmbeddingService {
       return;
     }
 
-    const vectors = await this.embeddingPort.embedTexts(
+    const vectorsResult = await this.embeddingPort.embedTexts(
       docs.map((doc) => `${doc.title}\n${doc.content.slice(0, 1_000)}`),
     );
+
+    if (vectorsResult.isErr()) {
+      throw new Error(
+        `Embedding failed due to adapter error: ${vectorsResult.error.message}`,
+      );
+    }
+
+    const vectors = vectorsResult.value;
 
     if (vectors.length !== docs.length) {
       throw new Error(

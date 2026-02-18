@@ -3,6 +3,8 @@ import type {
   NewsSearchRequest,
   NormalizedNewsItem,
 } from "../../core/ports/inboundPorts";
+import type { AppBoundaryError } from "../../core/entities/appError";
+import { err, ok, type Result } from "neverthrow";
 import { logger } from "../../shared/logger/logger";
 
 const normalizeUrl = (value: string): string => value.trim().toLowerCase();
@@ -22,30 +24,43 @@ export class MultiNewsProvider implements NewsProviderPort {
    */
   async fetchArticles(
     request: NewsSearchRequest,
-  ): Promise<NormalizedNewsItem[]> {
+  ): Promise<Result<NormalizedNewsItem[], AppBoundaryError>> {
     const results = await Promise.allSettled(
       this.providers.map((provider) => provider.fetchArticles(request)),
     );
 
     const merged: NormalizedNewsItem[] = [];
+    const failures: AppBoundaryError[] = [];
 
     results.forEach((result, index) => {
-      if (result.status === "fulfilled") {
-        merged.push(...result.value);
+      if (result.status === "fulfilled" && result.value.isOk()) {
+        merged.push(...result.value.value);
         return;
+      }
+
+      if (result.status === "fulfilled" && result.value.isErr()) {
+        failures.push(result.value.error);
       }
 
       logger.warn(
         {
           providerIndex: index,
           reason:
-            result.reason instanceof Error
-              ? result.reason.message
-              : String(result.reason),
+            result.status === "fulfilled"
+              ? result.value.isErr()
+                ? result.value.error.message
+                : "unknown provider error"
+              : result.reason instanceof Error
+                ? result.reason.message
+                : String(result.reason),
         },
         "News provider failed; continuing with available sources",
       );
     });
+
+    if (merged.length === 0 && failures.length > 0) {
+      return err(failures[0] as AppBoundaryError);
+    }
 
     const dedupedByUrl = new Map<string, NormalizedNewsItem>();
     const withoutUrl: NormalizedNewsItem[] = [];
@@ -66,11 +81,13 @@ export class MultiNewsProvider implements NewsProviderPort {
       }
     });
 
-    return [...dedupedByUrl.values(), ...withoutUrl]
-      .sort(
-        (left, right) =>
-          right.publishedAt.getTime() - left.publishedAt.getTime(),
-      )
-      .slice(0, request.limit);
+    return ok(
+      [...dedupedByUrl.values(), ...withoutUrl]
+        .sort(
+          (left, right) =>
+            right.publishedAt.getTime() - left.publishedAt.getTime(),
+        )
+        .slice(0, request.limit),
+    );
   }
 }

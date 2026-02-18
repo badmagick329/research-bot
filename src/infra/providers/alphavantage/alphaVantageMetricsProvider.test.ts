@@ -39,11 +39,17 @@ describe("AlphaVantageMetricsProvider", () => {
 
     const result = await provider.fetchMetrics({ symbol: "aapl", asOf });
 
+    expect(result.isOk()).toBeTrue();
+    if (result.isErr()) {
+      throw new Error(result.error.message);
+    }
+    const value = result.value;
+
     expect(requestedUrl).toContain("function=OVERVIEW");
     expect(requestedUrl).toContain("symbol=AAPL");
     expect(requestedUrl).toContain("apikey=test-key");
 
-    expect(result.metrics).toEqual([
+    expect(value.metrics).toEqual([
       {
         id: "alphavantage-AAPL-market_cap-2026-01-10T00:00:00.000Z",
         provider: "alphavantage",
@@ -103,7 +109,7 @@ describe("AlphaVantageMetricsProvider", () => {
       },
     ]);
 
-    expect(result.diagnostics).toEqual({
+    expect(value.diagnostics).toEqual({
       provider: "alphavantage",
       symbol: "AAPL",
       status: "ok",
@@ -122,12 +128,17 @@ describe("AlphaVantageMetricsProvider", () => {
 
     const result = await provider.fetchMetrics({ symbol: "AAPL" });
 
-    expect(result.metrics).toEqual([]);
-    expect(result.diagnostics.status).toBe("rate_limited");
-    expect(result.diagnostics.httpStatus).toBe(429);
+    expect(result.isOk()).toBeTrue();
+    if (result.isErr()) {
+      throw new Error(result.error.message);
+    }
+
+    expect(result.value.metrics).toEqual([]);
+    expect(result.value.diagnostics.status).toBe("rate_limited");
+    expect(result.value.diagnostics.httpStatus).toBe(429);
   });
 
-  it("throws on auth failures", async () => {
+  it("returns auth-invalid boundary error on auth failures", async () => {
     setFetch(async () => new Response("forbidden", { status: 403 }));
 
     const provider = new AlphaVantageMetricsProvider(
@@ -136,9 +147,12 @@ describe("AlphaVantageMetricsProvider", () => {
       5_000,
     );
 
-    await expect(provider.fetchMetrics({ symbol: "AAPL" })).rejects.toThrow(
-      "ALPHAVANTAGE_METRICS_FATAL_AUTH",
-    );
+    const result = await provider.fetchMetrics({ symbol: "AAPL" });
+    expect(result.isErr()).toBeTrue();
+    if (result.isErr()) {
+      expect(result.error.code).toBe("auth_invalid");
+      expect(result.error.provider).toBe("alphavantage");
+    }
   });
 
   it("throws when api key is missing", () => {

@@ -69,10 +69,16 @@ describe("SecEdgarFilingsProvider", () => {
       limit: 5,
     });
 
+    expect(filings.isOk()).toBeTrue();
+    if (filings.isErr()) {
+      throw new Error(filings.error.message);
+    }
+    const values = filings.value;
+
     expect(calls[0]).toContain("company_tickers.json");
     expect(calls[1]).toContain("CIK0000320193.json");
 
-    expect(filings).toEqual([
+    expect(values).toEqual([
       {
         id: "sec-edgar-AAPL-0000320193-26-000010",
         provider: "sec-edgar",
@@ -188,7 +194,11 @@ describe("SecEdgarFilingsProvider", () => {
       limit: 5,
     });
 
-    expect(filings).toEqual([]);
+    expect(filings.isOk()).toBeTrue();
+    if (filings.isErr()) {
+      throw new Error(filings.error.message);
+    }
+    expect(filings.value).toEqual([]);
   });
 
   it("throws when user-agent is missing", () => {

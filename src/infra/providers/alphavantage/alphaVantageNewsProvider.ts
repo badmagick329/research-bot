@@ -3,6 +3,9 @@ import type {
   NewsSearchRequest,
   NormalizedNewsItem,
 } from "../../../core/ports/inboundPorts";
+import type { AppBoundaryError } from "../../../core/entities/appError";
+import { err, ok, type Result } from "neverthrow";
+import { HttpJsonClient } from "../../http/httpJsonClient";
 
 type AlphaVantageTopic = {
   topic?: string;
@@ -28,6 +31,16 @@ type AlphaVantageFeedItem = {
 type AlphaVantageNewsResponse = {
   feed?: AlphaVantageFeedItem[];
 };
+
+type AlphaVantageNewsError =
+  | {
+      code: "http_failure";
+      message: string;
+      httpStatus?: number;
+      retryable: boolean;
+      cause?: unknown;
+    }
+  | { code: "malformed_response"; message: string };
 
 const parseAlphaVantageTimestamp = (value: string | undefined): Date | null => {
   if (!value) {
@@ -64,6 +77,7 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
     private readonly baseUrl: string,
     private readonly apiKey: string,
     private readonly timeoutMs = 10_000,
+    private readonly httpClient = new HttpJsonClient(),
   ) {
     if (!this.apiKey.trim()) {
       throw new Error(
@@ -77,7 +91,7 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
    */
   async fetchArticles(
     request: NewsSearchRequest,
-  ): Promise<NormalizedNewsItem[]> {
+  ): Promise<Result<NormalizedNewsItem[], AppBoundaryError>> {
     const url = new URL("/query", this.baseUrl);
     url.searchParams.set("function", "NEWS_SENTIMENT");
     url.searchParams.set("tickers", request.symbol.toUpperCase());
@@ -85,35 +99,96 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
     url.searchParams.set("sort", "LATEST");
     url.searchParams.set("apikey", this.apiKey);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
-    try {
-      const response = await fetch(url, {
+    const payloadResult =
+      await this.httpClient.requestJson<AlphaVantageNewsResponse>({
+        url: url.toString(),
         method: "GET",
-        signal: controller.signal,
+        timeoutMs: this.timeoutMs,
+        retries: 2,
+        retryDelayMs: 250,
       });
 
-      if (!response.ok) {
-        return [];
-      }
+    if (payloadResult.isErr()) {
+      return err(
+        this.mapToBoundaryError(
+          {
+            code: "http_failure",
+            message: payloadResult.error.message,
+            httpStatus: payloadResult.error.httpStatus,
+            retryable: payloadResult.error.retryable,
+            cause: payloadResult.error.cause,
+          },
+          request.symbol,
+        ),
+      );
+    }
 
-      const payload = (await response.json()) as AlphaVantageNewsResponse;
-      if (!payload || !Array.isArray(payload.feed)) {
-        return [];
-      }
+    const payload = payloadResult.value;
+    if (!payload || !Array.isArray(payload.feed)) {
+      return err(
+        this.mapToBoundaryError(
+          {
+            code: "malformed_response",
+            message: "Alpha Vantage NEWS_SENTIMENT payload was malformed.",
+          },
+          request.symbol,
+        ),
+      );
+    }
 
-      return payload.feed
+    return ok(
+      payload.feed
         .slice(0, request.limit)
         .map((item, index) =>
           this.toNormalizedItem(request.symbol.toUpperCase(), item, index),
         )
-        .filter((item): item is NormalizedNewsItem => item !== null);
-    } catch {
-      return [];
-    } finally {
-      clearTimeout(timeout);
+        .filter((item): item is NormalizedNewsItem => item !== null),
+    );
+  }
+
+  private mapToBoundaryError(
+    failure: AlphaVantageNewsError,
+    symbol: string,
+  ): AppBoundaryError {
+    if (failure.code === "malformed_response") {
+      return {
+        source: "news",
+        code: "malformed_response",
+        provider: "alphavantage",
+        message: failure.message,
+        retryable: false,
+        cause: { symbol },
+      };
     }
+
+    return {
+      source: "news",
+      code: this.mapHttpCode(failure.httpStatus, failure.message),
+      provider: "alphavantage",
+      message: failure.message,
+      retryable: failure.retryable,
+      httpStatus: failure.httpStatus,
+      cause: failure.cause,
+    };
+  }
+
+  private mapHttpCode(
+    httpStatus: number | undefined,
+    message: string,
+  ): AppBoundaryError["code"] {
+    if (httpStatus === 429) {
+      return "rate_limited";
+    }
+
+    if (httpStatus === 401 || httpStatus === 403) {
+      return "auth_invalid";
+    }
+
+    if (/timed out/i.test(message)) {
+      return "timeout";
+    }
+
+    return "provider_error";
   }
 
   /**

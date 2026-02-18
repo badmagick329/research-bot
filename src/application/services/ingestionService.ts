@@ -11,10 +11,13 @@ import type {
   ClockPort,
 } from "../../core/ports/outboundPorts";
 import type {
+  MetricsFetchResult,
   NewsProviderPort,
   MarketMetricsProviderPort,
   FilingsProviderPort,
 } from "../../core/ports/inboundPorts";
+import type { Result } from "neverthrow";
+import type { AppBoundaryError } from "../../core/entities/appError";
 
 /**
  * Keeps provider IO at the pipeline edge so downstream stages always consume normalized persisted records.
@@ -62,7 +65,7 @@ export class IngestionService {
       now.getTime() - this.filingsLookbackDays * 24 * 60 * 60 * 1000,
     );
 
-    const [news, metricsResult, filings] = await Promise.all([
+    const [newsResult, metricsResult, filingsResult] = await Promise.all([
       this.newsProvider.fetchArticles({
         symbol: payload.symbol,
         from: newsFrom,
@@ -78,7 +81,40 @@ export class IngestionService {
       }),
     ]);
 
-    const metrics = metricsResult.metrics;
+    const sourceResults: Array<Result<unknown, AppBoundaryError>> = [
+      newsResult,
+      metricsResult,
+      filingsResult,
+    ];
+
+    const successfulSources = sourceResults.filter((result) => result.isOk());
+    if (successfulSources.length === 0) {
+      throw new Error(
+        `Ingestion failed for ${payload.symbol}: all evidence sources returned errors.`,
+      );
+    }
+
+    const news = newsResult.isOk() ? newsResult.value : [];
+
+    const fallbackMetrics: MetricsFetchResult = {
+      metrics: [],
+      diagnostics: {
+        provider: "metrics-boundary",
+        symbol: payload.symbol,
+        status: "provider_error",
+        metricCount: 0,
+        reason: metricsResult.isErr()
+          ? metricsResult.error.message
+          : "Metrics provider returned no diagnostics.",
+      },
+    };
+
+    const metricsPayload = metricsResult.isOk()
+      ? metricsResult.value
+      : fallbackMetrics;
+    const metrics = metricsPayload.metrics;
+
+    const filings = filingsResult.isOk() ? filingsResult.value : [];
 
     const documents: DocumentEntity[] = news.map((item) => ({
       id: this.ids.next(),
@@ -151,11 +187,11 @@ export class IngestionService {
     await this.queue.enqueue("normalize", {
       ...payload,
       metricsDiagnostics: {
-        provider: metricsResult.diagnostics.provider,
-        status: metricsResult.diagnostics.status,
-        metricCount: metricsResult.diagnostics.metricCount,
-        reason: metricsResult.diagnostics.reason,
-        httpStatus: metricsResult.diagnostics.httpStatus,
+        provider: metricsPayload.diagnostics.provider,
+        status: metricsPayload.diagnostics.status,
+        metricCount: metricsPayload.diagnostics.metricCount,
+        reason: metricsPayload.diagnostics.reason,
+        httpStatus: metricsPayload.diagnostics.httpStatus,
       },
     });
   }

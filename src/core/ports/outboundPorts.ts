@@ -1,6 +1,8 @@
 import type { DocumentEntity } from "../entities/document";
 import type { MetricPointEntity } from "../entities/metric";
 import type { FilingEntity } from "../entities/filing";
+import type { Result } from "neverthrow";
+import type { AppBoundaryError } from "../entities/appError";
 import type {
   JobStage,
   ResearchSnapshotEntity,
@@ -68,12 +70,12 @@ export interface SnapshotRepositoryPort {
 }
 
 export interface LlmPort {
-  summarize(prompt: string): Promise<string>;
-  synthesize(prompt: string): Promise<string>;
+  summarize(prompt: string): Promise<Result<string, AppBoundaryError>>;
+  synthesize(prompt: string): Promise<Result<string, AppBoundaryError>>;
 }
 
 export interface EmbeddingPort {
-  embedTexts(texts: string[]): Promise<number[][]>;
+  embedTexts(texts: string[]): Promise<Result<number[][], AppBoundaryError>>;
 }
 
 export interface ClockPort {

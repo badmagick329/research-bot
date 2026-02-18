@@ -4,6 +4,9 @@ import type {
   MetricsRequest,
   NormalizedMarketMetricPoint,
 } from "../../../core/ports/inboundPorts";
+import type { AppBoundaryError } from "../../../core/entities/appError";
+import { err, ok, type Result } from "neverthrow";
+import { HttpJsonClient } from "../../http/httpJsonClient";
 
 type AlphaVantageOverviewResponse = {
   Symbol?: string;
@@ -104,8 +107,6 @@ const parseNumericValue = (raw: string | undefined): number | null => {
   return parsed;
 };
 
-const fatalAuthErrorPrefix = "ALPHAVANTAGE_METRICS_FATAL_AUTH:";
-
 /**
  * Adapts Alpha Vantage fundamentals payloads into normalized metric points for ingestion.
  */
@@ -114,6 +115,7 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
     private readonly baseUrl: string,
     private readonly apiKey: string,
     private readonly timeoutMs = 10_000,
+    private readonly httpClient = new HttpJsonClient(),
   ) {
     if (!this.apiKey.trim()) {
       throw new Error(
@@ -125,7 +127,9 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
   /**
    * Returns normalized metrics and yields an empty set on upstream faults so ingestion can continue.
    */
-  async fetchMetrics(request: MetricsRequest): Promise<MetricsFetchResult> {
+  async fetchMetrics(
+    request: MetricsRequest,
+  ): Promise<Result<MetricsFetchResult, AppBoundaryError>> {
     const symbol = request.symbol.toUpperCase();
     const asOf = request.asOf ?? new Date();
 
@@ -134,162 +138,164 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
     url.searchParams.set("symbol", symbol);
     url.searchParams.set("apikey", this.apiKey);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
     const diagnosticsBase = {
       provider: "alphavantage",
       symbol,
     } as const;
 
-    try {
-      const response = await fetch(url, {
+    const response =
+      await this.httpClient.requestJson<AlphaVantageOverviewResponse>({
+        url: url.toString(),
         method: "GET",
-        signal: controller.signal,
+        timeoutMs: this.timeoutMs,
+        retries: 2,
+        retryDelayMs: 250,
       });
 
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          throw new Error(`${fatalAuthErrorPrefix} status ${response.status}`);
-        }
+    if (response.isErr()) {
+      const status = response.error.httpStatus;
 
-        if (response.status === 429) {
-          return {
-            metrics: [],
-            diagnostics: {
-              ...diagnosticsBase,
-              status: "rate_limited",
-              metricCount: 0,
-              httpStatus: response.status,
-              reason: "Alpha Vantage rate limit reached",
-            },
-          };
-        }
-
-        return {
-          metrics: [],
-          diagnostics: {
-            ...diagnosticsBase,
-            status: "provider_error",
-            metricCount: 0,
-            httpStatus: response.status,
-            reason: "Alpha Vantage returned non-success status",
-          },
-        };
-      }
-
-      const payload = (await response.json()) as AlphaVantageOverviewResponse;
-      if (!payload || typeof payload !== "object") {
-        return {
-          metrics: [],
-          diagnostics: {
-            ...diagnosticsBase,
-            status: "malformed_response",
-            metricCount: 0,
-            reason: "Overview payload was not an object",
-          },
-        };
-      }
-
-      const note = payload.Note?.trim() || payload.Information?.trim();
-      if (note) {
-        const isRateLimit = /rate|frequency|limit|calls per minute/i.test(note);
-
-        return {
-          metrics: [],
-          diagnostics: {
-            ...diagnosticsBase,
-            status: isRateLimit ? "rate_limited" : "provider_error",
-            metricCount: 0,
-            reason: note,
-          },
-        };
-      }
-
-      const errorMessage = payload["Error Message"]?.trim();
-      if (errorMessage) {
-        const isAuthError =
-          /api key|invalid api call|unauthorized|authentication/i.test(
-            errorMessage,
-          );
-
-        if (isAuthError) {
-          throw new Error(`${fatalAuthErrorPrefix} ${errorMessage}`);
-        }
-
-        return {
-          metrics: [],
-          diagnostics: {
-            ...diagnosticsBase,
-            status: "provider_error",
-            metricCount: 0,
-            reason: errorMessage,
-          },
-        };
-      }
-
-      const currency = payload.Currency?.trim() || "USD";
-
-      const metrics: NormalizedMarketMetricPoint[] = [];
-
-      for (const mapping of metricMappings) {
-        const metricValue = parseNumericValue(payload[mapping.field]);
-        if (metricValue === null) {
-          continue;
-        }
-
-        metrics.push({
-          id: `alphavantage-${symbol}-${mapping.metricName}-${asOf.toISOString()}`,
+      if (status === 401 || status === 403) {
+        return err({
+          source: "metrics",
+          code: "auth_invalid",
           provider: "alphavantage",
-          symbol,
-          metricName: mapping.metricName,
-          metricValue,
-          metricUnit: mapping.metricUnit,
-          currency,
-          asOf,
-          periodType: mapping.periodType,
-          confidence: 0.85,
-          rawPayload: payload,
+          message: `Alpha Vantage auth failed with status ${status}.`,
+          retryable: false,
+          httpStatus: status,
+          cause: response.error.cause,
         });
       }
 
-      return {
-        metrics,
-        diagnostics: {
-          ...diagnosticsBase,
-          status: metrics.length > 0 ? "ok" : "empty",
-          metricCount: metrics.length,
-          reason:
-            metrics.length > 0
-              ? undefined
-              : "No numeric overview fundamentals were available for this symbol",
-        },
-      };
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.startsWith(fatalAuthErrorPrefix)
-      ) {
-        throw error;
+      if (status === 429) {
+        return ok({
+          metrics: [],
+          diagnostics: {
+            ...diagnosticsBase,
+            status: "rate_limited",
+            metricCount: 0,
+            httpStatus: status,
+            reason: "Alpha Vantage rate limit reached",
+          },
+        });
       }
 
-      const isTimeoutError =
-        error instanceof DOMException && error.name === "AbortError";
+      if (response.error.code === "timeout") {
+        return ok({
+          metrics: [],
+          diagnostics: {
+            ...diagnosticsBase,
+            status: "timeout",
+            metricCount: 0,
+            reason: response.error.message,
+          },
+        });
+      }
 
-      return {
+      return ok({
         metrics: [],
         diagnostics: {
           ...diagnosticsBase,
-          status: isTimeoutError ? "timeout" : "provider_error",
+          status: "provider_error",
           metricCount: 0,
-          reason:
-            error instanceof Error
-              ? error.message
-              : "Alpha Vantage metrics request failed",
+          httpStatus: status,
+          reason: response.error.message,
         },
-      };
-    } finally {
-      clearTimeout(timeout);
+      });
     }
+
+    const payload = response.value;
+    if (!payload || typeof payload !== "object") {
+      return ok({
+        metrics: [],
+        diagnostics: {
+          ...diagnosticsBase,
+          status: "malformed_response",
+          metricCount: 0,
+          reason: "Overview payload was not an object",
+        },
+      });
+    }
+
+    const note = payload.Note?.trim() || payload.Information?.trim();
+    if (note) {
+      const isRateLimit = /rate|frequency|limit|calls per minute/i.test(note);
+
+      return ok({
+        metrics: [],
+        diagnostics: {
+          ...diagnosticsBase,
+          status: isRateLimit ? "rate_limited" : "provider_error",
+          metricCount: 0,
+          reason: note,
+        },
+      });
+    }
+
+    const errorMessage = payload["Error Message"]?.trim();
+    if (errorMessage) {
+      const isAuthError =
+        /api key|invalid api call|unauthorized|authentication/i.test(
+          errorMessage,
+        );
+
+      if (isAuthError) {
+        return err({
+          source: "metrics",
+          code: "auth_invalid",
+          provider: "alphavantage",
+          message: errorMessage,
+          retryable: false,
+        });
+      }
+
+      return ok({
+        metrics: [],
+        diagnostics: {
+          ...diagnosticsBase,
+          status: "provider_error",
+          metricCount: 0,
+          reason: errorMessage,
+        },
+      });
+    }
+
+    const currency = payload.Currency?.trim() || "USD";
+
+    const metrics: NormalizedMarketMetricPoint[] = [];
+
+    for (const mapping of metricMappings) {
+      const metricValue = parseNumericValue(payload[mapping.field]);
+      if (metricValue === null) {
+        continue;
+      }
+
+      metrics.push({
+        id: `alphavantage-${symbol}-${mapping.metricName}-${asOf.toISOString()}`,
+        provider: "alphavantage",
+        symbol,
+        metricName: mapping.metricName,
+        metricValue,
+        metricUnit: mapping.metricUnit,
+        currency,
+        asOf,
+        periodType: mapping.periodType,
+        confidence: 0.85,
+        rawPayload: payload,
+      });
+    }
+
+    return ok({
+      metrics,
+      diagnostics: {
+        ...diagnosticsBase,
+        status: metrics.length > 0 ? "ok" : "empty",
+        metricCount: metrics.length,
+        reason:
+          metrics.length > 0
+            ? undefined
+            : "No numeric overview fundamentals were available for this symbol",
+      },
+    });
   }
 }

@@ -4,6 +4,8 @@ import type {
   MetricsRequest,
   NormalizedMarketMetricPoint,
 } from "../../../core/ports/inboundPorts";
+import type { AppBoundaryError } from "../../../core/entities/appError";
+import { ok, type Result } from "neverthrow";
 
 /**
  * Provides predictable numeric signals so synthesis behavior can be validated before real provider onboarding.
@@ -12,7 +14,9 @@ export class MockMarketMetricsProvider implements MarketMetricsProviderPort {
   /**
    * Emits representative metric points to exercise repository upsert and scoring pathways.
    */
-  async fetchMetrics(request: MetricsRequest): Promise<MetricsFetchResult> {
+  async fetchMetrics(
+    request: MetricsRequest,
+  ): Promise<Result<MetricsFetchResult, AppBoundaryError>> {
     const asOf = request.asOf ?? new Date();
     const symbol = request.symbol.toUpperCase();
 
@@ -58,7 +62,7 @@ export class MockMarketMetricsProvider implements MarketMetricsProviderPort {
       },
     ];
 
-    return {
+    return ok({
       metrics,
       diagnostics: {
         provider: "mock-fundamentals",
@@ -66,6 +70,6 @@ export class MockMarketMetricsProvider implements MarketMetricsProviderPort {
         status: "ok",
         metricCount: metrics.length,
       },
-    };
+    });
   }
 }

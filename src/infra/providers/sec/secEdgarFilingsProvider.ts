@@ -3,6 +3,9 @@ import type {
   FilingsRequest,
   NormalizedFiling,
 } from "../../../core/ports/inboundPorts";
+import type { AppBoundaryError } from "../../../core/entities/appError";
+import { err, ok, type Result } from "neverthrow";
+import { HttpJsonClient } from "../../http/httpJsonClient";
 
 type EdgarTickerRecord = {
   ticker?: string;
@@ -52,6 +55,17 @@ const asDate = (value: string | undefined): Date | null => {
 const asAccessionPathPart = (accessionNo: string): string =>
   accessionNo.replaceAll("-", "");
 
+type SecEdgarFilingsError =
+  | { code: "config_invalid"; message: string }
+  | {
+      code: "http_failure";
+      message: string;
+      httpStatus?: number;
+      retryable: boolean;
+      cause?: unknown;
+    }
+  | { code: "malformed_response"; message: string; cause?: unknown };
+
 /**
  * Adapts SEC EDGAR submissions into normalized filings while preserving provider traceability fields.
  */
@@ -64,6 +78,7 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
     private readonly tickersUrl: string,
     private readonly userAgent: string,
     private readonly timeoutMs = 15_000,
+    private readonly httpClient = new HttpJsonClient(),
   ) {
     if (!this.userAgent.trim()) {
       throw new Error(
@@ -75,39 +90,63 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
   /**
    * Returns normalized filings for the requested window and shields ingestion from transient SEC transport errors.
    */
-  async fetchFilings(request: FilingsRequest): Promise<NormalizedFiling[]> {
-    try {
-      const symbol = request.symbol.toUpperCase();
-      const cik = await this.resolveCik(symbol);
-      if (!cik) {
-        return [];
-      }
-
-      const submission = await this.fetchSubmission(cik);
-      if (!submission) {
-        return [];
-      }
-
-      return this.toNormalizedFilings(symbol, request, cik, submission);
-    } catch {
-      return [];
+  async fetchFilings(
+    request: FilingsRequest,
+  ): Promise<Result<NormalizedFiling[], AppBoundaryError>> {
+    const symbol = request.symbol.toUpperCase();
+    const cikResult = await this.resolveCik(symbol);
+    if (cikResult.isErr()) {
+      return err(this.mapToBoundaryError(cikResult.error, symbol));
     }
+
+    if (!cikResult.value) {
+      return ok([]);
+    }
+
+    const submissionResult = await this.fetchSubmission(cikResult.value);
+    if (submissionResult.isErr()) {
+      return err(this.mapToBoundaryError(submissionResult.error, symbol));
+    }
+
+    if (!submissionResult.value) {
+      return ok([]);
+    }
+
+    return ok(
+      this.toNormalizedFilings(
+        symbol,
+        request,
+        cikResult.value,
+        submissionResult.value,
+      ),
+    );
   }
 
   /**
    * Caches ticker-to-CIK lookups to reduce repeated SEC metadata calls during worker runs.
    */
-  private async resolveCik(symbol: string): Promise<string | null> {
+  private async resolveCik(
+    symbol: string,
+  ): Promise<Result<string | null, SecEdgarFilingsError>> {
     const cached = this.symbolToCik.get(symbol);
     if (cached) {
-      return cached;
+      return ok(cached);
     }
 
-    const response = await this.fetchJson<EdgarTickersResponse>(
+    const responseResult = await this.fetchJson<EdgarTickersResponse>(
       this.tickersUrl,
     );
-    if (!response) {
-      return null;
+    if (responseResult.isErr()) {
+      return err(responseResult.error);
+    }
+
+    const response = responseResult.value;
+
+    if (!response || typeof response !== "object") {
+      return err({
+        code: "malformed_response",
+        message: "SEC ticker mapping payload was malformed.",
+      });
     }
 
     for (const record of Object.values(response)) {
@@ -125,7 +164,7 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
       this.symbolToCik.set(ticker, cik);
     }
 
-    return this.symbolToCik.get(symbol) ?? null;
+    return ok(this.symbolToCik.get(symbol) ?? null);
   }
 
   /**
@@ -133,7 +172,7 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
    */
   private async fetchSubmission(
     cik: string,
-  ): Promise<EdgarSubmissionResponse | null> {
+  ): Promise<Result<EdgarSubmissionResponse | null, SecEdgarFilingsError>> {
     const url = new URL(`/submissions/CIK${cik}.json`, this.baseUrl).toString();
     return this.fetchJson<EdgarSubmissionResponse>(url);
   }
@@ -275,29 +314,91 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
   /**
    * Applies SEC-required headers and timeout handling consistently for all EDGAR requests.
    */
-  private async fetchJson<T>(url: string): Promise<T | null> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+  private async fetchJson<T>(
+    url: string,
+  ): Promise<Result<T | null, SecEdgarFilingsError>> {
+    const response = await this.httpClient.requestJson<T>({
+      url,
+      method: "GET",
+      timeoutMs: this.timeoutMs,
+      retries: 2,
+      retryDelayMs: 300,
+      headers: {
+        "User-Agent": this.userAgent,
+        Accept: "application/json",
+      },
+    });
 
-    try {
-      const response = await fetch(url, {
-        method: "GET",
-        signal: controller.signal,
-        headers: {
-          "User-Agent": this.userAgent,
-          Accept: "application/json",
-        },
-      });
-
-      if (!response.ok) {
-        return null;
+    if (response.isErr()) {
+      if (response.error.httpStatus === 404) {
+        return ok(null);
       }
 
-      return (await response.json()) as T;
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timeout);
+      return err({
+        code: "http_failure",
+        message: response.error.message,
+        httpStatus: response.error.httpStatus,
+        retryable: response.error.retryable,
+        cause: response.error.cause,
+      });
     }
+
+    return ok(response.value);
+  }
+
+  private mapToBoundaryError(
+    failure: SecEdgarFilingsError,
+    symbol: string,
+  ): AppBoundaryError {
+    if (failure.code === "config_invalid") {
+      return {
+        source: "filings",
+        code: "config_invalid",
+        provider: "sec-edgar",
+        message: failure.message,
+        retryable: false,
+        cause: { symbol },
+      };
+    }
+
+    if (failure.code === "malformed_response") {
+      return {
+        source: "filings",
+        code: "malformed_response",
+        provider: "sec-edgar",
+        message: failure.message,
+        retryable: false,
+        cause: failure.cause,
+      };
+    }
+
+    return {
+      source: "filings",
+      code: this.mapHttpCode(failure.httpStatus, failure.message),
+      provider: "sec-edgar",
+      message: failure.message,
+      retryable: failure.retryable,
+      httpStatus: failure.httpStatus,
+      cause: failure.cause,
+    };
+  }
+
+  private mapHttpCode(
+    httpStatus: number | undefined,
+    message: string,
+  ): AppBoundaryError["code"] {
+    if (httpStatus === 429) {
+      return "rate_limited";
+    }
+
+    if (httpStatus === 401 || httpStatus === 403) {
+      return "auth_invalid";
+    }
+
+    if (/timed out/i.test(message)) {
+      return "timeout";
+    }
+
+    return "provider_error";
   }
 }

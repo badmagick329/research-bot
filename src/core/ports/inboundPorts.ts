@@ -1,3 +1,6 @@
+import type { Result } from "neverthrow";
+import type { AppBoundaryError } from "../entities/appError";
+
 export type NewsSearchRequest = {
   symbol: string;
   from: Date;
@@ -96,13 +99,19 @@ export type NormalizedFiling = {
 };
 
 export interface NewsProviderPort {
-  fetchArticles(request: NewsSearchRequest): Promise<NormalizedNewsItem[]>;
+  fetchArticles(
+    request: NewsSearchRequest,
+  ): Promise<Result<NormalizedNewsItem[], AppBoundaryError>>;
 }
 
 export interface MarketMetricsProviderPort {
-  fetchMetrics(request: MetricsRequest): Promise<MetricsFetchResult>;
+  fetchMetrics(
+    request: MetricsRequest,
+  ): Promise<Result<MetricsFetchResult, AppBoundaryError>>;
 }
 
 export interface FilingsProviderPort {
-  fetchFilings(request: FilingsRequest): Promise<NormalizedFiling[]>;
+  fetchFilings(
+    request: FilingsRequest,
+  ): Promise<Result<NormalizedFiling[], AppBoundaryError>>;
 }

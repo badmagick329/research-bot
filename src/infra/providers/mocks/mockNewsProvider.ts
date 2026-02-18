@@ -3,6 +3,8 @@ import type {
   NewsSearchRequest,
   NormalizedNewsItem,
 } from "../../../core/ports/inboundPorts";
+import type { AppBoundaryError } from "../../../core/entities/appError";
+import { ok, type Result } from "neverthrow";
 
 /**
  * Supplies repeatable news payloads so ingestion and deduplication logic can be tested in isolation.
@@ -13,12 +15,12 @@ export class MockNewsProvider implements NewsProviderPort {
    */
   async fetchArticles(
     request: NewsSearchRequest,
-  ): Promise<NormalizedNewsItem[]> {
+  ): Promise<Result<NormalizedNewsItem[], AppBoundaryError>> {
     const baseDate = request.to;
     const symbol = request.symbol.toUpperCase();
 
-    return Array.from({ length: Math.min(5, request.limit) }).map(
-      (_, index) => ({
+    return ok(
+      Array.from({ length: Math.min(5, request.limit) }).map((_, index) => ({
         id: `${symbol}-news-${index}`,
         provider: "mock-news-wire",
         providerItemId: `${symbol}-nw-${baseDate.getTime()}-${index}`,
@@ -38,7 +40,7 @@ export class MockNewsProvider implements NewsProviderPort {
           body: "Raw provider body",
           tags: ["equities", symbol],
         },
-      }),
+      })),
     );
   }
 }

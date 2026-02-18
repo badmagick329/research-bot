@@ -50,12 +50,18 @@ describe("AlphaVantageNewsProvider", () => {
       limit: 10,
     });
 
+    expect(items.isOk()).toBeTrue();
+    if (items.isErr()) {
+      throw new Error(items.error.message);
+    }
+    const values = items.value;
+
     expect(requestedUrl).toContain("function=NEWS_SENTIMENT");
     expect(requestedUrl).toContain("tickers=AAPL");
     expect(requestedUrl).toContain("apikey=test-key");
 
-    expect(items).toHaveLength(1);
-    expect(items[0]).toEqual({
+    expect(values).toHaveLength(1);
+    expect(values[0]).toEqual({
       id: "alphavantage-av-1",
       provider: "alphavantage",
       providerItemId: "av-1",
@@ -99,7 +105,10 @@ describe("AlphaVantageNewsProvider", () => {
       limit: 5,
     });
 
-    expect(items).toEqual([]);
+    expect(items.isErr()).toBeTrue();
+    if (items.isErr()) {
+      expect(items.error.code).toBe("rate_limited");
+    }
   });
 
   it("throws when api key is missing", () => {
