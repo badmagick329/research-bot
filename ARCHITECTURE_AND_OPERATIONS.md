@@ -36,7 +36,11 @@
 - Added real-over-mock filtering at synthesis time:
   - if real provider evidence exists for a type (`documents`, `metrics`, or `filings`), mock evidence for that type is excluded.
   - mock evidence is retained only when it is the only available evidence for that type.
-  - practical implication: you may still see `mock-edgar` filing sources when SEC EDGAR returns no filings for the window/symbol.
+  - practical implication: you may still see `mock-edgar` filing sources when SEC EDGAR returns no filings for the run.
+- Split evidence windows in ingestion:
+  - news uses `APP_NEWS_LOOKBACK_DAYS` (default `7`)
+  - filings use `APP_FILINGS_LOOKBACK_DAYS` (default `90`)
+  - metrics remain point-in-time (`asOf`) and do not use a lookback window.
 
 ### Code map: what to understand first
 
@@ -121,6 +125,14 @@
   - If you see old fallback output, enqueue again and wait for a new synthesis completion.
   - If code changed but snapshot still shows old behavior, the latest completed synthesis likely came from a prior worker run; enqueue again after restarting worker.
 
+- Lookback env variables are split (single lookback removed).
+  - use `APP_NEWS_LOOKBACK_DAYS` and `APP_FILINGS_LOOKBACK_DAYS`
+  - `APP_LOOKBACK_DAYS` is no longer used.
+
+- Restart worker after config/code changes that affect provider behavior.
+  - a long-running worker process keeps old env/code until restarted.
+  - after restart, enqueue with `--force` to ensure a fresh run in the current hour.
+
 - Queue names in BullMQ cannot contain `:`.
   - Keep queue names like `research-ingest`, not `research:ingest`.
 
@@ -180,7 +192,7 @@
 4. Interpret expected output:
 
 - `mock-fundamentals` should be absent when real metrics are present.
-- `mock-edgar` can still appear if no real filings were returned for the run.
+- `mock-edgar` should be absent when at least one `sec-edgar` filing was persisted for that run.
 
 ## 2) Managing migrations with Drizzle for this service
 
@@ -258,13 +270,19 @@
 - required for SEC EDGAR mode: `SEC_EDGAR_USER_AGENT=<app/version (contact: you@example.com)>`
 - optional SEC overrides: `SEC_EDGAR_BASE_URL`, `SEC_EDGAR_ARCHIVES_BASE_URL`, `SEC_EDGAR_TICKERS_URL`, `SEC_EDGAR_TIMEOUT_MS`
 
-6. Start infra:
+6. Configure evidence windows in `.env`:
+
+- news lookback window (default): `APP_NEWS_LOOKBACK_DAYS=7`
+- filings lookback window (recommended longer): `APP_FILINGS_LOOKBACK_DAYS=90`
+- rationale: filings are sparse and often absent in short windows, while news benefits from tighter recency
+
+7. Start infra:
    - `docker compose up -d postgres redis`
-7. Run migrations once:
+8. Run migrations once:
 
 - `bun run db:migrate`
 
-8. Start execution mode (host only):
+9. Start execution mode (host only):
 
 - run `bun run src/index.ts run` + `bun run src/workers/main.ts`
 

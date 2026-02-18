@@ -20,7 +20,8 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(300),
-  APP_LOOKBACK_DAYS: z.coerce.number().int().positive().default(7),
+  APP_NEWS_LOOKBACK_DAYS: z.coerce.number().int().positive().default(7),
+  APP_FILINGS_LOOKBACK_DAYS: z.coerce.number().int().positive().default(90),
   NEWS_PROVIDER: z.enum(supportedNewsProviders).default("mock"),
   NEWS_PROVIDERS: z.string().default(""),
   FINNHUB_BASE_URL: z.string().default("https://finnhub.io"),

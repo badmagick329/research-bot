@@ -30,7 +30,8 @@ export class IngestionService {
     private readonly queue: QueuePort,
     private readonly clock: ClockPort,
     private readonly ids: IdGeneratorPort,
-    private readonly lookbackDays: number,
+    private readonly newsLookbackDays: number,
+    private readonly filingsLookbackDays: number,
   ) {}
 
   /**
@@ -38,21 +39,24 @@ export class IngestionService {
    */
   async run(payload: JobPayload): Promise<void> {
     const now = this.clock.now();
-    const from = new Date(
-      now.getTime() - this.lookbackDays * 24 * 60 * 60 * 1000,
+    const newsFrom = new Date(
+      now.getTime() - this.newsLookbackDays * 24 * 60 * 60 * 1000,
+    );
+    const filingsFrom = new Date(
+      now.getTime() - this.filingsLookbackDays * 24 * 60 * 60 * 1000,
     );
 
     const [news, metrics, filings] = await Promise.all([
       this.newsProvider.fetchArticles({
         symbol: payload.symbol,
-        from,
+        from: newsFrom,
         to: now,
         limit: 50,
       }),
       this.metricsProvider.fetchMetrics({ symbol: payload.symbol, asOf: now }),
       this.filingsProvider.fetchFilings({
         symbol: payload.symbol,
-        from,
+        from: filingsFrom,
         to: now,
         limit: 10,
       }),

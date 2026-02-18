@@ -163,7 +163,8 @@ export const createRuntime = async () => {
     queue,
     clock,
     ids,
-    env.APP_LOOKBACK_DAYS,
+    env.APP_NEWS_LOOKBACK_DAYS,
+    env.APP_FILINGS_LOOKBACK_DAYS,
   );
   const normalizationService = new NormalizationService(
     documentRepo,
