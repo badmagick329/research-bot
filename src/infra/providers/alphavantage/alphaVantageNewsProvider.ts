@@ -36,6 +36,11 @@ type AlphaVantageNewsError =
   | {
       code: "http_failure";
       message: string;
+      errorCode:
+        | "timeout"
+        | "transport_error"
+        | "non_success_status"
+        | "invalid_json";
       httpStatus?: number;
       retryable: boolean;
       cause?: unknown;
@@ -87,7 +92,7 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
   }
 
   /**
-   * Returns normalized news entries and tolerates upstream outages with an empty dataset so ingestion can proceed.
+   * Returns normalized news entries and surfaces upstream failures as typed boundary errors.
    */
   async fetchArticles(
     request: NewsSearchRequest,
@@ -114,6 +119,7 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
           {
             code: "http_failure",
             message: payloadResult.error.message,
+            errorCode: payloadResult.error.code,
             httpStatus: payloadResult.error.httpStatus,
             retryable: payloadResult.error.retryable,
             cause: payloadResult.error.cause,
@@ -163,7 +169,11 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
 
     return {
       source: "news",
-      code: this.mapHttpCode(failure.httpStatus, failure.message),
+      code: this.mapHttpCode(
+        failure.httpStatus,
+        failure.message,
+        failure.errorCode,
+      ),
       provider: "alphavantage",
       message: failure.message,
       retryable: failure.retryable,
@@ -175,6 +185,11 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
   private mapHttpCode(
     httpStatus: number | undefined,
     message: string,
+    errorCode:
+      | "timeout"
+      | "transport_error"
+      | "non_success_status"
+      | "invalid_json",
   ): AppBoundaryError["code"] {
     if (httpStatus === 429) {
       return "rate_limited";
@@ -182,6 +197,14 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
 
     if (httpStatus === 401 || httpStatus === 403) {
       return "auth_invalid";
+    }
+
+    if (errorCode === "invalid_json") {
+      return "invalid_json";
+    }
+
+    if (errorCode === "timeout") {
+      return "timeout";
     }
 
     if (/timed out/i.test(message)) {

@@ -26,6 +26,11 @@ type FinnhubNewsError =
   | {
       code: "http_failure";
       message: string;
+      errorCode:
+        | "timeout"
+        | "transport_error"
+        | "non_success_status"
+        | "invalid_json";
       httpStatus?: number;
       retryable: boolean;
       cause?: unknown;
@@ -50,7 +55,7 @@ export class FinnhubNewsProvider implements NewsProviderPort {
   }
 
   /**
-   * Keeps ingestion resilient by returning an empty dataset when provider responses are unavailable.
+   * Surfaces provider failures as typed boundary errors so ingestion can apply explicit partial-failure policy.
    */
   async fetchArticles(
     request: NewsSearchRequest,
@@ -75,6 +80,7 @@ export class FinnhubNewsProvider implements NewsProviderPort {
           {
             code: "http_failure",
             message: payloadResult.error.message,
+            errorCode: payloadResult.error.code,
             httpStatus: payloadResult.error.httpStatus,
             retryable: payloadResult.error.retryable,
             cause: payloadResult.error.cause,
@@ -135,7 +141,11 @@ export class FinnhubNewsProvider implements NewsProviderPort {
 
     return {
       source: "news",
-      code: this.mapHttpCode(failure.httpStatus, failure.message),
+      code: this.mapHttpCode(
+        failure.httpStatus,
+        failure.message,
+        failure.errorCode,
+      ),
       provider: "finnhub",
       message: failure.message,
       retryable: failure.retryable,
@@ -147,6 +157,11 @@ export class FinnhubNewsProvider implements NewsProviderPort {
   private mapHttpCode(
     httpStatus: number | undefined,
     message: string,
+    errorCode:
+      | "timeout"
+      | "transport_error"
+      | "non_success_status"
+      | "invalid_json",
   ): AppBoundaryError["code"] {
     if (httpStatus === 429) {
       return "rate_limited";
@@ -154,6 +169,14 @@ export class FinnhubNewsProvider implements NewsProviderPort {
 
     if (httpStatus === 401 || httpStatus === 403) {
       return "auth_invalid";
+    }
+
+    if (errorCode === "invalid_json") {
+      return "invalid_json";
+    }
+
+    if (errorCode === "timeout") {
+      return "timeout";
     }
 
     if (/timed out/i.test(message)) {

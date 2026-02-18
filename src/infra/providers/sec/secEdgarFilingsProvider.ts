@@ -60,6 +60,11 @@ type SecEdgarFilingsError =
   | {
       code: "http_failure";
       message: string;
+      errorCode:
+        | "timeout"
+        | "transport_error"
+        | "non_success_status"
+        | "invalid_json";
       httpStatus?: number;
       retryable: boolean;
       cause?: unknown;
@@ -88,7 +93,7 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
   }
 
   /**
-   * Returns normalized filings for the requested window and shields ingestion from transient SEC transport errors.
+   * Returns normalized filings for the requested window and surfaces upstream failures as typed boundary errors.
    */
   async fetchFilings(
     request: FilingsRequest,
@@ -337,6 +342,7 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
       return err({
         code: "http_failure",
         message: response.error.message,
+        errorCode: response.error.code,
         httpStatus: response.error.httpStatus,
         retryable: response.error.retryable,
         cause: response.error.cause,
@@ -374,7 +380,11 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
 
     return {
       source: "filings",
-      code: this.mapHttpCode(failure.httpStatus, failure.message),
+      code: this.mapHttpCode(
+        failure.httpStatus,
+        failure.message,
+        failure.errorCode,
+      ),
       provider: "sec-edgar",
       message: failure.message,
       retryable: failure.retryable,
@@ -386,6 +396,11 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
   private mapHttpCode(
     httpStatus: number | undefined,
     message: string,
+    errorCode:
+      | "timeout"
+      | "transport_error"
+      | "non_success_status"
+      | "invalid_json",
   ): AppBoundaryError["code"] {
     if (httpStatus === 429) {
       return "rate_limited";
@@ -393,6 +408,14 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
 
     if (httpStatus === 401 || httpStatus === 403) {
       return "auth_invalid";
+    }
+
+    if (errorCode === "invalid_json") {
+      return "invalid_json";
+    }
+
+    if (errorCode === "timeout") {
+      return "timeout";
     }
 
     if (/timed out/i.test(message)) {

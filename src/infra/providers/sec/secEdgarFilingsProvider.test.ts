@@ -201,6 +201,54 @@ describe("SecEdgarFilingsProvider", () => {
     expect(filings.value).toEqual([]);
   });
 
+  it("maps SEC auth failures to auth_invalid boundary errors", async () => {
+    setFetch(async () => new Response("forbidden", { status: 403 }));
+
+    const provider = new SecEdgarFilingsProvider(
+      "https://data.sec.gov",
+      "https://www.sec.gov/Archives/edgar/data",
+      "https://www.sec.gov/files/company_tickers.json",
+      "research-bot-test/1.0 (contact: dev@example.com)",
+      5_000,
+    );
+
+    const filings = await provider.fetchFilings({
+      symbol: "aapl",
+      from: new Date("2026-01-01T00:00:00.000Z"),
+      to: new Date("2026-02-10T00:00:00.000Z"),
+      limit: 5,
+    });
+
+    expect(filings.isErr()).toBeTrue();
+    if (filings.isErr()) {
+      expect(filings.error.code).toBe("auth_invalid");
+    }
+  });
+
+  it("maps malformed JSON payloads to invalid_json boundary errors", async () => {
+    setFetch(async () => new Response("not-json", { status: 200 }));
+
+    const provider = new SecEdgarFilingsProvider(
+      "https://data.sec.gov",
+      "https://www.sec.gov/Archives/edgar/data",
+      "https://www.sec.gov/files/company_tickers.json",
+      "research-bot-test/1.0 (contact: dev@example.com)",
+      5_000,
+    );
+
+    const filings = await provider.fetchFilings({
+      symbol: "aapl",
+      from: new Date("2026-01-01T00:00:00.000Z"),
+      to: new Date("2026-02-10T00:00:00.000Z"),
+      limit: 5,
+    });
+
+    expect(filings.isErr()).toBeTrue();
+    if (filings.isErr()) {
+      expect(filings.error.code).toBe("invalid_json");
+    }
+  });
+
   it("throws when user-agent is missing", () => {
     expect(
       () =>

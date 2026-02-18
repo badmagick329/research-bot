@@ -166,7 +166,7 @@ describe("FinnhubNewsProvider", () => {
     expect(values[0]?.title).toBe("Valid 1");
   });
 
-  it("returns empty list when provider responds with non-200", async () => {
+  it("maps rate-limit responses to rate_limited boundary errors", async () => {
     setFetch(async () => new Response("rate limit", { status: 429 }));
 
     const provider = new FinnhubNewsProvider(
@@ -185,6 +185,50 @@ describe("FinnhubNewsProvider", () => {
     expect(items.isErr()).toBeTrue();
     if (items.isErr()) {
       expect(items.error.code).toBe("rate_limited");
+    }
+  });
+
+  it("maps auth failures to auth_invalid boundary errors", async () => {
+    setFetch(async () => new Response("unauthorized", { status: 401 }));
+
+    const provider = new FinnhubNewsProvider(
+      "https://finnhub.io",
+      "test-key",
+      5_000,
+    );
+
+    const items = await provider.fetchArticles({
+      symbol: "AAPL",
+      from: new Date("2026-01-01T00:00:00.000Z"),
+      to: new Date("2026-01-10T00:00:00.000Z"),
+      limit: 5,
+    });
+
+    expect(items.isErr()).toBeTrue();
+    if (items.isErr()) {
+      expect(items.error.code).toBe("auth_invalid");
+    }
+  });
+
+  it("maps malformed JSON payloads to invalid_json boundary errors", async () => {
+    setFetch(async () => new Response("not-json", { status: 200 }));
+
+    const provider = new FinnhubNewsProvider(
+      "https://finnhub.io",
+      "test-key",
+      5_000,
+    );
+
+    const items = await provider.fetchArticles({
+      symbol: "AAPL",
+      from: new Date("2026-01-01T00:00:00.000Z"),
+      to: new Date("2026-01-10T00:00:00.000Z"),
+      limit: 5,
+    });
+
+    expect(items.isErr()).toBeTrue();
+    if (items.isErr()) {
+      expect(items.error.code).toBe("invalid_json");
     }
   });
 

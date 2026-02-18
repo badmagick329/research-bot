@@ -89,7 +89,7 @@ describe("AlphaVantageNewsProvider", () => {
     });
   });
 
-  it("returns empty list on non-200 responses", async () => {
+  it("maps rate-limit responses to rate_limited boundary errors", async () => {
     setFetch(async () => new Response("too many requests", { status: 429 }));
 
     const provider = new AlphaVantageNewsProvider(
@@ -108,6 +108,50 @@ describe("AlphaVantageNewsProvider", () => {
     expect(items.isErr()).toBeTrue();
     if (items.isErr()) {
       expect(items.error.code).toBe("rate_limited");
+    }
+  });
+
+  it("maps auth failures to auth_invalid boundary errors", async () => {
+    setFetch(async () => new Response("forbidden", { status: 403 }));
+
+    const provider = new AlphaVantageNewsProvider(
+      "https://www.alphavantage.co",
+      "test-key",
+      5_000,
+    );
+
+    const items = await provider.fetchArticles({
+      symbol: "AAPL",
+      from: new Date("2026-01-01T00:00:00.000Z"),
+      to: new Date("2026-01-10T00:00:00.000Z"),
+      limit: 5,
+    });
+
+    expect(items.isErr()).toBeTrue();
+    if (items.isErr()) {
+      expect(items.error.code).toBe("auth_invalid");
+    }
+  });
+
+  it("maps malformed JSON payloads to invalid_json boundary errors", async () => {
+    setFetch(async () => new Response("not-json", { status: 200 }));
+
+    const provider = new AlphaVantageNewsProvider(
+      "https://www.alphavantage.co",
+      "test-key",
+      5_000,
+    );
+
+    const items = await provider.fetchArticles({
+      symbol: "AAPL",
+      from: new Date("2026-01-01T00:00:00.000Z"),
+      to: new Date("2026-01-10T00:00:00.000Z"),
+      limit: 5,
+    });
+
+    expect(items.isErr()).toBeTrue();
+    if (items.isErr()) {
+      expect(items.error.code).toBe("invalid_json");
     }
   });
 
