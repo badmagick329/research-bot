@@ -1,7 +1,10 @@
 export type FilingEntity = {
   id: string;
+  runId?: string;
+  taskId?: string;
   symbol: string;
   provider: string;
+  dedupeKey: string;
   issuerName: string;
   filingType: string;
   accessionNo?: string;

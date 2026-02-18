@@ -234,9 +234,9 @@ export class SynthesisService {
    */
   async run(payload: JobPayload): Promise<void> {
     const [docsRaw, metricsRaw, filingsRaw] = await Promise.all([
-      this.documentRepo.listBySymbol(payload.symbol, 15),
-      this.metricsRepo.listBySymbol(payload.symbol, 20),
-      this.filingsRepo.listBySymbol(payload.symbol, 10),
+      this.documentRepo.listBySymbol(payload.symbol, 15, payload.runId),
+      this.metricsRepo.listBySymbol(payload.symbol, 20, payload.runId),
+      this.filingsRepo.listBySymbol(payload.symbol, 10, payload.runId),
     ]);
 
     const docs = this.preferRealProviders(docsRaw);
@@ -301,6 +301,8 @@ export class SynthesisService {
 
     await this.snapshotRepo.save({
       id: this.ids.next(),
+      runId: payload.runId,
+      taskId: payload.taskId,
       symbol: payload.symbol,
       horizon: "12m",
       score,

@@ -2,6 +2,7 @@ export type JobStage = "ingest" | "normalize" | "embed" | "synthesize";
 
 export type ResearchTaskEntity = {
   id: string;
+  runId: string;
   symbol: string;
   requestedAt: Date;
   priority: number;
@@ -11,6 +12,8 @@ export type ResearchTaskEntity = {
 
 export type ResearchSnapshotEntity = {
   id: string;
+  runId?: string;
+  taskId?: string;
   symbol: string;
   horizon: string;
   score: number;

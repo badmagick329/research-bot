@@ -19,7 +19,11 @@ export class NormalizationService {
    * Produces a stable intermediate interpretation before expensive embedding and final synthesis steps.
    */
   async run(payload: JobPayload): Promise<void> {
-    const docs = await this.documentRepo.listBySymbol(payload.symbol, 30);
+    const docs = await this.documentRepo.listBySymbol(
+      payload.symbol,
+      30,
+      payload.runId,
+    );
     if (docs.length === 0) {
       await this.queue.enqueue("synthesize", payload);
       return;

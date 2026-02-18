@@ -16,6 +16,7 @@ import type {
 } from "../../core/ports/outboundPorts";
 
 const payload: JobPayload = {
+  runId: "run-1",
   taskId: "task-1",
   symbol: "TTWO",
   idempotencyKey: "ttwo-synthesize-hour",
@@ -99,6 +100,7 @@ describe("SynthesisService", () => {
     const filings: FilingEntity[] = [
       {
         id: "filing-1",
+        dedupeKey: "accession:0000000000-26-000001",
         symbol: "TTWO",
         provider: "sec-edgar",
         issuerName: "Take-Two Interactive Software, Inc.",
@@ -114,19 +116,31 @@ describe("SynthesisService", () => {
       },
     ];
 
+    let documentReadRunId: string | undefined;
     const documentRepo: DocumentRepositoryPort = {
       upsertMany: async () => {},
-      listBySymbol: async () => docs,
+      listBySymbol: async (_symbol, _limit, runId) => {
+        documentReadRunId = runId;
+        return docs;
+      },
     };
 
+    let metricsReadRunId: string | undefined;
     const metricsRepo: MetricsRepositoryPort = {
       upsertMany: async () => {},
-      listBySymbol: async () => metrics,
+      listBySymbol: async (_symbol, _limit, runId) => {
+        metricsReadRunId = runId;
+        return metrics;
+      },
     };
 
+    let filingsReadRunId: string | undefined;
     const filingsRepo: FilingsRepositoryPort = {
       upsertMany: async () => {},
-      listBySymbol: async () => filings,
+      listBySymbol: async (_symbol, _limit, runId) => {
+        filingsReadRunId = runId;
+        return filings;
+      },
     };
 
     let capturedPrompt = "";
@@ -180,6 +194,11 @@ describe("SynthesisService", () => {
     expect(savedSnapshot.thesis).toBe("generated thesis");
     expect(savedSnapshot.score).toBe(28);
     expect(savedSnapshot.confidence).toBe(0.51);
+    expect(savedSnapshot.runId).toBe("run-1");
+    expect(savedSnapshot.taskId).toBe("task-1");
+    expect(documentReadRunId).toBe("run-1");
+    expect(metricsReadRunId).toBe("run-1");
+    expect(filingsReadRunId).toBe("run-1");
 
     expect(savedSnapshot.sources).toEqual(
       expect.arrayContaining([
@@ -351,6 +370,7 @@ describe("SynthesisService", () => {
       listBySymbol: async () => [
         {
           id: "filing-real",
+          dedupeKey: "accession:0000000000-26-000001",
           symbol: "TTWO",
           provider: "sec-edgar",
           issuerName: "Take-Two Interactive Software, Inc.",
@@ -366,6 +386,7 @@ describe("SynthesisService", () => {
         },
         {
           id: "filing-mock",
+          dedupeKey: "accession:000000-2026-000001",
           symbol: "TTWO",
           provider: "mock-edgar",
           issuerName: "Take-Two Interactive Software, Inc.",

@@ -35,6 +35,22 @@ export class IngestionService {
   ) {}
 
   /**
+   * Prefers provider-native accession identity and falls back to symbol-scoped document URL identity.
+   */
+  private buildFilingDedupeKey(
+    symbol: string,
+    accessionNo: string | undefined,
+    docUrl: string,
+  ): string {
+    const normalizedAccession = accessionNo?.trim();
+    if (normalizedAccession) {
+      return `accession:${normalizedAccession}`;
+    }
+
+    return `doc:${symbol.toUpperCase()}|${docUrl.trim().toLowerCase()}`;
+  }
+
+  /**
    * Seeds the pipeline with latest symbol evidence so later stages can stay deterministic and replayable.
    */
   async run(payload: JobPayload): Promise<void> {
@@ -64,6 +80,8 @@ export class IngestionService {
 
     const documents: DocumentEntity[] = news.map((item) => ({
       id: this.ids.next(),
+      runId: payload.runId,
+      taskId: payload.taskId,
       symbol: payload.symbol,
       provider: item.provider,
       providerItemId: item.providerItemId,
@@ -82,6 +100,8 @@ export class IngestionService {
 
     const metricEntities: MetricPointEntity[] = metrics.map((item) => ({
       id: this.ids.next(),
+      runId: payload.runId,
+      taskId: payload.taskId,
       symbol: payload.symbol,
       provider: item.provider,
       metricName: item.metricName,
@@ -99,8 +119,15 @@ export class IngestionService {
 
     const filingEntities: FilingEntity[] = filings.map((item) => ({
       id: this.ids.next(),
+      runId: payload.runId,
+      taskId: payload.taskId,
       symbol: payload.symbol,
       provider: item.provider,
+      dedupeKey: this.buildFilingDedupeKey(
+        payload.symbol,
+        item.accessionNo,
+        item.docUrl,
+      ),
       issuerName: item.issuerName,
       filingType: item.filingType,
       accessionNo: item.accessionNo,

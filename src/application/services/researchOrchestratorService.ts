@@ -27,6 +27,7 @@ export class ResearchOrchestratorService {
       : task.idempotencyKey;
 
     await this.queue.enqueue(stage, {
+      runId: task.runId,
       taskId: task.id,
       symbol: task.symbol,
       idempotencyKey,

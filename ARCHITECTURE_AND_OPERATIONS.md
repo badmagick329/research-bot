@@ -7,6 +7,8 @@
 - Style: clean architecture with strict boundaries.
 - Runtime shape: host CLI (`run`/`enqueue`/`snapshot`/`status`) + host worker + infra (`postgres`, `redis`).
 - Pipeline: `ingest -> normalize -> embed -> synthesize`.
+- Evidence model: synthesis consumes `news + metrics + filings` and writes snapshots with source attribution.
+- Lineage model: each enqueue creates a `runId`; stages carry `runId/taskId`; reads in normalize/embed/synthesize are run-scoped.
 - Current provider state: real news providers (Finnhub + Alpha Vantage), optional real SEC EDGAR filings, optional real Alpha Vantage metrics.
 
 ### Why this shape
@@ -15,32 +17,6 @@
 - Core/application layers stay provider-agnostic.
 - Infra adapters are replaceable (mock -> real provider) with minimal changes.
 - Local-first inference (Ollama) keeps inference self-hosted.
-
-### Sprint close-out (Feb 2026)
-
-- Added real adapter options for filings + metrics:
-  - SEC EDGAR filings provider (`FILINGS_PROVIDER=sec-edgar`)
-  - Alpha Vantage metrics provider (`METRICS_PROVIDER=alphavantage`)
-- Added provider contract tests for both adapters.
-- Added queue observability baseline:
-  - `status` now includes per-stage queue counters.
-  - worker logs include stage start/completion/failure with duration and task metadata.
-- Tightened embedding reliability:
-  - embedding path is fail-fast on transport and dimension mismatch.
-  - no silent zero-vector fallback.
-- Added `embeddings` table definition to Drizzle schema source for schema/migration parity.
-- Updated synthesis evidence model:
-  - synthesis now reads and uses `news + metrics + filings` (not news-only).
-  - snapshot score/confidence are now evidence-based (not fixed defaults).
-  - source attribution can include metric/filing evidence entries.
-- Added real-over-mock filtering at synthesis time:
-  - if real provider evidence exists for a type (`documents`, `metrics`, or `filings`), mock evidence for that type is excluded.
-  - mock evidence is retained only when it is the only available evidence for that type.
-  - practical implication: you may still see `mock-edgar` filing sources when SEC EDGAR returns no filings for the run.
-- Split evidence windows in ingestion:
-  - news uses `APP_NEWS_LOOKBACK_DAYS` (default `7`)
-  - filings use `APP_FILINGS_LOOKBACK_DAYS` (default `90`)
-  - metrics remain point-in-time (`asOf`) and do not use a lookback window.
 
 ### Code map: what to understand first
 
@@ -77,7 +53,9 @@
 6. Persistence and schema
    - `src/infra/db/schema.ts`
    - `src/infra/db/repositories.ts`
-   - `drizzle/0000_init.sql`
+
+- `drizzle/0000_init.sql`
+- `drizzle/0001_run_lineage_and_filing_dedupe.sql`
 
 7. Model adapters
 
@@ -95,22 +73,7 @@
 
 9. Provider contract tests
 
-- `src/infra/providers/finnhub/finnhubNewsProvider.test.ts`
-- `src/infra/providers/alphavantage/alphaVantageNewsProvider.test.ts`
-- `src/infra/providers/alphavantage/alphaVantageMetricsProvider.test.ts`
-- `src/infra/providers/sec/secEdgarFilingsProvider.test.ts`
-- `src/infra/providers/multiNewsProvider.test.ts`
-
-### Current best-guess evolution path
-
-1. Improve provider coverage depth (better filings section extraction and richer metric mapping).
-2. Add deeper queue observability (DLQ inspection, stage latency histograms, alerting).
-3. Improve synthesis reliability:
-   - structured output schema
-   - stronger citation tracking
-   - confidence calibration.
-4. Make embeddings dimension configurable per model and add migration strategy when model changes.
-5. Add a dedicated migrator service in compose/CI so schema upgrades are deterministic.
+- provider contract tests live under `src/infra/providers/**/*.test.ts`.
 
 ### Hidden gotchas / traps
 
@@ -125,9 +88,15 @@
   - If you see old fallback output, enqueue again and wait for a new synthesis completion.
   - If code changed but snapshot still shows old behavior, the latest completed synthesis likely came from a prior worker run; enqueue again after restarting worker.
 
-- Lookback env variables are split (single lookback removed).
-  - use `APP_NEWS_LOOKBACK_DAYS` and `APP_FILINGS_LOOKBACK_DAYS`
-  - `APP_LOOKBACK_DAYS` is no longer used.
+- Evidence reads are run-scoped.
+  - normalize/embed/synthesize read by `symbol + runId`.
+  - this prevents stale cross-run mixing during synthesis.
+  - if debugging a run, trace `runId` in worker logs.
+
+- Filing dedupe is natural-key based.
+  - storage key is `(provider, dedupe_key)`.
+  - `dedupe_key` prefers accession number; fallback is symbol-scoped doc URL.
+  - migration keeps latest duplicate row when collapsing historical duplicates.
 
 - Restart worker after config/code changes that affect provider behavior.
   - a long-running worker process keeps old env/code until restarted.
@@ -145,10 +114,6 @@
   - Re-enqueueing same symbol/stage in same hour deduplicates.
   - Use `enqueue --force` to bypass hourly dedupe when you need an immediate rerun.
 
-- Naming convention in this codebase:
-  - Only application use-cases in `src/application/services` use the `...Service` suffix.
-  - Infra/shared/bootstrap components do not use `Service` suffix.
-
 - Run migrations once as a one-shot host command.
   - Current compose no longer runs migration or scheduler automatically.
   - Use `bun run db:migrate` before starting worker/scheduler flows.
@@ -164,35 +129,8 @@
   - Current storage/runtime expects 1024-d embeddings.
   - `nomic-embed-text` currently returns 768 dimensions and will fail embed stage unless runtime/schema are migrated.
 
-- `ivfflat` index warning with tiny data is expected.
-  - pgvector may log “index created with little data”; not fatal for v0.
-
 - Scheduler command (`run`) is an infinite loop.
   - Use one-off commands (`enqueue`, `snapshot`) for smoke tests.
-
-- Historical mock rows can appear in old snapshots.
-  - Filtering applies during synthesis execution, not retroactively to existing snapshots.
-  - To validate filtering changes, enqueue a fresh run and wait for `research-synthesize` completion.
-
-### Real-vs-mock filtering verification (quick check)
-
-1. Enqueue a fresh symbol run:
-
-- `bun run src/index.ts enqueue --symbol TTWO --force`
-
-2. Wait until synth is done:
-
-- `bun run src/index.ts status`
-- confirm `synthesize.active=0` and `synthesize.completed` incremented
-
-3. Read latest snapshot:
-
-- `bun run src/index.ts snapshot --symbol TTWO --prettify`
-
-4. Interpret expected output:
-
-- `mock-fundamentals` should be absent when real metrics are present.
-- `mock-edgar` should be absent when at least one `sec-edgar` filing was persisted for that run.
 
 ## 2) Managing migrations with Drizzle for this service
 
@@ -202,6 +140,13 @@
 - `src/infra/db/schema.ts` (source-of-truth schema)
 - `drizzle/*.sql` (versioned migration SQL)
 - `drizzle/meta/_journal.json` (migration journal)
+
+### Current migration notes
+
+- `0001_run_lineage_and_filing_dedupe` adds:
+  - `run_id/task_id` lineage columns on evidence, embeddings, and snapshots.
+  - filing `dedupe_key` + unique `(provider, dedupe_key)` index.
+  - run-scope helper indexes for symbol+run read paths.
 
 ### Recommended workflow (team-safe)
 
@@ -286,42 +231,7 @@
 
 - run `bun run src/index.ts run` + `bun run src/workers/main.ts`
 
-### Clear workflow for dual-source news (recommended)
-
-Single execution mode only: host worker.
-
-1. Set providers in `.env`:
-
-- `NEWS_PROVIDERS=finnhub,alphavantage`
-- optional fallback for compatibility: keep `NEWS_PROVIDER=finnhub`
-- `FINNHUB_API_KEY=<your_key>`
-- `ALPHA_VANTAGE_API_KEY=<your_key>`
-
-2. Start infra:
-
-- `docker compose up -d postgres redis`
-
-3. Start worker on host terminal:
-
-- `bun run src/workers/main.ts`
-
-4. Enqueue from another host terminal:
-
-- `bun run src/index.ts enqueue --symbol AAPL`
-  - For immediate rerun in the same hour: `bun run src/index.ts enqueue --symbol AAPL --force`
-
-5. Watch worker logs for ingest completion, then check snapshot:
-
-- `bun run src/index.ts snapshot --symbol AAPL`
-
-Common gotchas:
-
-- `AAPL` is valid; `APPL` is a typo.
-- `snapshot` reads latest stored result only; it does not trigger processing.
-- If queue idempotency key for same symbol/stage/hour already exists, re-enqueue may dedupe.
-- Use `--force` if you need to rerun the same symbol immediately.
-
-### Useful commands
+### Core commands
 
 - Enqueue one symbol:
   - `bun run src/index.ts enqueue --symbol AAPL`
@@ -340,12 +250,8 @@ Common gotchas:
 - Check service status:
   - `docker compose ps`
 
-### Local (non-docker app/worker) commands
+### Maintenance command
 
-- Scheduler:
-  - `bun run src/index.ts run`
-- Worker:
-  - `bun run src/workers/main.ts`
 - Typecheck:
   - `bun run typecheck`
 
@@ -363,13 +269,9 @@ If snapshot says “No snapshot found”, check:
 - worker logs
 - host env uses `localhost` for `POSTGRES_URL` and `REDIS_URL`
 - Ollama reachability (`OLLAMA_BASE_URL`)
-- probe command result: `bun run src/cli/ollamaProbe.ts`
 - `OLLAMA_EMBED_MODEL` is pulled locally (`ollama pull <model>`)
 - embed model dimension matches current runtime/storage expectation (1024)
 - idempotency collision (same symbol/stage/hour)
-- if using Finnhub: `NEWS_PROVIDER=finnhub` is set and `FINNHUB_API_KEY` is non-empty
-- if using Alpha Vantage: `ALPHA_VANTAGE_API_KEY` is non-empty
-- if using dual mode: `NEWS_PROVIDERS=finnhub,alphavantage` is set and both API keys are non-empty
 
 If snapshot returns an **old** result unexpectedly, check:
 

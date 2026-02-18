@@ -92,6 +92,7 @@ const run = async (): Promise<void> => {
           {
             stage: worker.name,
             jobId: job.id,
+            runId: job.data.runId,
             taskId: job.data.taskId,
             symbol: job.data.symbol,
             idempotencyKey: job.data.idempotencyKey,
@@ -112,6 +113,7 @@ const run = async (): Promise<void> => {
           {
             stage: worker.name,
             jobId: job?.id,
+            runId: job?.data.runId,
             taskId: job?.data.taskId,
             symbol: job?.data.symbol,
             idempotencyKey: job?.data.idempotencyKey,
@@ -133,6 +135,7 @@ const run = async (): Promise<void> => {
           {
             stage: worker.name,
             jobId: job.id,
+            runId: job.data.runId,
             taskId: job.data.taskId,
             symbol: job.data.symbol,
             idempotencyKey: job.data.idempotencyKey,

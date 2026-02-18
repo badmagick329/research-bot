@@ -13,6 +13,8 @@ export const documentsTable = pgTable(
   "documents",
   {
     id: text("id").primaryKey(),
+    runId: text("run_id"),
+    taskId: text("task_id"),
     symbol: text("symbol").notNull(),
     provider: text("provider").notNull(),
     providerItemId: text("provider_item_id").notNull(),
@@ -40,6 +42,8 @@ export const metricsTable = pgTable(
   "metrics",
   {
     id: text("id").primaryKey(),
+    runId: text("run_id"),
+    taskId: text("task_id"),
     symbol: text("symbol").notNull(),
     provider: text("provider").notNull(),
     metricName: text("metric_name").notNull(),
@@ -64,27 +68,39 @@ export const metricsTable = pgTable(
   }),
 );
 
-export const filingsTable = pgTable("filings", {
-  id: text("id").primaryKey(),
-  symbol: text("symbol").notNull(),
-  provider: text("provider").notNull(),
-  issuerName: text("issuer_name").notNull(),
-  filingType: text("filing_type").notNull(),
-  accessionNo: text("accession_no"),
-  filedAt: timestamp("filed_at", { withTimezone: true }).notNull(),
-  periodEnd: timestamp("period_end", { withTimezone: true }),
-  docUrl: text("doc_url").notNull(),
-  sections: jsonb("sections")
-    .$type<Array<{ name: string; text: string }>>()
-    .notNull(),
-  extractedFacts: jsonb("extracted_facts")
-    .$type<
-      Array<{ name: string; value: string; unit?: string; period?: string }>
-    >()
-    .notNull(),
-  rawPayload: jsonb("raw_payload").$type<unknown>().notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-});
+export const filingsTable = pgTable(
+  "filings",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id"),
+    taskId: text("task_id"),
+    symbol: text("symbol").notNull(),
+    provider: text("provider").notNull(),
+    dedupeKey: text("dedupe_key").notNull(),
+    issuerName: text("issuer_name").notNull(),
+    filingType: text("filing_type").notNull(),
+    accessionNo: text("accession_no"),
+    filedAt: timestamp("filed_at", { withTimezone: true }).notNull(),
+    periodEnd: timestamp("period_end", { withTimezone: true }),
+    docUrl: text("doc_url").notNull(),
+    sections: jsonb("sections")
+      .$type<Array<{ name: string; text: string }>>()
+      .notNull(),
+    extractedFacts: jsonb("extracted_facts")
+      .$type<
+        Array<{ name: string; value: string; unit?: string; period?: string }>
+      >()
+      .notNull(),
+    rawPayload: jsonb("raw_payload").$type<unknown>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => ({
+    dedupeNaturalIdx: uniqueIndex("filings_provider_dedupe_uidx").on(
+      table.provider,
+      table.dedupeKey,
+    ),
+  }),
+);
 
 export const embeddingsTable = pgTable(
   "embeddings",
@@ -92,6 +108,8 @@ export const embeddingsTable = pgTable(
     documentId: text("document_id")
       .primaryKey()
       .references(() => documentsTable.id, { onDelete: "cascade" }),
+    runId: text("run_id"),
+    taskId: text("task_id"),
     symbol: text("symbol").notNull(),
     content: text("content").notNull(),
     embedding: vector("embedding", { dimensions: 1024 }).notNull(),
@@ -105,6 +123,8 @@ export const embeddingsTable = pgTable(
 
 export const snapshotsTable = pgTable("snapshots", {
   id: text("id").primaryKey(),
+  runId: text("run_id"),
+  taskId: text("task_id"),
   symbol: text("symbol").notNull(),
   horizon: text("horizon").notNull(),
   score: real("score").notNull(),

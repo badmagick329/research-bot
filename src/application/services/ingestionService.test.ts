@@ -19,6 +19,7 @@ import type {
 } from "../../core/ports/outboundPorts";
 
 const payload: JobPayload = {
+  runId: "run-1",
   taskId: "task-1",
   symbol: "TTWO",
   idempotencyKey: "ttwo-ingest-hour",
@@ -34,7 +35,25 @@ describe("IngestionService", () => {
     const newsProvider: NewsProviderPort = {
       fetchArticles: async (request) => {
         capturedNewsRequest = request;
-        return [];
+        return [
+          {
+            id: "news-1",
+            provider: "finnhub",
+            providerItemId: "fh-1",
+            title: "TTWO headline",
+            summary: "Summary",
+            content: "Content",
+            url: "https://example.com/news-1",
+            authors: ["Reporter"],
+            publishedAt: now,
+            language: "en",
+            symbols: ["TTWO"],
+            topics: ["ownership"],
+            sentiment: 0.1,
+            sourceType: "api",
+            rawPayload: {},
+          },
+        ];
       },
     };
 
@@ -48,12 +67,30 @@ describe("IngestionService", () => {
     const filingsProvider: FilingsProviderPort = {
       fetchFilings: async (request) => {
         capturedFilingsRequest = request;
-        return [];
+        return [
+          {
+            id: "filing-1",
+            provider: "sec-edgar",
+            symbol: "TTWO",
+            issuerName: "Take-Two Interactive Software, Inc.",
+            filingType: "10-Q",
+            accessionNo: "0000000000-26-000001",
+            filedAt: now,
+            periodEnd: undefined,
+            docUrl: "https://sec.example/filing-1",
+            sections: [],
+            extractedFacts: [],
+            rawPayload: {},
+          },
+        ];
       },
     };
 
+    let upsertedDocumentRunId: string | undefined;
     const documentRepo: DocumentRepositoryPort = {
-      upsertMany: async () => {},
+      upsertMany: async (documents) => {
+        upsertedDocumentRunId = documents.at(0)?.runId;
+      },
       listBySymbol: async () => [],
     };
 
@@ -62,13 +99,21 @@ describe("IngestionService", () => {
       listBySymbol: async () => [],
     };
 
+    let upsertedFilingDedupeKey: string | undefined;
+    let upsertedFilingRunId: string | undefined;
     const filingsRepo: FilingsRepositoryPort = {
-      upsertMany: async () => {},
+      upsertMany: async (filings) => {
+        upsertedFilingDedupeKey = filings.at(0)?.dedupeKey;
+        upsertedFilingRunId = filings.at(0)?.runId;
+      },
       listBySymbol: async () => [],
     };
 
+    let queuedPayload: JobPayload | undefined;
     const queue: QueuePort = {
-      enqueue: async () => {},
+      enqueue: async (_stage, nextPayload) => {
+        queuedPayload = nextPayload;
+      },
     };
 
     const now = new Date("2026-02-18T12:00:00.000Z");
@@ -114,5 +159,9 @@ describe("IngestionService", () => {
 
     expect(capturedMetricsRequest?.symbol).toBe("TTWO");
     expect(capturedMetricsRequest?.asOf?.toISOString()).toBe(now.toISOString());
+    expect(upsertedDocumentRunId).toBe("run-1");
+    expect(upsertedFilingRunId).toBe("run-1");
+    expect(upsertedFilingDedupeKey).toBe("accession:0000000000-26-000001");
+    expect(queuedPayload?.runId).toBe("run-1");
   });
 });

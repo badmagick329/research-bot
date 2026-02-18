@@ -21,7 +21,11 @@ export class EmbeddingService {
    * Advances research jobs into synthesis with persisted vectors for later semantic retrieval.
    */
   async run(payload: JobPayload): Promise<void> {
-    const docs = await this.documentRepo.listBySymbol(payload.symbol, 20);
+    const docs = await this.documentRepo.listBySymbol(
+      payload.symbol,
+      20,
+      payload.runId,
+    );
     if (docs.length === 0) {
       await this.queue.enqueue("synthesize", payload);
       return;
@@ -44,6 +48,8 @@ export class EmbeddingService {
       await this.embeddingRepo.upsertForDocument(
         doc.id,
         payload.symbol,
+        payload.runId,
+        payload.taskId,
         vector,
         doc.content.slice(0, 4_000),
       );

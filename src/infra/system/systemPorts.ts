@@ -46,11 +46,13 @@ export class TaskFactory implements TaskFactoryPort {
    * Uses hyphen delimiters because BullMQ custom job ids cannot include colon.
    */
   create(symbol: string, stage: JobStage): ResearchTaskEntity {
+    const runId = this.ids.next();
     const id = this.ids.next();
     const now = this.clock.now();
     const hourBucket = now.toISOString().slice(0, 13);
     return {
       id,
+      runId,
       symbol: symbol.toUpperCase(),
       requestedAt: now,
       priority: 3,

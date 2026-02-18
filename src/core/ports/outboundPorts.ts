@@ -8,6 +8,7 @@ import type {
 } from "../entities/research";
 
 export type JobPayload = {
+  runId: string;
   taskId: string;
   symbol: string;
   idempotencyKey: string;
@@ -20,23 +21,37 @@ export interface QueuePort {
 
 export interface DocumentRepositoryPort {
   upsertMany(documents: DocumentEntity[]): Promise<void>;
-  listBySymbol(symbol: string, limit: number): Promise<DocumentEntity[]>;
+  listBySymbol(
+    symbol: string,
+    limit: number,
+    runId?: string,
+  ): Promise<DocumentEntity[]>;
 }
 
 export interface MetricsRepositoryPort {
   upsertMany(metrics: MetricPointEntity[]): Promise<void>;
-  listBySymbol(symbol: string, limit: number): Promise<MetricPointEntity[]>;
+  listBySymbol(
+    symbol: string,
+    limit: number,
+    runId?: string,
+  ): Promise<MetricPointEntity[]>;
 }
 
 export interface FilingsRepositoryPort {
   upsertMany(filings: FilingEntity[]): Promise<void>;
-  listBySymbol(symbol: string, limit: number): Promise<FilingEntity[]>;
+  listBySymbol(
+    symbol: string,
+    limit: number,
+    runId?: string,
+  ): Promise<FilingEntity[]>;
 }
 
 export interface EmbeddingRepositoryPort {
   upsertForDocument(
     documentId: string,
     symbol: string,
+    runId: string,
+    taskId: string,
     embedding: number[],
     content: string,
   ): Promise<void>;
@@ -44,7 +59,10 @@ export interface EmbeddingRepositoryPort {
 
 export interface SnapshotRepositoryPort {
   save(snapshot: ResearchSnapshotEntity): Promise<void>;
-  latestBySymbol(symbol: string): Promise<ResearchSnapshotEntity | null>;
+  latestBySymbol(
+    symbol: string,
+    runId?: string,
+  ): Promise<ResearchSnapshotEntity | null>;
 }
 
 export interface LlmPort {

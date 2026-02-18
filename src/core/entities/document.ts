@@ -2,6 +2,8 @@ export type DocumentType = "news" | "filing" | "transcript" | "analysis";
 
 export type DocumentEntity = {
   id: string;
+  runId?: string;
+  taskId?: string;
   symbol: string;
   provider: string;
   providerItemId: string;
