@@ -17,7 +17,7 @@ export type AppBoundaryErrorCode =
  * Describes a normalized boundary failure while preserving adapter/provider provenance.
  */
 export type AppBoundaryError = {
-  source: "news" | "metrics" | "filings" | "llm" | "embedding";
+  source: "news" | "metrics" | "filings" | "llm" | "embedding" | "resolver";
   code: AppBoundaryErrorCode;
   provider: string;
   message: string;

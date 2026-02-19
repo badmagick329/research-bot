@@ -177,6 +177,95 @@ describe("IngestionService", () => {
       status: "empty",
       metricCount: 0,
     });
+    expect(queuedPayload?.providerFailures).toEqual([]);
+  });
+
+  it("propagates provider failure diagnostics when ingest degrades", async () => {
+    const newsProvider: NewsProviderPort = {
+      fetchArticles: async () =>
+        err({
+          source: "news",
+          code: "malformed_response",
+          provider: "alphavantage",
+          message: "Alpha Vantage NEWS_SENTIMENT payload was malformed.",
+          retryable: false,
+        }),
+    };
+
+    const metricsProvider: MarketMetricsProviderPort = {
+      fetchMetrics: async (request) =>
+        ok({
+          metrics: [],
+          diagnostics: {
+            provider: "alphavantage",
+            symbol: request.symbol,
+            status: "empty",
+            metricCount: 0,
+          },
+        }),
+    };
+
+    const filingsProvider: FilingsProviderPort = {
+      fetchFilings: async () => ok([]),
+    };
+
+    const documentRepo: DocumentRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+
+    const metricsRepo: MetricsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+
+    const filingsRepo: FilingsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+
+    let queuedPayload: JobPayload | undefined;
+    const queue: QueuePort = {
+      enqueue: async (_stage, nextPayload) => {
+        queuedPayload = nextPayload;
+      },
+    };
+
+    const clock: ClockPort = {
+      now: () => new Date("2026-02-18T12:00:00.000Z"),
+    };
+
+    const ids: IdGeneratorPort = {
+      next: () => "id-1",
+    };
+
+    const service = new IngestionService(
+      newsProvider,
+      metricsProvider,
+      filingsProvider,
+      documentRepo,
+      metricsRepo,
+      filingsRepo,
+      queue,
+      clock,
+      ids,
+      7,
+      90,
+    );
+
+    await service.run(payload);
+
+    expect(queuedPayload?.providerFailures).toEqual([
+      {
+        source: "news",
+        provider: "alphavantage",
+        status: "malformed_response",
+        itemCount: 0,
+        reason: "Alpha Vantage NEWS_SENTIMENT payload was malformed.",
+        httpStatus: undefined,
+        retryable: false,
+      },
+    ]);
   });
 
   it("fails ingestion when all evidence sources fail", async () => {

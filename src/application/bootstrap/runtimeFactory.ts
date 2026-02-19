@@ -26,6 +26,7 @@ import { MockFilingsProvider } from "../../infra/providers/mocks/mockFilingsProv
 import { MockMarketMetricsProvider } from "../../infra/providers/mocks/mockMarketMetricsProvider";
 import { MockNewsProvider } from "../../infra/providers/mocks/mockNewsProvider";
 import { MultiNewsProvider } from "../../infra/providers/multiNewsProvider";
+import { CompanyResolver } from "../../infra/providers/company/companyResolver";
 import { SecEdgarFilingsProvider } from "../../infra/providers/sec/secEdgarFilingsProvider";
 import { BullMqQueue } from "../../infra/queue/bullMqQueue";
 import { HttpJsonClient } from "../../infra/http/httpJsonClient";
@@ -133,6 +134,7 @@ export const createRuntime = async () => {
   const clock = new SystemClock();
   const ids = new UuidIdGenerator();
   const taskFactory = new TaskFactory(clock, ids);
+  const companyResolver = new CompanyResolver();
 
   const queue = new BullMqQueue(redisConfigFromUrl(env.REDIS_URL));
   const httpClient = new HttpJsonClient();
@@ -164,6 +166,7 @@ export const createRuntime = async () => {
   const orchestratorService = new ResearchOrchestratorService(
     queue,
     taskFactory,
+    companyResolver,
   );
   const ingestionService = new IngestionService(
     newsProvider,

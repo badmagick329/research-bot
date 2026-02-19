@@ -140,6 +140,9 @@ const run = async (): Promise<void> => {
             symbol: job.data.symbol,
             idempotencyKey: job.data.idempotencyKey,
             durationMs,
+            providerFailureCount: job.data.providerFailures?.length ?? 0,
+            stageIssueCount: job.data.stageIssues?.length ?? 0,
+            metricsStatus: job.data.metricsDiagnostics?.status,
           },
           "Worker job completed",
         );

@@ -30,6 +30,9 @@ type AlphaVantageFeedItem = {
 
 type AlphaVantageNewsResponse = {
   feed?: AlphaVantageFeedItem[];
+  Information?: string;
+  Note?: string;
+  ["Error Message"]?: string;
 };
 
 type AlphaVantageNewsError =
@@ -46,6 +49,9 @@ type AlphaVantageNewsError =
       cause?: unknown;
     }
   | { code: "malformed_response"; message: string };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
 
 const parseAlphaVantageTimestamp = (value: string | undefined): Date | null => {
   if (!value) {
@@ -104,14 +110,13 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
     url.searchParams.set("sort", "LATEST");
     url.searchParams.set("apikey", this.apiKey);
 
-    const payloadResult =
-      await this.httpClient.requestJson<AlphaVantageNewsResponse>({
-        url: url.toString(),
-        method: "GET",
-        timeoutMs: this.timeoutMs,
-        retries: 2,
-        retryDelayMs: 250,
-      });
+    const payloadResult = await this.httpClient.requestJson<unknown>({
+      url: url.toString(),
+      method: "GET",
+      timeoutMs: this.timeoutMs,
+      retries: 2,
+      retryDelayMs: 250,
+    });
 
     if (payloadResult.isErr()) {
       return err(
@@ -130,7 +135,56 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
     }
 
     const payload = payloadResult.value;
-    if (!payload || !Array.isArray(payload.feed)) {
+    if (!isRecord(payload)) {
+      return err(
+        this.mapToBoundaryError(
+          {
+            code: "malformed_response",
+            message: "Alpha Vantage NEWS_SENTIMENT payload was malformed.",
+          },
+          request.symbol,
+        ),
+      );
+    }
+
+    const infoMessage =
+      typeof payload.Information === "string"
+        ? payload.Information
+        : typeof payload.Note === "string"
+          ? payload.Note
+          : undefined;
+
+    if (infoMessage) {
+      return err({
+        source: "news",
+        code: "rate_limited",
+        provider: "alphavantage",
+        message: infoMessage,
+        retryable: true,
+        cause: { symbol: request.symbol.toUpperCase() },
+      });
+    }
+
+    const errorMessage =
+      typeof payload["Error Message"] === "string"
+        ? payload["Error Message"]
+        : undefined;
+
+    if (errorMessage) {
+      return err({
+        source: "news",
+        code: /apikey|api key|authentication|invalid/i.test(errorMessage)
+          ? "auth_invalid"
+          : "provider_error",
+        provider: "alphavantage",
+        message: errorMessage,
+        retryable: false,
+        cause: { symbol: request.symbol.toUpperCase() },
+      });
+    }
+
+    const newsPayload = payload as AlphaVantageNewsResponse;
+    if (!Array.isArray(newsPayload.feed)) {
       return err(
         this.mapToBoundaryError(
           {
@@ -143,7 +197,7 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
     }
 
     return ok(
-      payload.feed
+      newsPayload.feed
         .slice(0, request.limit)
         .map((item, index) =>
           this.toNormalizedItem(request.symbol.toUpperCase(), item, index),

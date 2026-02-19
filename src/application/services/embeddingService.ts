@@ -5,6 +5,8 @@ import type {
   EmbeddingRepositoryPort,
   QueuePort,
 } from "../../core/ports/outboundPorts";
+import type { AppBoundaryError } from "../../core/entities/appError";
+import type { SnapshotStageDiagnostics } from "../../core/entities/research";
 
 /**
  * Separates vector generation from ingestion so embedding failures do not block upstream data capture.
@@ -16,6 +18,33 @@ export class EmbeddingService {
     private readonly embeddingRepo: EmbeddingRepositoryPort,
     private readonly queue: QueuePort,
   ) {}
+
+  /**
+   * Accumulates embedding-stage degradation details so snapshot output can clearly explain quality impacts.
+   */
+  private withStageIssue(
+    payload: JobPayload,
+    issue: SnapshotStageDiagnostics,
+  ): JobPayload {
+    return {
+      ...payload,
+      stageIssues: [...(payload.stageIssues ?? []), issue],
+    };
+  }
+
+  /**
+   * Converts embedding boundary errors into consistent stage issue diagnostics.
+   */
+  private toAdapterIssue(error: AppBoundaryError): SnapshotStageDiagnostics {
+    return {
+      stage: "embed",
+      status: "degraded",
+      reason: `Embedding degraded due to ${error.provider}: ${error.message}`,
+      provider: error.provider,
+      code: error.code,
+      retryable: error.retryable,
+    };
+  }
 
   /**
    * Advances research jobs into synthesis with persisted vectors for later semantic retrieval.
@@ -36,20 +65,30 @@ export class EmbeddingService {
     );
 
     if (vectorsResult.isErr()) {
-      throw new Error(
-        `Embedding failed due to adapter error: ${vectorsResult.error.message}`,
+      await this.queue.enqueue(
+        "synthesize",
+        this.withStageIssue(payload, this.toAdapterIssue(vectorsResult.error)),
       );
+      return;
     }
 
     const vectors = vectorsResult.value;
+    let nextPayload = payload;
 
     if (vectors.length !== docs.length) {
-      throw new Error(
-        `Embedding result count mismatch. Expected ${docs.length}, got ${vectors.length}.`,
-      );
+      nextPayload = this.withStageIssue(payload, {
+        stage: "embed",
+        status: "degraded",
+        reason: `Embedding returned ${vectors.length} vectors for ${docs.length} documents. Persisted the available subset.`,
+        provider: "embedding",
+        code: "dimension_mismatch",
+        retryable: false,
+      });
     }
 
-    for (let index = 0; index < docs.length; index += 1) {
+    const persistCount = Math.min(docs.length, vectors.length);
+
+    for (let index = 0; index < persistCount; index += 1) {
       const doc = docs[index];
       const vector = vectors[index];
       if (!doc || !vector) continue;
@@ -63,6 +102,6 @@ export class EmbeddingService {
       );
     }
 
-    await this.queue.enqueue("synthesize", payload);
+    await this.queue.enqueue("synthesize", nextPayload);
   }
 }

@@ -6,7 +6,10 @@ import type { AppBoundaryError } from "../entities/appError";
 import type {
   JobStage,
   ResearchSnapshotEntity,
+  ResolvedCompanyIdentity,
   SnapshotMetricsDiagnostics,
+  SnapshotProviderFailureDiagnostics,
+  SnapshotStageDiagnostics,
   ResearchTaskEntity,
 } from "../entities/research";
 
@@ -16,7 +19,10 @@ export type JobPayload = {
   symbol: string;
   idempotencyKey: string;
   requestedAt: string;
+  resolvedIdentity?: ResolvedCompanyIdentity;
   metricsDiagnostics?: SnapshotMetricsDiagnostics;
+  providerFailures?: SnapshotProviderFailureDiagnostics[];
+  stageIssues?: SnapshotStageDiagnostics[];
 };
 
 export interface QueuePort {

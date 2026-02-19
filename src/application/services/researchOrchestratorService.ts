@@ -1,4 +1,5 @@
 import type { JobStage } from "../../core/entities/research";
+import type { CompanyResolverPort } from "../../core/ports/inboundPorts";
 import type {
   QueuePort,
   TaskFactoryPort,
@@ -11,6 +12,7 @@ export class ResearchOrchestratorService {
   constructor(
     private readonly queue: QueuePort,
     private readonly taskFactory: TaskFactoryPort,
+    private readonly companyResolver: CompanyResolverPort,
   ) {}
 
   /**
@@ -21,7 +23,18 @@ export class ResearchOrchestratorService {
     stage: JobStage = "ingest",
     force = false,
   ): Promise<void> {
-    const task = this.taskFactory.create(symbol, stage);
+    const resolution = await this.companyResolver.resolveCompany({
+      symbolOrName: symbol,
+    });
+
+    if (resolution.isErr()) {
+      throw new Error(
+        `Company resolution failed for '${symbol}': ${resolution.error.message}`,
+      );
+    }
+
+    const identity = resolution.value.identity;
+    const task = this.taskFactory.create(identity.canonicalSymbol, stage);
     const idempotencyKey = force
       ? `${task.idempotencyKey}-force-${task.id}`
       : task.idempotencyKey;
@@ -32,6 +45,7 @@ export class ResearchOrchestratorService {
       symbol: task.symbol,
       idempotencyKey,
       requestedAt: task.requestedAt.toISOString(),
+      resolvedIdentity: identity,
     });
   }
 }

@@ -9,6 +9,7 @@ import {
   vector,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import type { SnapshotDiagnostics } from "../../core/entities/research";
 
 export const documentsTable = pgTable(
   "documents",
@@ -138,23 +139,7 @@ export const snapshotsTable = pgTable("snapshots", {
     .$type<Array<{ provider: string; url?: string; title?: string }>>()
     .notNull(),
   diagnostics: jsonb("diagnostics")
-    .$type<{
-      metrics?: {
-        provider: string;
-        status:
-          | "ok"
-          | "empty"
-          | "rate_limited"
-          | "timeout"
-          | "provider_error"
-          | "auth_invalid"
-          | "config_invalid"
-          | "malformed_response";
-        metricCount: number;
-        reason?: string;
-        httpStatus?: number;
-      };
-    }>()
+    .$type<SnapshotDiagnostics>()
     .notNull()
     .default(sql`'{}'::jsonb`),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),

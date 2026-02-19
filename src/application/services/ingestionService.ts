@@ -18,6 +18,10 @@ import type {
 } from "../../core/ports/inboundPorts";
 import type { Result } from "neverthrow";
 import type { AppBoundaryError } from "../../core/entities/appError";
+import type {
+  SnapshotProviderFailureDiagnostics,
+  SnapshotProviderFailureStatus,
+} from "../../core/entities/research";
 
 /**
  * Keeps provider IO at the pipeline edge so downstream stages always consume normalized persisted records.
@@ -51,6 +55,47 @@ export class IngestionService {
     }
 
     return `doc:${symbol.toUpperCase()}|${docUrl.trim().toLowerCase()}`;
+  }
+
+  /**
+   * Converts boundary provider failures into snapshot diagnostics so degraded runs remain explicit downstream.
+   */
+  private toProviderFailure(
+    source: "news" | "metrics" | "filings",
+    error: AppBoundaryError,
+  ): SnapshotProviderFailureDiagnostics {
+    return {
+      source,
+      provider: error.provider,
+      status: this.mapFailureStatus(error),
+      itemCount: 0,
+      reason: error.message,
+      httpStatus: error.httpStatus,
+      retryable: error.retryable,
+    };
+  }
+
+  /**
+   * Narrows boundary error codes to persisted provider failure statuses for stable snapshot diagnostics.
+   */
+  private mapFailureStatus(
+    error: AppBoundaryError,
+  ): SnapshotProviderFailureStatus {
+    switch (error.code) {
+      case "rate_limited":
+      case "timeout":
+      case "provider_error":
+      case "auth_invalid":
+      case "config_invalid":
+      case "malformed_response":
+      case "transport_error":
+      case "invalid_json":
+        return error.code;
+      case "validation_error":
+      case "dimension_mismatch":
+      default:
+        return "provider_error";
+    }
   }
 
   /**
@@ -96,6 +141,11 @@ export class IngestionService {
 
     const news = newsResult.isOk() ? newsResult.value : [];
 
+    const providerFailures: SnapshotProviderFailureDiagnostics[] = [];
+    if (newsResult.isErr()) {
+      providerFailures.push(this.toProviderFailure("news", newsResult.error));
+    }
+
     const fallbackMetrics: MetricsFetchResult = {
       metrics: [],
       diagnostics: {
@@ -114,7 +164,18 @@ export class IngestionService {
       : fallbackMetrics;
     const metrics = metricsPayload.metrics;
 
+    if (metricsResult.isErr()) {
+      providerFailures.push(
+        this.toProviderFailure("metrics", metricsResult.error),
+      );
+    }
+
     const filings = filingsResult.isOk() ? filingsResult.value : [];
+    if (filingsResult.isErr()) {
+      providerFailures.push(
+        this.toProviderFailure("filings", filingsResult.error),
+      );
+    }
 
     const documents: DocumentEntity[] = news.map((item) => ({
       id: this.ids.next(),
@@ -193,6 +254,7 @@ export class IngestionService {
         reason: metricsPayload.diagnostics.reason,
         httpStatus: metricsPayload.diagnostics.httpStatus,
       },
+      providerFailures,
     });
   }
 }

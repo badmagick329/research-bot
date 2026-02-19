@@ -1,5 +1,6 @@
 import type { Result } from "neverthrow";
 import type { AppBoundaryError } from "../entities/appError";
+import type { ResolvedCompanyIdentity } from "../entities/research";
 
 export type NewsSearchRequest = {
   symbol: string;
@@ -98,6 +99,14 @@ export type NormalizedFiling = {
   rawPayload: unknown;
 };
 
+export type CompanyResolveRequest = {
+  symbolOrName: string;
+};
+
+export type CompanyResolveResult = {
+  identity: ResolvedCompanyIdentity;
+};
+
 export interface NewsProviderPort {
   fetchArticles(
     request: NewsSearchRequest,
@@ -114,4 +123,10 @@ export interface FilingsProviderPort {
   fetchFilings(
     request: FilingsRequest,
   ): Promise<Result<NormalizedFiling[], AppBoundaryError>>;
+}
+
+export interface CompanyResolverPort {
+  resolveCompany(
+    request: CompanyResolveRequest,
+  ): Promise<Result<CompanyResolveResult, AppBoundaryError>>;
 }

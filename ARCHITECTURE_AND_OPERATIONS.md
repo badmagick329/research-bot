@@ -8,23 +8,36 @@
 - Host runtime: CLI + worker on Bun.
 - Infra runtime: Docker services for Postgres + Redis.
 - Pipeline: `ingest -> normalize -> embed -> synthesize`.
-- Stage payloads carry `runId/taskId`; downstream reads are run-scoped.
+- Stage payloads are run-scoped and carry: `runId`, `taskId`, `symbol`, and diagnostics context.
+- Enqueue path resolves company identity before ingestion:
+  - input can be ticker (for example `RYCEY`) or mapped company-name aliases (for example `ROLLS ROYCE`)
+  - payload carries `resolvedIdentity` (`requestedSymbol`, `canonicalSymbol`, `companyName`, `aliases`, `confidence`, `resolutionSource`)
 
 ### Data + failure model
 
 - Synthesis consumes `news + metrics + filings` evidence and writes snapshots.
-- Ingestion persists metrics diagnostics and forwards them to synthesis.
-- Providers/LLM/embedding return typed `Result` boundary errors.
-- Ingestion requires at least one successful source call (`news` or `metrics` or `filings`), even if evidence arrays are empty.
-- Metrics policy is hybrid:
-  - auth/config invalid => fail hard
-  - transient/provider issues => degrade with diagnostics
+- Ingestion requires at least one successful source call (`news` or `metrics` or `filings`), even if returned arrays are empty.
+- Boundary adapters return typed `Result` errors (`provider`, `code`, `retryable`, optional `httpStatus`).
+- Diagnostics are first-class and flow across stages:
+  - `metricsDiagnostics`
+  - `providerFailures` (news/metrics/filings)
+  - `stageIssues` (normalize/embed degradation)
+  - `identity` (resolved company identity)
+- Stage degradation policy:
+  - `normalize`: LLM failures degrade and continue
+  - `embed`: embedding failures/mismatches degrade and continue
+  - `synthesize`: still runs to materialize a snapshot with explicit quality alerts
+- Snapshot prettify output surfaces:
+  - resolved identity
+  - data quality alerts
+  - evidence-derived thesis/risks/catalysts/sources
 
 ### Retry + idempotency model
 
 - HTTP adapter retries: `2` (total attempts `3`).
 - BullMQ retries: `2` (total attempts `3`) with exponential backoff.
-- Job idempotency is hourly (`${symbol}-${stage}-${hour}`); use `--force` to bypass.
+- Job idempotency key is hourly: `${symbol}-${stage}-${hour}`.
+- Use `--force` to bypass idempotency dedupe for immediate reruns.
 
 ## 2) Code map
 
@@ -37,18 +50,21 @@
 
 ### Workflow + contracts
 
+- `src/application/services/researchOrchestratorService.ts`
 - `src/application/services/ingestionService.ts`
 - `src/application/services/normalizationService.ts`
 - `src/application/services/embeddingService.ts`
 - `src/application/services/synthesisService.ts`
 - `src/core/ports/inboundPorts.ts`
 - `src/core/ports/outboundPorts.ts`
+- `src/core/entities/research.ts`
 - `src/core/entities/appError.ts`
 
 ### Infra adapters
 
 - `src/infra/http/httpJsonClient.ts`
 - `src/infra/queue/bullMqQueue.ts`
+- `src/infra/providers/company/companyResolver.ts`
 - `src/infra/providers/finnhub/finnhubNewsProvider.ts`
 - `src/infra/providers/alphavantage/alphaVantageNewsProvider.ts`
 - `src/infra/providers/alphavantage/alphaVantageMetricsProvider.ts`
@@ -56,7 +72,7 @@
 - `src/infra/llm/ollamaLlm.ts`
 - `src/infra/llm/ollamaEmbedding.ts`
 
-### Schema + persistence
+### Persistence
 
 - `src/infra/db/schema.ts`
 - `src/infra/db/repositories.ts`
@@ -71,11 +87,14 @@
 
 ## 3) Operational rules
 
-- Run CLI/worker from host terminal; Docker is only for infra services.
+- Run CLI/worker from host terminal; Docker is for infra services only.
 - `snapshot` is read-only; it never triggers pipeline execution.
 - Queue names and custom job ids must not include `:`.
-- Restart worker after config/code changes affecting providers/adapters.
-- Embed model must match runtime/storage dimension expectation (currently 1024).
+- Restart worker after config/code changes affecting providers/adapters/resolver map.
+- Embed model must match runtime/storage vector dimension expectation (currently 1024).
+- For identity-sensitive investigations:
+  - prefer `snapshot --prettify` to inspect `Resolved identity` and `Data quality alerts`
+  - use `--force` after provider/resolver behavior changes to avoid stale idempotent jobs
 
 ## 4) Migrations
 
@@ -87,6 +106,11 @@
 4. Apply migration: `bun run db:migrate`
 
 Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyping.
+
+### Note on current identity/diagnostics changes
+
+- The recent identity and diagnostics additions are stored inside existing `jsonb` snapshot diagnostics payloads.
+- No new SQL migration is required unless table/column shape changes.
 
 ## 5) Runbook
 
@@ -106,11 +130,13 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 ### Core commands
 
 - `bun run src/index.ts status`
+- `bun run src/workers/main.ts`
 - `bun run src/index.ts enqueue --symbol AAPL`
 - `bun run src/index.ts enqueue --symbol AAPL --force`
+- `bun run src/index.ts enqueue --symbol RYCEY --force`
+- `bun run src/index.ts enqueue --symbol "ROLLS ROYCE" --force`
 - `bun run src/index.ts snapshot --symbol AAPL`
-- `bun run src/index.ts snapshot --symbol AAPL --prettify`
-- `bun run src/workers/main.ts`
+- `bun run src/index.ts snapshot --symbol RYCEY --prettify`
 - `bun run src/cli/ollamaProbe.ts`
 
 ### Maintenance
@@ -122,13 +148,14 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 
 1. Start infra + migrations.
 2. Start worker.
-3. Enqueue one symbol.
+3. Enqueue one symbol (or mapped company alias).
 4. Wait for stage completion.
-5. Fetch snapshot.
+5. Fetch snapshot with `--prettify`.
+6. Confirm `Resolved identity` and `Data quality alerts` sections are present when relevant.
 
 If no snapshot appears:
 
-- check worker logs
+- check worker logs for failed jobs
 - confirm host URLs use `localhost` for Redis/Postgres
 - confirm Ollama reachability + local model availability
 - retry enqueue with `--force`

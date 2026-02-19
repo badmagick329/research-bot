@@ -179,12 +179,58 @@ describe("SynthesisService", () => {
       ids,
     );
 
-    await service.run(payload);
+    await service.run({
+      ...payload,
+      resolvedIdentity: {
+        requestedSymbol: "RYCEY",
+        canonicalSymbol: "RYCEY",
+        companyName: "Rolls-Royce Holdings plc",
+        aliases: ["RYCEY", "RR.L"],
+        exchange: "OTC",
+        confidence: 0.99,
+        resolutionSource: "manual_map",
+      },
+      metricsDiagnostics: {
+        provider: "alphavantage",
+        status: "empty",
+        metricCount: 0,
+        reason: "No numeric overview fundamentals available.",
+      },
+      providerFailures: [
+        {
+          source: "news",
+          provider: "alphavantage",
+          status: "malformed_response",
+          itemCount: 0,
+          reason: "Alpha Vantage NEWS_SENTIMENT payload was malformed.",
+          retryable: false,
+        },
+      ],
+      stageIssues: [
+        {
+          stage: "embed",
+          status: "degraded",
+          reason: "Embedding degraded due to ollama-embedding: timeout",
+          provider: "ollama-embedding",
+          code: "timeout",
+          retryable: true,
+        },
+      ],
+    });
 
     expect(capturedPrompt).toContain("News headlines:");
     expect(capturedPrompt).toContain("Market metrics:");
     expect(capturedPrompt).toContain("Regulatory filings:");
     expect(capturedPrompt).toContain("Metrics fetch diagnostics:");
+    expect(capturedPrompt).toContain("Resolved company identity:");
+    expect(capturedPrompt).toContain("companyName=Rolls-Royce Holdings plc");
+    expect(capturedPrompt).toContain(
+      "never describe the symbol as a placeholder or unknown identifier",
+    );
+    expect(capturedPrompt).toContain("Provider failures:");
+    expect(capturedPrompt).toContain("Pipeline stage issues:");
+    expect(capturedPrompt).toContain("source=news, provider=alphavantage");
+    expect(capturedPrompt).toContain("stage=embed, status=degraded");
     expect(capturedPrompt).toContain("market_cap");
     expect(capturedPrompt).toContain("8-K filed 2026-02-15");
 
@@ -198,6 +244,43 @@ describe("SynthesisService", () => {
     expect(savedSnapshot.confidence).toBe(0.81);
     expect(savedSnapshot.runId).toBe("run-1");
     expect(savedSnapshot.taskId).toBe("task-1");
+    expect(savedSnapshot.diagnostics).toEqual({
+      metrics: {
+        provider: "alphavantage",
+        status: "empty",
+        metricCount: 0,
+        reason: "No numeric overview fundamentals available.",
+      },
+      providerFailures: [
+        {
+          source: "news",
+          provider: "alphavantage",
+          status: "malformed_response",
+          itemCount: 0,
+          reason: "Alpha Vantage NEWS_SENTIMENT payload was malformed.",
+          retryable: false,
+        },
+      ],
+      stageIssues: [
+        {
+          stage: "embed",
+          status: "degraded",
+          reason: "Embedding degraded due to ollama-embedding: timeout",
+          provider: "ollama-embedding",
+          code: "timeout",
+          retryable: true,
+        },
+      ],
+      identity: {
+        requestedSymbol: "RYCEY",
+        canonicalSymbol: "RYCEY",
+        companyName: "Rolls-Royce Holdings plc",
+        aliases: ["RYCEY", "RR.L"],
+        exchange: "OTC",
+        confidence: 0.99,
+        resolutionSource: "manual_map",
+      },
+    });
     expect(documentReadRunId).toBe("run-1");
     expect(metricsReadRunId).toBe("run-1");
     expect(filingsReadRunId).toBe("run-1");

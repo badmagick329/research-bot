@@ -155,6 +155,68 @@ describe("AlphaVantageNewsProvider", () => {
     }
   });
 
+  it("maps information note payloads to rate_limited boundary errors", async () => {
+    setFetch(
+      async () =>
+        new Response(
+          JSON.stringify({
+            Information:
+              "Thank you for using Alpha Vantage! Our standard API rate limit is 25 requests per day.",
+          }),
+          { status: 200 },
+        ),
+    );
+
+    const provider = new AlphaVantageNewsProvider(
+      "https://www.alphavantage.co",
+      "test-key",
+      5_000,
+    );
+
+    const items = await provider.fetchArticles({
+      symbol: "RYCEY",
+      from: new Date("2026-01-01T00:00:00.000Z"),
+      to: new Date("2026-01-10T00:00:00.000Z"),
+      limit: 5,
+    });
+
+    expect(items.isErr()).toBeTrue();
+    if (items.isErr()) {
+      expect(items.error.code).toBe("rate_limited");
+    }
+  });
+
+  it("maps error message payloads to auth_invalid when API key is rejected", async () => {
+    setFetch(
+      async () =>
+        new Response(
+          JSON.stringify({
+            "Error Message":
+              "Invalid API key. Please retry with a valid apikey.",
+          }),
+          { status: 200 },
+        ),
+    );
+
+    const provider = new AlphaVantageNewsProvider(
+      "https://www.alphavantage.co",
+      "test-key",
+      5_000,
+    );
+
+    const items = await provider.fetchArticles({
+      symbol: "RYCEY",
+      from: new Date("2026-01-01T00:00:00.000Z"),
+      to: new Date("2026-01-10T00:00:00.000Z"),
+      limit: 5,
+    });
+
+    expect(items.isErr()).toBeTrue();
+    if (items.isErr()) {
+      expect(items.error.code).toBe("auth_invalid");
+    }
+  });
+
   it("throws when api key is missing", () => {
     expect(
       () => new AlphaVantageNewsProvider("https://www.alphavantage.co", ""),

@@ -32,12 +32,60 @@ const formatSnapshotReport = (snapshot: ResearchSnapshotEntity): string => {
   lines.push(`Horizon: ${snapshot.horizon}`);
   lines.push(`Score: ${snapshot.score.toFixed(1)} / 100`);
   lines.push(`Confidence: ${(snapshot.confidence * 100).toFixed(1)}%`);
+
+  if (snapshot.diagnostics?.identity) {
+    const identity = snapshot.diagnostics.identity;
+    lines.push("Resolved identity:");
+    lines.push(
+      `- requested=${identity.requestedSymbol}, canonical=${identity.canonicalSymbol}, company=${identity.companyName}, confidence=${identity.confidence.toFixed(2)}, source=${identity.resolutionSource}`,
+    );
+    if (identity.aliases.length > 0) {
+      lines.push(`- aliases=${identity.aliases.join(", ")}`);
+    }
+    if (identity.exchange) {
+      lines.push(`- exchange=${identity.exchange}`);
+    }
+  }
+
   lines.push("");
   lines.push("Thesis:");
   lines.push(snapshot.thesis);
   lines.push("");
   lines.push("Valuation view:");
   lines.push(snapshot.valuationView);
+  lines.push("");
+
+  lines.push("Data quality alerts:");
+  const providerFailures = snapshot.diagnostics?.providerFailures ?? [];
+  const stageIssues = snapshot.diagnostics?.stageIssues ?? [];
+  const metricsDiagnostics = snapshot.diagnostics?.metrics;
+
+  if (
+    providerFailures.length === 0 &&
+    stageIssues.length === 0 &&
+    !metricsDiagnostics
+  ) {
+    lines.push("- none");
+  } else {
+    if (metricsDiagnostics) {
+      lines.push(
+        `- metrics: provider=${metricsDiagnostics.provider}, status=${metricsDiagnostics.status}, metricCount=${metricsDiagnostics.metricCount}${metricsDiagnostics.reason ? `, reason=${metricsDiagnostics.reason}` : ""}${typeof metricsDiagnostics.httpStatus === "number" ? `, httpStatus=${metricsDiagnostics.httpStatus}` : ""}`,
+      );
+    }
+
+    providerFailures.forEach((failure) => {
+      lines.push(
+        `- provider-failure: source=${failure.source}, provider=${failure.provider}, status=${failure.status}, itemCount=${failure.itemCount}${typeof failure.httpStatus === "number" ? `, httpStatus=${failure.httpStatus}` : ""}${typeof failure.retryable === "boolean" ? `, retryable=${failure.retryable}` : ""}, reason=${failure.reason}`,
+      );
+    });
+
+    stageIssues.forEach((issue) => {
+      lines.push(
+        `- stage-issue: stage=${issue.stage}, status=${issue.status}${issue.provider ? `, provider=${issue.provider}` : ""}${issue.code ? `, code=${issue.code}` : ""}${typeof issue.retryable === "boolean" ? `, retryable=${issue.retryable}` : ""}, reason=${issue.reason}`,
+      );
+    });
+  }
+
   lines.push("");
 
   lines.push("Risks:");

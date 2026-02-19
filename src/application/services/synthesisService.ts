@@ -10,6 +10,11 @@ import type {
 } from "../../core/ports/outboundPorts";
 import type { MetricPointEntity } from "../../core/entities/metric";
 import type { FilingEntity } from "../../core/entities/filing";
+import type {
+  ResolvedCompanyIdentity,
+  SnapshotProviderFailureDiagnostics,
+  SnapshotStageDiagnostics,
+} from "../../core/entities/research";
 
 /**
  * Consolidates evidence into a durable snapshot so decision outputs remain traceable to stored sources.
@@ -30,6 +35,77 @@ export class SynthesisService {
    */
   private isMockProvider(provider: string): boolean {
     return provider.trim().toLowerCase().startsWith("mock");
+  }
+
+  /**
+   * Renders provider failure diagnostics into stable prompt lines so missing evidence is explicit to synthesis.
+   */
+  private formatProviderFailures(
+    failures: SnapshotProviderFailureDiagnostics[] | undefined,
+  ): string {
+    if (!failures || failures.length === 0) {
+      return "- none";
+    }
+
+    return failures
+      .map((failure) => {
+        const httpStatusPart =
+          typeof failure.httpStatus === "number"
+            ? `, httpStatus=${failure.httpStatus}`
+            : "";
+        const retryablePart =
+          typeof failure.retryable === "boolean"
+            ? `, retryable=${failure.retryable}`
+            : "";
+        return `- source=${failure.source}, provider=${failure.provider}, status=${failure.status}, itemCount=${failure.itemCount}${httpStatusPart}${retryablePart}, reason=${failure.reason}`;
+      })
+      .join("\n");
+  }
+
+  /**
+   * Renders stage degradation diagnostics so final snapshot narrative can clearly explain pipeline quality loss.
+   */
+  private formatStageIssues(issues: SnapshotStageDiagnostics[] | undefined) {
+    if (!issues || issues.length === 0) {
+      return "- none";
+    }
+
+    return issues
+      .map((issue) => {
+        const providerPart = issue.provider
+          ? `, provider=${issue.provider}`
+          : "";
+        const codePart = issue.code ? `, code=${issue.code}` : "";
+        const retryablePart =
+          typeof issue.retryable === "boolean"
+            ? `, retryable=${issue.retryable}`
+            : "";
+        return `- stage=${issue.stage}, status=${issue.status}${providerPart}${codePart}${retryablePart}, reason=${issue.reason}`;
+      })
+      .join("\n");
+  }
+
+  /**
+   * Injects canonical issuer identity into synthesis context so sparse evidence runs remain company-grounded.
+   */
+  private formatIdentityContext(identity: ResolvedCompanyIdentity | undefined) {
+    if (!identity) {
+      return "- unresolved";
+    }
+
+    const aliases =
+      identity.aliases.length > 0 ? identity.aliases.join(", ") : "none";
+    return [
+      `- requestedSymbol=${identity.requestedSymbol}`,
+      `- canonicalSymbol=${identity.canonicalSymbol}`,
+      `- companyName=${identity.companyName}`,
+      `- aliases=${aliases}`,
+      `- confidence=${identity.confidence.toFixed(2)}`,
+      `- resolutionSource=${identity.resolutionSource}`,
+      identity.exchange ? `- exchange=${identity.exchange}` : undefined,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n");
   }
 
   /**
@@ -415,16 +491,33 @@ export class SynthesisService {
     const metricsDiagnosticsLine = payload.metricsDiagnostics
       ? `- provider=${payload.metricsDiagnostics.provider}, status=${payload.metricsDiagnostics.status}, metricCount=${payload.metricsDiagnostics.metricCount}${payload.metricsDiagnostics.reason ? `, reason=${payload.metricsDiagnostics.reason}` : ""}${typeof payload.metricsDiagnostics.httpStatus === "number" ? `, httpStatus=${payload.metricsDiagnostics.httpStatus}` : ""}`
       : "- unavailable";
+    const providerFailureLines = this.formatProviderFailures(
+      payload.providerFailures,
+    );
+    const stageIssueLines = this.formatStageIssues(payload.stageIssues);
+    const identityLines = this.formatIdentityContext(payload.resolvedIdentity);
+    const synthesisTarget = payload.resolvedIdentity
+      ? `${payload.resolvedIdentity.companyName} (${payload.resolvedIdentity.canonicalSymbol})`
+      : payload.symbol;
 
     const thesisResult = await this.llm.synthesize(
       [
-        `Create an investing thesis for ${payload.symbol}.`,
+        `Create an investing thesis for ${synthesisTarget}.`,
         "Use only the evidence below.",
         "Do not invent facts, numbers, shareholders, or events not present in evidence.",
         "When evidence is missing or weak, explicitly state uncertainty and data gaps.",
         "",
+        "Resolved company identity:",
+        identityLines,
+        "",
         "Metrics fetch diagnostics:",
         metricsDiagnosticsLine,
+        "",
+        "Provider failures:",
+        providerFailureLines,
+        "",
+        "Pipeline stage issues:",
+        stageIssueLines,
         "",
         "News headlines:",
         sourceLines || "- none",
@@ -443,6 +536,10 @@ export class SynthesisService {
         "- Use filings to support or challenge narrative when available.",
         "- Explicitly state missing evidence if a section is empty.",
         "- If metrics diagnostics indicate missing or degraded metrics, mention that limitation in Missing Evidence.",
+        "- If provider failures or pipeline stage issues are present, call them out explicitly in Missing Evidence.",
+        "- If resolved identity confidence is >= 0.60, never describe the symbol as a placeholder or unknown identifier.",
+        "- If resolved identity confidence is < 0.60, explicitly mention identity uncertainty in Missing Evidence.",
+        "- Treat listed aliases as the same issuer unless evidence explicitly contradicts this.",
       ].join("\n"),
     );
 
@@ -482,6 +579,9 @@ export class SynthesisService {
       sources: this.uniqueSources(docs, latestMetrics, filings),
       diagnostics: {
         metrics: payload.metricsDiagnostics,
+        providerFailures: payload.providerFailures,
+        stageIssues: payload.stageIssues,
+        identity: payload.resolvedIdentity,
       },
       createdAt: now,
     });
