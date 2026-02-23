@@ -52,12 +52,13 @@ export class ResearchOrchestratorService {
 
     return {
       accepted: true,
-      runId: task.runId,
-      taskId: task.id,
+      runId: queueReceipt.runId,
+      taskId: queueReceipt.taskId,
       requestedSymbol: symbol,
       canonicalSymbol: identity.canonicalSymbol,
       idempotencyKey,
       forceApplied: force,
+      deduped: queueReceipt.deduped,
       enqueuedAt: queueReceipt.enqueuedAt,
     };
   }

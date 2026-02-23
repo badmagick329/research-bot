@@ -18,7 +18,13 @@ describe("ResearchOrchestratorService", () => {
       },
       enqueueWithReceipt: async (stage, payload) => {
         enqueues.push({ stage, payload });
-        return { enqueuedAt: "2026-02-19T00:00:02.000Z" };
+        return {
+          runId: "run-1",
+          taskId: "task-1",
+          requestedAt: "2026-02-19T00:00:00.000Z",
+          enqueuedAt: "2026-02-19T00:00:02.000Z",
+          deduped: false,
+        };
       },
     };
 
@@ -86,6 +92,7 @@ describe("ResearchOrchestratorService", () => {
       canonicalSymbol: "RYCEY",
       idempotencyKey: "RYCEY-ingest-hour-force-task-1",
       forceApplied: true,
+      deduped: false,
       enqueuedAt: "2026-02-19T00:00:02.000Z",
     });
   });
@@ -94,7 +101,11 @@ describe("ResearchOrchestratorService", () => {
     const queue: QueuePort & QueueReceiptPort = {
       enqueue: async () => {},
       enqueueWithReceipt: async () => ({
+        runId: "run-1",
+        taskId: "task-1",
+        requestedAt: "2026-02-19T00:00:00.000Z",
         enqueuedAt: "2026-02-19T00:00:02.000Z",
+        deduped: false,
       }),
     };
 
@@ -130,5 +141,56 @@ describe("ResearchOrchestratorService", () => {
     await expect(
       service.enqueueForSymbol("unknown corp", "ingest"),
     ).rejects.toThrow("Company resolution failed");
+  });
+
+  it("returns original queued run identity when enqueue is deduplicated", async () => {
+    const queue: QueuePort & QueueReceiptPort = {
+      enqueue: async () => {},
+      enqueueWithReceipt: async () => ({
+        runId: "run-existing",
+        taskId: "task-existing",
+        requestedAt: "2026-02-19T00:00:00.000Z",
+        enqueuedAt: "2026-02-19T00:00:02.000Z",
+        deduped: true,
+      }),
+    };
+
+    const taskFactory: TaskFactoryPort = {
+      create: (symbol, stage) => ({
+        id: "task-new",
+        runId: "run-new",
+        symbol,
+        requestedAt: new Date("2026-02-19T00:00:00.000Z"),
+        priority: 1,
+        stage,
+        idempotencyKey: `${symbol}-ingest-hour`,
+      }),
+    };
+
+    const resolver: CompanyResolverPort = {
+      resolveCompany: async () =>
+        ok({
+          identity: {
+            requestedSymbol: "NVDA",
+            canonicalSymbol: "NVDA",
+            companyName: "NVIDIA Corporation",
+            aliases: ["NVDA"],
+            confidence: 0.99,
+            resolutionSource: "provider",
+          },
+        }),
+    };
+
+    const service = new ResearchOrchestratorService(
+      queue,
+      taskFactory,
+      resolver,
+    );
+
+    const result = await service.enqueueForSymbol("nvda", "ingest", false);
+
+    expect(result.runId).toBe("run-existing");
+    expect(result.taskId).toBe("task-existing");
+    expect(result.deduped).toBe(true);
   });
 });

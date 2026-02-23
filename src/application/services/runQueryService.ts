@@ -8,6 +8,7 @@ import type {
 import type { RunQueryUseCasePort } from "../../core/ports/inboundPorts";
 import type {
   QueueCountsReadPort,
+  QueueRunReadPort,
   RunsReadRepositoryPort,
   SnapshotRepositoryPort,
 } from "../../core/ports/outboundPorts";
@@ -17,7 +18,7 @@ import type {
  */
 export class RunQueryService implements RunQueryUseCasePort {
   constructor(
-    private readonly queueCounts: QueueCountsReadPort,
+    private readonly queueReads: QueueCountsReadPort & QueueRunReadPort,
     private readonly snapshots: SnapshotRepositoryPort,
     private readonly runsReadRepository: RunsReadRepositoryPort,
   ) {}
@@ -26,7 +27,7 @@ export class RunQueryService implements RunQueryUseCasePort {
    * Samples queue depth through the queue port so API and CLI avoid direct queue-adapter coupling.
    */
   async getQueueCounts(): Promise<QueueCountsResponse> {
-    return this.queueCounts.getQueueCountsSampled();
+    return this.queueReads.getQueueCountsSampled();
   }
 
   /**
@@ -56,6 +57,33 @@ export class RunQueryService implements RunQueryUseCasePort {
    * Exposes one run projection by id without leaking storage details to transport handlers.
    */
   async getRunDetail(runId: string): Promise<RunDetailResponse | null> {
-    return this.runsReadRepository.getRunDetail(runId);
+    const persisted = await this.runsReadRepository.getRunDetail(runId);
+    if (persisted) {
+      return persisted;
+    }
+
+    const queued = await this.queueReads.getRunState(runId);
+    if (!queued) {
+      return null;
+    }
+
+    return {
+      run: {
+        runId: queued.runId,
+        taskId: queued.taskId,
+        requestedSymbol: queued.requestedSymbol,
+        canonicalSymbol: queued.canonicalSymbol,
+        identity: queued.identity,
+        status: queued.status,
+        stages: queued.stages,
+        evidence: {
+          documents: 0,
+          metrics: 0,
+          filings: 0,
+        },
+        createdAt: queued.requestedAt,
+        updatedAt: queued.updatedAt,
+      },
+    };
   }
 }

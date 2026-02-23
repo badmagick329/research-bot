@@ -35,6 +35,7 @@ const createHandler = () => {
         canonicalSymbol: request.symbol.toUpperCase(),
         idempotencyKey: "idempotency-1",
         forceApplied: Boolean(request.force),
+        deduped: false,
         enqueuedAt: "2026-02-23T00:00:00.000Z",
       };
     },
@@ -230,5 +231,62 @@ describe("createOpsConsoleApiHandler", () => {
     expect(response.status).toBe(404);
     const error = payload.error as { code?: string } | undefined;
     expect(error?.code).toBe("not_found");
+  });
+
+  it("maps duplicate enqueue failures to conflict error code", async () => {
+    const handler = createOpsConsoleApiHandler({
+      enqueueRun: async () => {
+        throw new Error("idempotency conflict: existing job");
+      },
+      getQueueCounts: async () => ({ items: [] }),
+      getLatestSnapshot: async () => null,
+      listRuns: async () => ({ items: [] }),
+      getRunDetail: async () => null,
+    });
+
+    const response = await handler(
+      new Request("http://localhost/api/runs", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ symbol: "AAPL" }),
+      }),
+    );
+
+    const payload = await readJsonObject(response);
+    expect(response.status).toBe(409);
+    const error = payload.error as { code?: string } | undefined;
+    expect(error?.code).toBe("conflict");
+  });
+
+  it("maps upstream enqueue failures to upstream_error code", async () => {
+    const handler = createOpsConsoleApiHandler({
+      enqueueRun: async () => {
+        throw new Error("provider_error: rate_limited by upstream adapter");
+      },
+      getQueueCounts: async () => ({ items: [] }),
+      getLatestSnapshot: async () => null,
+      listRuns: async () => ({ items: [] }),
+      getRunDetail: async () => null,
+    });
+
+    const response = await handler(
+      new Request("http://localhost/api/runs", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ symbol: "AAPL" }),
+      }),
+    );
+
+    const payload = await readJsonObject(response);
+    expect(response.status).toBe(502);
+    const error = payload.error as
+      | { code?: string; retryable?: boolean }
+      | undefined;
+    expect(error?.code).toBe("upstream_error");
+    expect(error?.retryable).toBe(true);
   });
 });

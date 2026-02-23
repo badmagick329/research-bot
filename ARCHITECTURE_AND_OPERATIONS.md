@@ -13,6 +13,9 @@
 - Enqueue path resolves company identity before ingestion:
   - input can be ticker (for example `RYCEY`) or mapped company-name aliases (for example `ROLLS ROYCE`)
   - payload carries `resolvedIdentity` (`requestedSymbol`, `canonicalSymbol`, `companyName`, `aliases`, `confidence`, `resolutionSource`)
+- Run monitor read path is hybrid:
+  - snapshot-backed run detail for terminal/proven runs
+  - queue-backed run detail fallback for pre-snapshot `running` / `failed` visibility
 
 ### Data + failure model
 
@@ -46,6 +49,9 @@
 - BullMQ retries: `2` (total attempts `3`) with exponential backoff.
 - Job idempotency key is hourly: `${symbol}-${stage}-${hour}`.
 - Use `--force` to bypass idempotency dedupe for immediate reruns.
+- Enqueue API responses are dedupe-aware and return:
+  - queued job identity (`runId`, `taskId`)
+  - `deduped` flag indicating whether an existing queued job was reused
 
 ## 2) Code map
 
@@ -104,6 +110,8 @@
 - For identity-sensitive investigations:
   - prefer `snapshot --prettify` to inspect `Resolved identity` and `Data quality alerts`
   - use `--force` after provider/resolver behavior changes to avoid stale idempotent jobs
+- For run-monitor investigations before snapshot creation:
+  - use run monitor (`/runs?runId=...`) to inspect queue-backed stage state (`queued` / `running` / `failed`)
 
 ## 4) Migrations
 

@@ -5,6 +5,8 @@ import type { JobStage } from "../../core/entities/research";
 import type {
   JobPayload,
   QueuePort,
+  QueueRunReadPort,
+  QueueRunState,
   QueueReceiptPort,
 } from "../../core/ports/outboundPorts";
 import { queueNames } from "./queues";
@@ -21,6 +23,7 @@ export type QueueStageCounts = {
 export type QueueCountsSnapshot = Record<JobStage, QueueStageCounts>;
 
 const QUEUE_RETRIES = 2;
+const RUN_STATE_SCAN_LIMIT = 500;
 
 export const defaultJobOptions = {
   attempts: QUEUE_RETRIES + 1,
@@ -31,10 +34,33 @@ export const defaultJobOptions = {
   },
 } as const;
 
+type QueueJobLifecycleState =
+  | "active"
+  | "waiting"
+  | "delayed"
+  | "completed"
+  | "failed";
+
+type QueueStageRuntimeStatus =
+  | "not_started"
+  | "queued"
+  | "running"
+  | "success"
+  | "failed";
+
+type StageObservation = {
+  stage: JobStage;
+  payload: JobPayload;
+  state: QueueJobLifecycleState;
+  updatedAt: Date;
+};
+
 /**
  * Wraps BullMQ so application code depends on queue intent rather than queue vendor details.
  */
-export class BullMqQueue implements QueuePort, QueueReceiptPort {
+export class BullMqQueue
+  implements QueuePort, QueueReceiptPort, QueueRunReadPort
+{
   private readonly queues = new Map<JobStage, Queue<JobPayload>>();
 
   constructor(private readonly connection: RedisOptions) {
@@ -63,7 +89,13 @@ export class BullMqQueue implements QueuePort, QueueReceiptPort {
   async enqueueWithReceipt(
     stage: JobStage,
     payload: JobPayload,
-  ): Promise<{ enqueuedAt: string }> {
+  ): Promise<{
+    runId: string;
+    taskId: string;
+    requestedAt: string;
+    enqueuedAt: string;
+    deduped: boolean;
+  }> {
     const queue = this.queues.get(stage);
     if (!queue) {
       throw new Error(`Queue not configured for stage ${stage}`);
@@ -73,8 +105,17 @@ export class BullMqQueue implements QueuePort, QueueReceiptPort {
       jobId: payload.idempotencyKey,
     });
 
+    const resolvedPayload = job.data;
+    const deduped =
+      resolvedPayload.runId !== payload.runId ||
+      resolvedPayload.taskId !== payload.taskId;
+
     return {
+      runId: resolvedPayload.runId,
+      taskId: resolvedPayload.taskId,
+      requestedAt: resolvedPayload.requestedAt,
       enqueuedAt: new Date(job.timestamp).toISOString(),
+      deduped,
     };
   }
 
@@ -137,6 +178,165 @@ export class BullMqQueue implements QueuePort, QueueReceiptPort {
         counts: snapshot[stage],
       })),
     };
+  }
+
+  /**
+   * Projects queue-backed run status so monitor views can show pre-snapshot lifecycle progress.
+   */
+  async getRunState(runId: string): Promise<QueueRunState | null> {
+    const observations = await this.collectRunObservations(runId);
+    if (observations.length === 0) {
+      return null;
+    }
+
+    const latestObservation = observations
+      .slice()
+      .sort(
+        (left, right) => right.updatedAt.getTime() - left.updatedAt.getTime(),
+      )[0];
+
+    if (!latestObservation) {
+      return null;
+    }
+
+    const stageStatusByStage = new Map<JobStage, QueueStageRuntimeStatus>();
+
+    for (const stage of Object.keys(queueNames) as JobStage[]) {
+      stageStatusByStage.set(stage, "not_started");
+    }
+
+    for (const observation of observations) {
+      const current =
+        stageStatusByStage.get(observation.stage) ?? "not_started";
+      const candidate = this.mapLifecycleStateToStageStatus(observation.state);
+      if (
+        this.stageStatusPriority(candidate) >= this.stageStatusPriority(current)
+      ) {
+        stageStatusByStage.set(observation.stage, candidate);
+      }
+    }
+
+    const stages = (Object.keys(queueNames) as JobStage[]).map((stage) => ({
+      stage,
+      status: stageStatusByStage.get(stage) ?? "not_started",
+    }));
+
+    const hasFailure = stages.some((stage) => stage.status === "failed");
+    const runStatus: QueueRunState["status"] = hasFailure
+      ? "failed"
+      : "running";
+    const identity = latestObservation.payload.resolvedIdentity;
+
+    return {
+      runId: latestObservation.payload.runId,
+      taskId: latestObservation.payload.taskId,
+      symbol: latestObservation.payload.symbol,
+      requestedAt: latestObservation.payload.requestedAt,
+      requestedSymbol:
+        identity?.requestedSymbol ?? latestObservation.payload.symbol,
+      canonicalSymbol:
+        identity?.canonicalSymbol ?? latestObservation.payload.symbol,
+      status: runStatus,
+      stages,
+      identity,
+      updatedAt: latestObservation.updatedAt.toISOString(),
+    };
+  }
+
+  /**
+   * Collects run-specific job observations across all queue stages to derive a consistent status projection.
+   */
+  private async collectRunObservations(
+    runId: string,
+  ): Promise<StageObservation[]> {
+    const lifecycleStates: QueueJobLifecycleState[] = [
+      "active",
+      "waiting",
+      "delayed",
+      "completed",
+      "failed",
+    ];
+
+    const observationsByStage = await Promise.all(
+      (Object.keys(queueNames) as JobStage[]).map(async (stage) => {
+        const queue = this.queues.get(stage);
+        if (!queue) {
+          throw new Error(`Queue not configured for stage ${stage}`);
+        }
+
+        const jobs = await queue.getJobs(
+          lifecycleStates,
+          0,
+          RUN_STATE_SCAN_LIMIT,
+          false,
+        );
+        return jobs
+          .filter((job) => job.data.runId === runId)
+          .map(
+            (job) =>
+              ({
+                stage,
+                payload: job.data,
+                state: (job.finishedOn
+                  ? job.failedReason
+                    ? "failed"
+                    : "completed"
+                  : job.processedOn
+                    ? "active"
+                    : job.opts.delay && job.opts.delay > 0
+                      ? "delayed"
+                      : "waiting") as QueueJobLifecycleState,
+                updatedAt: new Date(
+                  job.finishedOn ??
+                    job.processedOn ??
+                    job.timestamp ??
+                    Date.now(),
+                ),
+              }) satisfies StageObservation,
+          );
+      }),
+    );
+
+    return observationsByStage.flat();
+  }
+
+  /**
+   * Maps BullMQ lifecycle states into route-level stage statuses for contract-stable monitor rendering.
+   */
+  private mapLifecycleStateToStageStatus(
+    state: QueueJobLifecycleState,
+  ): QueueStageRuntimeStatus {
+    switch (state) {
+      case "active":
+        return "running";
+      case "waiting":
+      case "delayed":
+        return "queued";
+      case "completed":
+        return "success";
+      case "failed":
+        return "failed";
+      default:
+        return "not_started";
+    }
+  }
+
+  /**
+   * Provides deterministic ordering for stage status selection when multiple observations exist.
+   */
+  private stageStatusPriority(status: QueueStageRuntimeStatus): number {
+    switch (status) {
+      case "failed":
+        return 5;
+      case "running":
+        return 4;
+      case "queued":
+        return 3;
+      case "success":
+        return 2;
+      default:
+        return 1;
+    }
   }
 }
 

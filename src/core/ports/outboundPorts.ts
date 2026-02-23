@@ -32,7 +32,24 @@ export type JobPayload = {
 };
 
 export type QueueEnqueueReceipt = {
+  runId: string;
+  taskId: string;
+  requestedAt: string;
   enqueuedAt: string;
+  deduped: boolean;
+};
+
+export type QueueRunState = {
+  runId: string;
+  taskId: string;
+  symbol: string;
+  requestedAt: string;
+  requestedSymbol: string;
+  canonicalSymbol: string;
+  status: "running" | "failed";
+  stages: RunDetailResponse["run"]["stages"];
+  identity?: ResolvedCompanyIdentity;
+  updatedAt: string;
 };
 
 export interface QueuePort {
@@ -48,6 +65,13 @@ export interface QueueReceiptPort {
 
 export interface QueueCountsReadPort {
   getQueueCountsSampled(): Promise<QueueCountsResponse>;
+}
+
+export interface QueueRunReadPort {
+  /**
+   * Resolves in-flight queue state by run id so monitor UIs can render pre-snapshot progress.
+   */
+  getRunState(runId: string): Promise<QueueRunState | null>;
 }
 
 export interface DocumentRepositoryPort {

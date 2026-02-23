@@ -2,14 +2,16 @@ import { describe, expect, it } from "bun:test";
 import { RunQueryService } from "./runQueryService";
 import type {
   QueueCountsReadPort,
+  QueueRunReadPort,
   RunsReadRepositoryPort,
   SnapshotRepositoryPort,
 } from "../../core/ports/outboundPorts";
 
 describe("RunQueryService", () => {
   it("normalizes symbol for latest snapshot lookups", async () => {
-    const queueCounts: QueueCountsReadPort = {
+    const queueCounts: QueueCountsReadPort & QueueRunReadPort = {
       getQueueCountsSampled: async () => ({ items: [] }),
+      getRunState: async () => null,
     };
 
     const snapshotLookups: string[] = [];
@@ -39,7 +41,7 @@ describe("RunQueryService", () => {
   });
 
   it("returns queue counts from queue read port", async () => {
-    const queueCounts: QueueCountsReadPort = {
+    const queueCounts: QueueCountsReadPort & QueueRunReadPort = {
       getQueueCountsSampled: async () => ({
         items: [
           {
@@ -56,6 +58,7 @@ describe("RunQueryService", () => {
           },
         ],
       }),
+      getRunState: async () => null,
     };
 
     const snapshots: SnapshotRepositoryPort = {
@@ -88,8 +91,9 @@ describe("RunQueryService", () => {
     }> = [];
     const detailCalls: string[] = [];
 
-    const queueCounts: QueueCountsReadPort = {
+    const queueCounts: QueueCountsReadPort & QueueRunReadPort = {
       getQueueCountsSampled: async () => ({ items: [] }),
+      getRunState: async () => null,
     };
 
     const snapshots: SnapshotRepositoryPort = {
@@ -138,5 +142,50 @@ describe("RunQueryService", () => {
     expect(listCalls).toEqual([{ symbol: "RYCEY", limit: 5 }]);
     expect(detail).toBeNull();
     expect(detailCalls).toEqual(["run-1"]);
+  });
+
+  it("falls back to queue-backed run state when snapshot projection is missing", async () => {
+    const queueCounts: QueueCountsReadPort & QueueRunReadPort = {
+      getQueueCountsSampled: async () => ({ items: [] }),
+      getRunState: async () => ({
+        runId: "run-queued",
+        taskId: "task-queued",
+        symbol: "NVDA",
+        requestedAt: "2026-02-23T00:00:00.000Z",
+        requestedSymbol: "NVDA",
+        canonicalSymbol: "NVDA",
+        status: "running",
+        stages: [
+          { stage: "ingest", status: "running" },
+          { stage: "normalize", status: "not_started" },
+          { stage: "embed", status: "not_started" },
+          { stage: "synthesize", status: "not_started" },
+        ],
+        updatedAt: "2026-02-23T00:00:05.000Z",
+      }),
+    };
+
+    const snapshots: SnapshotRepositoryPort = {
+      save: async () => {},
+      latestBySymbol: async () => null,
+    };
+
+    const runsReadRepository: RunsReadRepositoryPort = {
+      listRuns: async () => ({ items: [] }),
+      getRunDetail: async () => null,
+    };
+
+    const service = new RunQueryService(
+      queueCounts,
+      snapshots,
+      runsReadRepository,
+    );
+
+    const detail = await service.getRunDetail("run-queued");
+
+    expect(detail).not.toBeNull();
+    expect(detail?.run.status).toBe("running");
+    expect(detail?.run.runId).toBe("run-queued");
+    expect(detail?.run.stages[0]?.status).toBe("running");
   });
 });

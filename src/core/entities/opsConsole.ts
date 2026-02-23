@@ -31,6 +31,7 @@ export type EnqueueRunResponse = {
   canonicalSymbol: string;
   idempotencyKey: string;
   forceApplied: boolean;
+  deduped: boolean;
   enqueuedAt: string;
 };
 

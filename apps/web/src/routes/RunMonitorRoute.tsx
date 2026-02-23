@@ -224,6 +224,21 @@ function RunMonitorErrorState({ error }: RunMonitorErrorStateProps) {
   }
 
   if (error instanceof OpsConsoleApiError) {
+    if (error.code === "upstream_error") {
+      return (
+        <ErrorState
+          title="Upstream dependency unavailable"
+          message={`${error.message}${error.retryable ? " Retry in a moment." : ""}`}
+        />
+      );
+    }
+
+    if (error.code === "conflict") {
+      return (
+        <ErrorState title="Run monitor conflict" message={error.message} />
+      );
+    }
+
     return <ErrorState title="Unable to load run" message={error.message} />;
   }
 

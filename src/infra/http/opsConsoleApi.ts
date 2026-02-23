@@ -243,6 +243,7 @@ const mapErrorToApiFailure = (error: unknown): ApiFailure => {
 
   if (error instanceof Error) {
     const message = error.message || "Internal server error.";
+    const normalizedMessage = message.toLowerCase();
 
     if (message.includes("Company resolution failed")) {
       return {
@@ -252,6 +253,43 @@ const mapErrorToApiFailure = (error: unknown): ApiFailure => {
             code: "bad_request",
             message,
             retryable: false,
+          },
+        },
+      };
+    }
+
+    if (
+      normalizedMessage.includes("idempotency") ||
+      normalizedMessage.includes("duplicate") ||
+      normalizedMessage.includes("already exists") ||
+      normalizedMessage.includes("conflict")
+    ) {
+      return {
+        status: 409,
+        body: {
+          error: {
+            code: "conflict",
+            message,
+            retryable: false,
+          },
+        },
+      };
+    }
+
+    if (
+      normalizedMessage.includes("rate_limited") ||
+      normalizedMessage.includes("timeout") ||
+      normalizedMessage.includes("transport_error") ||
+      normalizedMessage.includes("provider_error") ||
+      normalizedMessage.includes("upstream")
+    ) {
+      return {
+        status: 502,
+        body: {
+          error: {
+            code: "upstream_error",
+            message,
+            retryable: true,
           },
         },
       };

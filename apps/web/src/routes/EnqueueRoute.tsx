@@ -43,6 +43,14 @@ export function EnqueueRoute() {
     }
 
     if (enqueueMutation.error instanceof OpsConsoleApiError) {
+      if (enqueueMutation.error.code === "conflict") {
+        return `Request conflicts with an existing queued run. ${enqueueMutation.error.message}`;
+      }
+
+      if (enqueueMutation.error.code === "upstream_error") {
+        return `Provider dependency is unavailable. ${enqueueMutation.error.message}`;
+      }
+
       return enqueueMutation.error.message;
     }
 
@@ -149,10 +157,19 @@ export function EnqueueRoute() {
               <dd>{enqueueMutation.data.forceApplied ? "true" : "false"}</dd>
             </div>
             <div>
+              <dt className="text-emerald-300">deduped</dt>
+              <dd>{enqueueMutation.data.deduped ? "true" : "false"}</dd>
+            </div>
+            <div>
               <dt className="text-emerald-300">enqueuedAt</dt>
               <dd>{formatIsoDate(enqueueMutation.data.enqueuedAt)}</dd>
             </div>
           </dl>
+          {enqueueMutation.data.deduped ? (
+            <p className="mt-3 text-sm text-emerald-100">
+              Reused an existing queued run for this idempotency key.
+            </p>
+          ) : null}
           <div className="mt-4">
             <Link
               to={`/runs?runId=${encodeURIComponent(enqueueMutation.data.runId)}`}
