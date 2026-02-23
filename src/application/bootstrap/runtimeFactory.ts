@@ -35,11 +35,13 @@ import {
   TaskFactory,
   UuidIdGenerator,
 } from "../../infra/system/systemPorts";
+import { RedisProviderRateLimiter } from "../../infra/system/redisProviderRateLimiter";
 import type {
   FilingsProviderPort,
   MarketMetricsProviderPort,
   NewsProviderPort,
 } from "../../core/ports/inboundPorts";
+import type { ProviderRateLimiterPort } from "../../core/ports/outboundPorts";
 
 const redisConfigFromUrl = (url: string) => {
   const parsed = new URL(url);
@@ -53,7 +55,10 @@ const redisConfigFromUrl = (url: string) => {
 
 export const VECTOR_DIMENSION = 1024;
 
-const createNewsProvider = (httpClient: HttpJsonClient): NewsProviderPort => {
+const createNewsProvider = (
+  httpClient: HttpJsonClient,
+  providerRateLimiter: ProviderRateLimiterPort,
+): NewsProviderPort => {
   const providers = newsProviders().map((providerName) => {
     if (providerName === "finnhub") {
       return new FinnhubNewsProvider(
@@ -61,6 +66,7 @@ const createNewsProvider = (httpClient: HttpJsonClient): NewsProviderPort => {
         env.FINNHUB_API_KEY,
         env.FINNHUB_TIMEOUT_MS,
         httpClient,
+        providerRateLimiter,
       );
     }
 
@@ -70,6 +76,7 @@ const createNewsProvider = (httpClient: HttpJsonClient): NewsProviderPort => {
         env.ALPHA_VANTAGE_API_KEY,
         env.ALPHA_VANTAGE_TIMEOUT_MS,
         httpClient,
+        providerRateLimiter,
       );
     }
 
@@ -92,6 +99,7 @@ const createNewsProvider = (httpClient: HttpJsonClient): NewsProviderPort => {
  */
 const createMetricsProvider = (
   httpClient: HttpJsonClient,
+  providerRateLimiter: ProviderRateLimiterPort,
 ): MarketMetricsProviderPort => {
   if (metricsProvider() === "alphavantage") {
     return new AlphaVantageMetricsProvider(
@@ -99,6 +107,7 @@ const createMetricsProvider = (
       env.ALPHA_VANTAGE_API_KEY,
       env.ALPHA_VANTAGE_TIMEOUT_MS,
       httpClient,
+      providerRateLimiter,
     );
   }
 
@@ -110,6 +119,7 @@ const createMetricsProvider = (
  */
 const createFilingsProvider = (
   httpClient: HttpJsonClient,
+  providerRateLimiter: ProviderRateLimiterPort,
 ): FilingsProviderPort => {
   if (filingsProvider() === "sec-edgar") {
     return new SecEdgarFilingsProvider(
@@ -119,6 +129,7 @@ const createFilingsProvider = (
       env.SEC_EDGAR_USER_AGENT,
       env.SEC_EDGAR_TIMEOUT_MS,
       httpClient,
+      providerRateLimiter,
     );
   }
 
@@ -136,8 +147,14 @@ export const createRuntime = async () => {
   const taskFactory = new TaskFactory(clock, ids);
   const companyResolver = new CompanyResolver();
 
-  const queue = new BullMqQueue(redisConfigFromUrl(env.REDIS_URL));
+  const redisConnection = redisConfigFromUrl(env.REDIS_URL);
+  const queue = new BullMqQueue(redisConnection);
   const httpClient = new HttpJsonClient();
+  const providerRateLimiter = new RedisProviderRateLimiter(redisConnection, {
+    alphavantage: env.ALPHA_VANTAGE_MIN_INTERVAL_MS,
+    finnhub: env.FINNHUB_MIN_INTERVAL_MS,
+    "sec-edgar": env.SEC_EDGAR_MIN_INTERVAL_MS,
+  });
 
   const documentRepo = new PostgresDocumentRepositoryService(db);
   const metricsRepo = new PostgresMetricsRepositoryService(db);
@@ -159,9 +176,15 @@ export const createRuntime = async () => {
     httpClient,
   );
 
-  const newsProvider = createNewsProvider(httpClient);
-  const metricsProviderAdapter = createMetricsProvider(httpClient);
-  const filingsProviderAdapter = createFilingsProvider(httpClient);
+  const newsProvider = createNewsProvider(httpClient, providerRateLimiter);
+  const metricsProviderAdapter = createMetricsProvider(
+    httpClient,
+    providerRateLimiter,
+  );
+  const filingsProviderAdapter = createFilingsProvider(
+    httpClient,
+    providerRateLimiter,
+  );
 
   const orchestratorService = new ResearchOrchestratorService(
     queue,

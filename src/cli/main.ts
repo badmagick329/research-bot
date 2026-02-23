@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { createRuntime } from "../application/bootstrap/runtimeFactory";
+import { createRuntime } from "../application/bootstrap/runtimeFactory.ts";
 import type { ResearchSnapshotEntity } from "../core/entities/research";
 import {
   appSymbols,
@@ -214,7 +214,6 @@ export const buildCli = () => {
           queueCounts,
           startupWorkflow,
           troubleshooting: [
-            "Use AAPL (not APPL).",
             "snapshot is read-only and does not trigger a run.",
             "Use enqueue --force to bypass hourly idempotency for the same symbol.",
             "If no snapshot appears, keep worker terminal open and check worker logs for failed jobs.",

@@ -5,8 +5,13 @@ import type {
   NormalizedMarketMetricPoint,
 } from "../../../core/ports/inboundPorts";
 import type { AppBoundaryError } from "../../../core/entities/appError";
+import type { ProviderRateLimiterPort } from "../../../core/ports/outboundPorts";
 import { err, ok, type Result } from "neverthrow";
 import { HttpJsonClient } from "../../http/httpJsonClient";
+
+const noOpRateLimiter: ProviderRateLimiterPort = {
+  waitForSlot: async () => {},
+};
 
 type AlphaVantageOverviewResponse = {
   Symbol?: string;
@@ -116,6 +121,7 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
     private readonly apiKey: string,
     private readonly timeoutMs = 10_000,
     private readonly httpClient = new HttpJsonClient(),
+    private readonly providerRateLimiter: ProviderRateLimiterPort = noOpRateLimiter,
   ) {
     if (!this.apiKey.trim()) {
       throw new Error(
@@ -150,6 +156,9 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
         timeoutMs: this.timeoutMs,
         retries: 2,
         retryDelayMs: 250,
+        beforeAttempt: async () => {
+          await this.providerRateLimiter.waitForSlot("alphavantage");
+        },
       });
 
     if (response.isErr()) {
@@ -168,15 +177,14 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
       }
 
       if (status === 429) {
-        return ok({
-          metrics: [],
-          diagnostics: {
-            ...diagnosticsBase,
-            status: "rate_limited",
-            metricCount: 0,
-            httpStatus: status,
-            reason: "Alpha Vantage rate limit reached",
-          },
+        return err({
+          source: "metrics",
+          code: "rate_limited",
+          provider: "alphavantage",
+          message: "Alpha Vantage rate limit reached.",
+          retryable: true,
+          httpStatus: status,
+          cause: response.error.cause,
         });
       }
 
@@ -221,11 +229,21 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
     if (note) {
       const isRateLimit = /rate|frequency|limit|calls per minute/i.test(note);
 
+      if (isRateLimit) {
+        return err({
+          source: "metrics",
+          code: "rate_limited",
+          provider: "alphavantage",
+          message: note,
+          retryable: true,
+        });
+      }
+
       return ok({
         metrics: [],
         diagnostics: {
           ...diagnosticsBase,
-          status: isRateLimit ? "rate_limited" : "provider_error",
+          status: "provider_error",
           metricCount: 0,
           reason: note,
         },

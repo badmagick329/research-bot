@@ -10,6 +10,7 @@ export type HttpJsonRequest = {
   timeoutMs: number;
   retries: number;
   retryDelayMs: number;
+  beforeAttempt?: () => Promise<void>;
 };
 
 export type HttpClientError = {
@@ -33,6 +34,10 @@ export class HttpJsonClient {
     const maxAttempts = request.retries + 1;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (request.beforeAttempt) {
+        await request.beforeAttempt();
+      }
+
       const response = await this.performRequest<T>(request);
       if (response.isOk()) {
         return response;

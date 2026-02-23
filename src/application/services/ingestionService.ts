@@ -99,6 +99,13 @@ export class IngestionService {
   }
 
   /**
+   * Enforces explicit hard-failure semantics when Alpha Vantage quota/rate limits are encountered.
+   */
+  private isAlphaVantageRateLimited(error: AppBoundaryError): boolean {
+    return error.provider === "alphavantage" && error.code === "rate_limited";
+  }
+
+  /**
    * Seeds the pipeline with latest symbol evidence so later stages can stay deterministic and replayable.
    */
   async run(payload: JobPayload): Promise<void> {
@@ -131,6 +138,29 @@ export class IngestionService {
       metricsResult,
       filingsResult,
     ];
+
+    const alphaVantageRateLimitedSources: string[] = [];
+    if (
+      newsResult.isErr() &&
+      this.isAlphaVantageRateLimited(newsResult.error)
+    ) {
+      alphaVantageRateLimitedSources.push("news");
+    }
+
+    if (
+      metricsResult.isErr() &&
+      this.isAlphaVantageRateLimited(metricsResult.error)
+    ) {
+      alphaVantageRateLimitedSources.push("metrics");
+    }
+
+    if (alphaVantageRateLimitedSources.length > 0) {
+      throw new Error(
+        `Ingestion failed for ${payload.symbol}: Alpha Vantage rate limit hit (${alphaVantageRateLimitedSources.join(
+          ", ",
+        )}).`,
+      );
+    }
 
     const successfulSources = sourceResults.filter((result) => result.isOk());
     if (successfulSources.length === 0) {

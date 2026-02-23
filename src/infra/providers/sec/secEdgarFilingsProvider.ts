@@ -4,8 +4,13 @@ import type {
   NormalizedFiling,
 } from "../../../core/ports/inboundPorts";
 import type { AppBoundaryError } from "../../../core/entities/appError";
+import type { ProviderRateLimiterPort } from "../../../core/ports/outboundPorts";
 import { err, ok, type Result } from "neverthrow";
 import { HttpJsonClient } from "../../http/httpJsonClient";
+
+const noOpRateLimiter: ProviderRateLimiterPort = {
+  waitForSlot: async () => {},
+};
 
 type EdgarTickerRecord = {
   ticker?: string;
@@ -84,6 +89,7 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
     private readonly userAgent: string,
     private readonly timeoutMs = 15_000,
     private readonly httpClient = new HttpJsonClient(),
+    private readonly providerRateLimiter: ProviderRateLimiterPort = noOpRateLimiter,
   ) {
     if (!this.userAgent.trim()) {
       throw new Error(
@@ -328,6 +334,9 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
       timeoutMs: this.timeoutMs,
       retries: 2,
       retryDelayMs: 300,
+      beforeAttempt: async () => {
+        await this.providerRateLimiter.waitForSlot("sec-edgar");
+      },
       headers: {
         "User-Agent": this.userAgent,
         Accept: "application/json",

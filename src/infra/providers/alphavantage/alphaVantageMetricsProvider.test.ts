@@ -117,7 +117,7 @@ describe("AlphaVantageMetricsProvider", () => {
     });
   });
 
-  it("returns rate-limited diagnostics on 429 responses", async () => {
+  it("returns rate-limited boundary error on 429 responses", async () => {
     setFetch(async () => new Response("too many requests", { status: 429 }));
 
     const provider = new AlphaVantageMetricsProvider(
@@ -128,14 +128,11 @@ describe("AlphaVantageMetricsProvider", () => {
 
     const result = await provider.fetchMetrics({ symbol: "AAPL" });
 
-    expect(result.isOk()).toBeTrue();
+    expect(result.isErr()).toBeTrue();
     if (result.isErr()) {
-      throw new Error(result.error.message);
+      expect(result.error.code).toBe("rate_limited");
+      expect(result.error.httpStatus).toBe(429);
     }
-
-    expect(result.value.metrics).toEqual([]);
-    expect(result.value.diagnostics.status).toBe("rate_limited");
-    expect(result.value.diagnostics.httpStatus).toBe(429);
   });
 
   it("returns auth-invalid boundary error on auth failures", async () => {

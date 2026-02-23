@@ -4,8 +4,13 @@ import type {
   NormalizedNewsItem,
 } from "../../../core/ports/inboundPorts";
 import type { AppBoundaryError } from "../../../core/entities/appError";
+import type { ProviderRateLimiterPort } from "../../../core/ports/outboundPorts";
 import { err, ok, type Result } from "neverthrow";
 import { HttpJsonClient } from "../../http/httpJsonClient";
+
+const noOpRateLimiter: ProviderRateLimiterPort = {
+  waitForSlot: async () => {},
+};
 
 type AlphaVantageTopic = {
   topic?: string;
@@ -89,6 +94,7 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
     private readonly apiKey: string,
     private readonly timeoutMs = 10_000,
     private readonly httpClient = new HttpJsonClient(),
+    private readonly providerRateLimiter: ProviderRateLimiterPort = noOpRateLimiter,
   ) {
     if (!this.apiKey.trim()) {
       throw new Error(
@@ -116,6 +122,9 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
       timeoutMs: this.timeoutMs,
       retries: 2,
       retryDelayMs: 250,
+      beforeAttempt: async () => {
+        await this.providerRateLimiter.waitForSlot("alphavantage");
+      },
     });
 
     if (payloadResult.isErr()) {

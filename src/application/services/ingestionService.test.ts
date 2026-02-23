@@ -347,4 +347,79 @@ describe("IngestionService", () => {
       "all evidence sources returned errors",
     );
   });
+
+  it("fails ingestion immediately when Alpha Vantage is rate-limited", async () => {
+    const newsProvider: NewsProviderPort = {
+      fetchArticles: async () =>
+        err({
+          source: "news",
+          code: "rate_limited",
+          provider: "alphavantage",
+          message: "Alpha Vantage rate limit reached",
+          retryable: true,
+        }),
+    };
+
+    const metricsProvider: MarketMetricsProviderPort = {
+      fetchMetrics: async () =>
+        ok({
+          metrics: [],
+          diagnostics: {
+            provider: "alphavantage",
+            symbol: "TTWO",
+            status: "empty",
+            metricCount: 0,
+          },
+        }),
+    };
+
+    const filingsProvider: FilingsProviderPort = {
+      fetchFilings: async () => ok([]),
+    };
+
+    const documentRepo: DocumentRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+
+    const metricsRepo: MetricsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+
+    const filingsRepo: FilingsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+
+    const queue: QueuePort = {
+      enqueue: async () => {},
+    };
+
+    const clock: ClockPort = {
+      now: () => new Date("2026-02-18T12:00:00.000Z"),
+    };
+
+    const ids: IdGeneratorPort = {
+      next: () => "id-1",
+    };
+
+    const service = new IngestionService(
+      newsProvider,
+      metricsProvider,
+      filingsProvider,
+      documentRepo,
+      metricsRepo,
+      filingsRepo,
+      queue,
+      clock,
+      ids,
+      7,
+      90,
+    );
+
+    await expect(service.run(payload)).rejects.toThrow(
+      "Alpha Vantage rate limit hit",
+    );
+  });
 });

@@ -27,9 +27,15 @@ const envSchema = z.object({
   FINNHUB_BASE_URL: z.string().default("https://finnhub.io"),
   FINNHUB_API_KEY: z.string().default(""),
   FINNHUB_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  FINNHUB_MIN_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
   ALPHA_VANTAGE_BASE_URL: z.string().default("https://www.alphavantage.co"),
   ALPHA_VANTAGE_API_KEY: z.string().default(""),
   ALPHA_VANTAGE_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  ALPHA_VANTAGE_MIN_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1_000),
   METRICS_PROVIDER: z.enum(supportedMetricsProviders).default("mock"),
   FILINGS_PROVIDER: z.enum(supportedFilingsProviders).default("mock"),
   SEC_EDGAR_BASE_URL: z.string().default("https://data.sec.gov"),
@@ -43,6 +49,7 @@ const envSchema = z.object({
     .string()
     .default("research-bot/1.0 (contact: devnull@example.com)"),
   SEC_EDGAR_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  SEC_EDGAR_MIN_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
   REDIS_URL: z.string().default("redis://localhost:6379"),
   POSTGRES_URL: z
     .string()

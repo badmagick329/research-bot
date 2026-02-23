@@ -24,6 +24,7 @@
   - `stageIssues` (normalize/embed degradation)
   - `identity` (resolved company identity)
 - Stage degradation policy:
+  - `ingest`: hard-fails when Alpha Vantage returns `rate_limited` (news and/or metrics), even if another source succeeds
   - `normalize`: LLM failures degrade and continue
   - `embed`: embedding failures/mismatches degrade and continue
   - `synthesize`: still runs to materialize a snapshot with explicit quality alerts
@@ -35,6 +36,12 @@
 ### Retry + idempotency model
 
 - HTTP adapter retries: `2` (total attempts `3`).
+- Provider rate limiter is Redis-backed and shared across workers/instances.
+- Provider pacing defaults (free-tier safety caps):
+  - Alpha Vantage: `1 request/second`
+  - Finnhub: `1 request/second`
+  - SEC EDGAR: `1 request/second`
+- Pacing is enforced per HTTP attempt, including retries.
 - BullMQ retries: `2` (total attempts `3`) with exponential backoff.
 - Job idempotency key is hourly: `${symbol}-${stage}-${hour}`.
 - Use `--force` to bypass idempotency dedupe for immediate reruns.
@@ -91,6 +98,7 @@
 - `snapshot` is read-only; it never triggers pipeline execution.
 - Queue names and custom job ids must not include `:`.
 - Restart worker after config/code changes affecting providers/adapters/resolver map.
+- Restart worker after changing provider limiter env values.
 - Embed model must match runtime/storage vector dimension expectation (currently 1024).
 - For identity-sensitive investigations:
   - prefer `snapshot --prettify` to inspect `Resolved identity` and `Data quality alerts`
@@ -123,9 +131,15 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 ### Setup
 
 1. `if (!(Test-Path .env)) { Copy-Item .env.example .env }`
-2. `bun install`
-3. `docker compose up -d postgres redis`
-4. `bun run db:migrate`
+2. Optional provider limiter tuning (defaults are safe for free tiers):
+
+- `ALPHA_VANTAGE_MIN_INTERVAL_MS=1000`
+- `FINNHUB_MIN_INTERVAL_MS=1000`
+- `SEC_EDGAR_MIN_INTERVAL_MS=1000`
+
+3. `bun install`
+4. `docker compose up -d postgres redis`
+5. `bun run db:migrate`
 
 ### Core commands
 

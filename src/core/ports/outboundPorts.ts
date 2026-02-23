@@ -121,3 +121,12 @@ export interface IdGeneratorPort {
 export interface TaskFactoryPort {
   create(symbol: string, stage: JobStage): ResearchTaskEntity;
 }
+
+export type ProviderRateLimitKey = "alphavantage" | "finnhub" | "sec-edgar";
+
+export interface ProviderRateLimiterPort {
+  /**
+   * Reserves the next outbound slot for a provider so distributed workers honor shared pacing limits.
+   */
+  waitForSlot(provider: ProviderRateLimitKey): Promise<void>;
+}
