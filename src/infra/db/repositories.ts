@@ -38,6 +38,19 @@ type RunsCursor = {
   runId: string;
 };
 
+const toIsoTimestamp = (value: Date | string): string => {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Invalid timestamp value: ${String(value)}`);
+  }
+
+  return parsed.toISOString();
+};
+
 const MAX_RUNS_LIMIT = 100;
 const DEFAULT_RUNS_LIMIT = 20;
 
@@ -154,16 +167,16 @@ const mapSnapshotToRunSummary = (
     status: deriveRunStatus(diagnostics),
     diagnostics,
     evidence,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.createdAt.toISOString(),
+    createdAt: toIsoTimestamp(row.createdAt),
+    updatedAt: toIsoTimestamp(row.createdAt),
   };
 };
 
 const mapSnapshotToRunDetail = (
   row: SnapshotRunRow,
   evidence: { documents: number; metrics: number; filings: number },
-  createdAt: Date,
-  updatedAt: Date,
+  createdAt: Date | string,
+  updatedAt: Date | string,
 ): RunDetail => {
   const diagnostics = toOptionalDiagnostics(row.diagnostics);
   const identity = diagnostics?.identity;
@@ -179,8 +192,8 @@ const mapSnapshotToRunDetail = (
     diagnostics,
     evidence,
     latestSnapshot: mapSnapshotToEntity(row),
-    createdAt: createdAt.toISOString(),
-    updatedAt: updatedAt.toISOString(),
+    createdAt: toIsoTimestamp(createdAt),
+    updatedAt: toIsoTimestamp(updatedAt),
   };
 };
 
@@ -534,7 +547,7 @@ export class PostgresRunsReadRepositoryService implements RunsReadRepositoryPort
     const nextCursor =
       hasMore && tail
         ? encodeRunsCursor({
-            updatedAt: tail.createdAt.toISOString(),
+            updatedAt: toIsoTimestamp(tail.createdAt),
             runId: tail.runId ?? tail.id,
           })
         : undefined;
