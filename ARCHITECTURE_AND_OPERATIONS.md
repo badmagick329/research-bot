@@ -5,7 +5,8 @@
 ### Runtime model
 
 - Clean architecture with strict boundaries.
-- Host runtime: CLI + worker on Bun.
+- Host runtime: CLI + worker + API on Bun.
+- Ops console UI runtime: Vite dev server in `apps/web` (proxying `/api` to Bun API).
 - Infra runtime: Docker services for Postgres + Redis.
 - Pipeline: `ingest -> normalize -> embed -> synthesize`.
 - Stage payloads are run-scoped and carry: `runId`, `taskId`, `symbol`, and diagnostics context.
@@ -145,6 +146,8 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 
 - `bun run src/index.ts status`
 - `bun run src/workers/main.ts`
+- `bun run src/api/main.ts`
+- `bun run web:dev`
 - `bun run src/index.ts enqueue --symbol AAPL`
 - `bun run src/index.ts enqueue --symbol AAPL --force`
 - `bun run src/index.ts enqueue --symbol RYCEY --force`
@@ -161,11 +164,13 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 ### Smoke test
 
 1. Start infra + migrations.
-2. Start worker.
-3. Enqueue one symbol (or mapped company alias).
-4. Wait for stage completion.
-5. Fetch snapshot with `--prettify`.
-6. Confirm `Resolved identity` and `Data quality alerts` sections are present when relevant.
+2. Start API (`bun run src/api/main.ts`).
+3. Start worker.
+4. Start web app (`bun run web:dev`).
+5. Enqueue one symbol (or mapped company alias).
+6. Wait for stage completion.
+7. Fetch snapshot with `--prettify`.
+8. Confirm `Resolved identity` and `Data quality alerts` sections are present when relevant.
 
 If no snapshot appears:
 

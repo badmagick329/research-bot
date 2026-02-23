@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "baseUrl": ".",
+    "paths": {
+      "@contracts/*": ["../../src/core/entities/*"]
+    },
+    "types": ["vite/client", "react", "react-dom"],
+    "noEmit": true
+  },
+  "include": ["src", "vite.config.ts"],
+  "exclude": []
+}
