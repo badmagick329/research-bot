@@ -7,20 +7,23 @@
 - Clean architecture with strict boundaries.
 - Host runtime: CLI + worker + API on Bun.
 - Ops console UI runtime: Vite dev server in `apps/web` (proxying `/api` to Bun API).
+- Web API routing precedence:
+  - if `VITE_API_BASE_URL` is set, browser requests go directly to that URL
+  - if `VITE_API_BASE_URL` is empty, browser requests use relative `/api` and Vite proxy
 - Infra runtime: Docker services for Postgres + Redis.
 - Pipeline: `ingest -> normalize -> embed -> synthesize`.
 - Stage payloads are run-scoped and carry: `runId`, `taskId`, `symbol`, and diagnostics context.
 - Enqueue path resolves company identity before ingestion:
-  - input can be ticker (for example `RYCEY`) or mapped company-name aliases (for example `ROLLS ROYCE`)
+  - input can be ticker (for example `RYCEY`) or mapped alias (for example `ROLLS ROYCE`)
   - payload carries `resolvedIdentity` (`requestedSymbol`, `canonicalSymbol`, `companyName`, `aliases`, `confidence`, `resolutionSource`)
 - Run monitor read path is hybrid:
-  - snapshot-backed run detail for terminal/proven runs
-  - queue-backed run detail fallback for pre-snapshot `running` / `failed` visibility
+  - snapshot-backed run detail for terminal runs
+  - queue-backed fallback for pre-snapshot `running` / `failed`
 
 ### Data + failure model
 
 - Synthesis consumes `news + metrics + filings` evidence and writes snapshots.
-- Ingestion requires at least one successful source call (`news` or `metrics` or `filings`), even if returned arrays are empty.
+- Ingestion requires at least one successful source call (`news` or `metrics` or `filings`), even when arrays are empty.
 - Boundary adapters return typed `Result` errors (`provider`, `code`, `retryable`, optional `httpStatus`).
 - Diagnostics are first-class and flow across stages:
   - `metricsDiagnostics`
@@ -150,18 +153,38 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 4. `docker compose up -d postgres redis`
 5. `bun run db:migrate`
 
+### Local topology + defaults
+
+- Web dev server: `http://localhost:5173`
+- API server default: `http://localhost:3000` (`API_PORT`)
+- Web proxy default target: `http://localhost:3000` (`VITE_API_PROXY_TARGET`)
+- Redis default: `redis://localhost:6379`
+- Postgres default: `postgres://postgres:postgres@localhost:5432/research_bot`
+
+### Startup (3 terminals)
+
+1. API: `bun run api`
+2. Worker: `bun run worker`
+3. Web: `bun run web:dev`
+
+### Web env precedence (important)
+
+- Recommended local default: keep `VITE_API_BASE_URL` empty in `apps/web/.env`.
+- If `VITE_API_BASE_URL` is set, Vite proxy is bypassed for API calls.
+- If API is not on `3000`, set `VITE_API_PROXY_TARGET` to that API URL.
+
 ### Core commands
 
-- `bun run src/index.ts status`
-- `bun run src/workers/main.ts`
-- `bun run src/api/main.ts`
+- `bun run status`
+- `bun run worker`
+- `bun run api`
 - `bun run web:dev`
-- `bun run src/index.ts enqueue --symbol AAPL`
-- `bun run src/index.ts enqueue --symbol AAPL --force`
-- `bun run src/index.ts enqueue --symbol RYCEY --force`
-- `bun run src/index.ts enqueue --symbol "ROLLS ROYCE" --force`
-- `bun run src/index.ts snapshot --symbol AAPL`
-- `bun run src/index.ts snapshot --symbol RYCEY --prettify`
+- `bun run enqueue --symbol AAPL`
+- `bun run enqueue --symbol AAPL --force`
+- `bun run enqueue --symbol RYCEY --force`
+- `bun run enqueue --symbol "ROLLS ROYCE" --force`
+- `bun run snapshot --symbol AAPL`
+- `bun run snapshot --symbol RYCEY --prettify`
 - `bun run src/cli/ollamaProbe.ts`
 
 ### Maintenance
@@ -172,17 +195,26 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 ### Smoke test
 
 1. Start infra + migrations.
-2. Start API (`bun run src/api/main.ts`).
-3. Start worker.
+2. Start API (`bun run api`).
+3. Start worker (`bun run worker`).
 4. Start web app (`bun run web:dev`).
 5. Enqueue one symbol (or mapped company alias).
-6. Wait for stage completion.
+6. Open run monitor (`/runs?runId=...`) and confirm polling (~5s) to terminal state.
 7. Fetch snapshot with `--prettify`.
 8. Confirm `Resolved identity` and `Data quality alerts` sections are present when relevant.
 
 If no snapshot appears:
 
 - check worker logs for failed jobs
+- check API process is running and reachable on expected port
+- if web shows `ECONNREFUSED` for `/api/*`, align `API_PORT` and `VITE_API_PROXY_TARGET`
+- if web calls wrong origin, clear or fix `VITE_API_BASE_URL`
 - confirm host URLs use `localhost` for Redis/Postgres
 - confirm Ollama reachability + local model availability
 - retry enqueue with `--force`
+
+### v1 limitations
+
+- Polling-only UI updates (no SSE/WebSocket).
+- No AuthN/AuthZ.
+- Snapshot endpoint is read-only and does not trigger pipeline execution.
