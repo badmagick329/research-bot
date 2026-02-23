@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "dev": "bun run src/index.ts run",
+    "api": "bun run src/api/main.ts",
     "enqueue": "bun run src/index.ts enqueue",
     "status": "bun run src/index.ts status",
     "snapshot": "bun run src/index.ts snapshot",
