@@ -3,6 +3,7 @@ import { IngestionService } from "../services/ingestionService";
 import { NormalizationService } from "../services/normalizationService";
 import { EmbeddingService } from "../services/embeddingService";
 import { SynthesisService } from "../services/synthesisService";
+import { RunQueryService } from "../services/runQueryService";
 import {
   env,
   filingsProvider,
@@ -15,6 +16,7 @@ import {
   PostgresDocumentRepositoryService,
   PostgresFilingsRepositoryService,
   PostgresMetricsRepositoryService,
+  PostgresRunsReadRepositoryService,
   PostgresSnapshotRepositoryService,
 } from "../../infra/db/repositories";
 import { OllamaEmbedding } from "../../infra/llm/ollamaEmbedding";
@@ -161,6 +163,7 @@ export const createRuntime = async () => {
   const filingsRepo = new PostgresFilingsRepositoryService(db);
   const embeddingsRepo = new PgVectorEmbeddingRepositoryService(sql);
   const snapshotsRepo = new PostgresSnapshotRepositoryService(db);
+  const runsReadRepository = new PostgresRunsReadRepositoryService(db);
 
   const llm = new OllamaLlm(
     env.OLLAMA_BASE_URL,
@@ -224,10 +227,16 @@ export const createRuntime = async () => {
     clock,
     ids,
   );
+  const runQueryService = new RunQueryService(
+    queue,
+    snapshotsRepo,
+    runsReadRepository,
+  );
 
   return {
     queue,
     snapshotsRepo,
+    runQueryService,
     orchestratorService,
     ingestionService,
     normalizationService,
