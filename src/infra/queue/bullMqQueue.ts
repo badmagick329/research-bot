@@ -1,7 +1,12 @@
 import { Queue, type WorkerOptions, Worker } from "bullmq";
 import type { RedisOptions } from "ioredis";
+import type { QueueCountsResponse } from "../../core/entities/opsConsole";
 import type { JobStage } from "../../core/entities/research";
-import type { JobPayload, QueuePort } from "../../core/ports/outboundPorts";
+import type {
+  JobPayload,
+  QueuePort,
+  QueueReceiptPort,
+} from "../../core/ports/outboundPorts";
 import { queueNames } from "./queues";
 
 export type QueueStageCounts = {
@@ -29,7 +34,7 @@ export const defaultJobOptions = {
 /**
  * Wraps BullMQ so application code depends on queue intent rather than queue vendor details.
  */
-export class BullMqQueue implements QueuePort {
+export class BullMqQueue implements QueuePort, QueueReceiptPort {
   private readonly queues = new Map<JobStage, Queue<JobPayload>>();
 
   constructor(private readonly connection: RedisOptions) {
@@ -49,14 +54,28 @@ export class BullMqQueue implements QueuePort {
    * BullMQ rejects custom job ids containing colon because colon is reserved in its Redis key format.
    */
   async enqueue(stage: JobStage, payload: JobPayload): Promise<void> {
+    await this.enqueueWithReceipt(stage, payload);
+  }
+
+  /**
+   * Returns queue acknowledgement metadata so API callers can correlate accepted requests to queue state.
+   */
+  async enqueueWithReceipt(
+    stage: JobStage,
+    payload: JobPayload,
+  ): Promise<{ enqueuedAt: string }> {
     const queue = this.queues.get(stage);
     if (!queue) {
       throw new Error(`Queue not configured for stage ${stage}`);
     }
 
-    await queue.add(payload.idempotencyKey, payload, {
+    const job = await queue.add(payload.idempotencyKey, payload, {
       jobId: payload.idempotencyKey,
     });
+
+    return {
+      enqueuedAt: new Date(job.timestamp).toISOString(),
+    };
   }
 
   /**
@@ -103,6 +122,21 @@ export class BullMqQueue implements QueuePort {
     );
 
     return Object.fromEntries(entries) as QueueCountsSnapshot;
+  }
+
+  /**
+   * Samples queue counters with per-stage timestamps to support contract-stable operational polling responses.
+   */
+  async getQueueCountsSampled(): Promise<QueueCountsResponse> {
+    const snapshot = await this.getQueueCounts();
+
+    return {
+      items: (Object.keys(queueNames) as JobStage[]).map((stage) => ({
+        stage,
+        sampledAt: new Date().toISOString(),
+        counts: snapshot[stage],
+      })),
+    };
   }
 }
 

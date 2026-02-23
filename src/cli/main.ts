@@ -155,15 +155,12 @@ export const buildCli = () => {
     .option("--force", "Bypass hourly idempotency dedupe for immediate reruns")
     .action(async (opts: { symbol: string; force?: boolean }) => {
       const runtime = await createRuntime();
-      await runtime.orchestratorService.enqueueForSymbol(
+      const enqueueResult = await runtime.orchestratorService.enqueueForSymbol(
         opts.symbol,
         "ingest",
         Boolean(opts.force),
       );
-      logger.info(
-        { symbol: opts.symbol, force: Boolean(opts.force) },
-        "Enqueued ingest task",
-      );
+      logger.info({ enqueue: enqueueResult }, "Enqueued ingest task");
       process.exit(0);
     });
 

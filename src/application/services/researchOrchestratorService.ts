@@ -1,16 +1,18 @@
 import type { JobStage } from "../../core/entities/research";
 import type { CompanyResolverPort } from "../../core/ports/inboundPorts";
 import type {
+  QueueReceiptPort,
   QueuePort,
   TaskFactoryPort,
 } from "../../core/ports/outboundPorts";
+import type { EnqueueRunResponse } from "../../core/entities/opsConsole";
 
 /**
  * Owns stage handoff policy so scheduling behavior stays consistent across CLI and worker-triggered flows.
  */
 export class ResearchOrchestratorService {
   constructor(
-    private readonly queue: QueuePort,
+    private readonly queue: QueuePort & QueueReceiptPort,
     private readonly taskFactory: TaskFactoryPort,
     private readonly companyResolver: CompanyResolverPort,
   ) {}
@@ -22,7 +24,7 @@ export class ResearchOrchestratorService {
     symbol: string,
     stage: JobStage = "ingest",
     force = false,
-  ): Promise<void> {
+  ): Promise<EnqueueRunResponse> {
     const resolution = await this.companyResolver.resolveCompany({
       symbolOrName: symbol,
     });
@@ -39,7 +41,7 @@ export class ResearchOrchestratorService {
       ? `${task.idempotencyKey}-force-${task.id}`
       : task.idempotencyKey;
 
-    await this.queue.enqueue(stage, {
+    const queueReceipt = await this.queue.enqueueWithReceipt(stage, {
       runId: task.runId,
       taskId: task.id,
       symbol: task.symbol,
@@ -47,5 +49,16 @@ export class ResearchOrchestratorService {
       requestedAt: task.requestedAt.toISOString(),
       resolvedIdentity: identity,
     });
+
+    return {
+      accepted: true,
+      runId: task.runId,
+      taskId: task.id,
+      requestedSymbol: symbol,
+      canonicalSymbol: identity.canonicalSymbol,
+      idempotencyKey,
+      forceApplied: force,
+      enqueuedAt: queueReceipt.enqueuedAt,
+    };
   }
 }

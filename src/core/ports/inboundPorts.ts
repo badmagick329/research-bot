@@ -1,5 +1,14 @@
 import type { Result } from "neverthrow";
 import type { AppBoundaryError } from "../entities/appError";
+import type {
+  EnqueueRunRequest,
+  EnqueueRunResponse,
+  LatestSnapshotResponse,
+  ListRunsQuery,
+  ListRunsResponse,
+  QueueCountsResponse,
+  RunDetailResponse,
+} from "../entities/opsConsole";
 import type { ResolvedCompanyIdentity } from "../entities/research";
 
 export type NewsSearchRequest = {
@@ -129,4 +138,21 @@ export interface CompanyResolverPort {
   resolveCompany(
     request: CompanyResolveRequest,
   ): Promise<Result<CompanyResolveResult, AppBoundaryError>>;
+}
+
+/**
+ * Defines enqueue command semantics so HTTP/CLI adapters can trigger runs through a stable use-case boundary.
+ */
+export interface RunEnqueueUseCasePort {
+  enqueueRun(request: EnqueueRunRequest): Promise<EnqueueRunResponse>;
+}
+
+/**
+ * Defines read operations needed by the ops console while keeping transport concerns outside application logic.
+ */
+export interface RunQueryUseCasePort {
+  getQueueCounts(): Promise<QueueCountsResponse>;
+  getLatestSnapshot(symbol: string): Promise<LatestSnapshotResponse | null>;
+  listRuns(query: ListRunsQuery): Promise<ListRunsResponse>;
+  getRunDetail(runId: string): Promise<RunDetailResponse | null>;
 }

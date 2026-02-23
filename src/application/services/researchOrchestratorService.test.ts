@@ -4,6 +4,7 @@ import { ResearchOrchestratorService } from "./researchOrchestratorService";
 import type { CompanyResolverPort } from "../../core/ports/inboundPorts";
 import type {
   QueuePort,
+  QueueReceiptPort,
   TaskFactoryPort,
 } from "../../core/ports/outboundPorts";
 
@@ -11,9 +12,13 @@ describe("ResearchOrchestratorService", () => {
   it("resolves identity and enqueues canonical symbol payload", async () => {
     const enqueues: Array<{ stage: string; payload: unknown }> = [];
 
-    const queue: QueuePort = {
+    const queue: QueuePort & QueueReceiptPort = {
       enqueue: async (stage, payload) => {
         enqueues.push({ stage, payload });
+      },
+      enqueueWithReceipt: async (stage, payload) => {
+        enqueues.push({ stage, payload });
+        return { enqueuedAt: "2026-02-19T00:00:02.000Z" };
       },
     };
 
@@ -49,7 +54,11 @@ describe("ResearchOrchestratorService", () => {
       taskFactory,
       resolver,
     );
-    await service.enqueueForSymbol("rolls royce", "ingest", true);
+    const result = await service.enqueueForSymbol(
+      "rolls royce",
+      "ingest",
+      true,
+    );
 
     expect(enqueues).toHaveLength(1);
     expect(enqueues[0]?.stage).toBe("ingest");
@@ -69,11 +78,24 @@ describe("ResearchOrchestratorService", () => {
         resolutionSource: "manual_map",
       },
     });
+    expect(result).toEqual({
+      accepted: true,
+      runId: "run-1",
+      taskId: "task-1",
+      requestedSymbol: "rolls royce",
+      canonicalSymbol: "RYCEY",
+      idempotencyKey: "RYCEY-ingest-hour-force-task-1",
+      forceApplied: true,
+      enqueuedAt: "2026-02-19T00:00:02.000Z",
+    });
   });
 
   it("throws when company resolution fails", async () => {
-    const queue: QueuePort = {
+    const queue: QueuePort & QueueReceiptPort = {
       enqueue: async () => {},
+      enqueueWithReceipt: async () => ({
+        enqueuedAt: "2026-02-19T00:00:02.000Z",
+      }),
     };
 
     const taskFactory: TaskFactoryPort = {

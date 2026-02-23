@@ -4,6 +4,12 @@ import type { FilingEntity } from "../entities/filing";
 import type { Result } from "neverthrow";
 import type { AppBoundaryError } from "../entities/appError";
 import type {
+  ListRunsQuery,
+  ListRunsResponse,
+  QueueCountsResponse,
+  RunDetailResponse,
+} from "../entities/opsConsole";
+import type {
   JobStage,
   ResearchSnapshotEntity,
   ResolvedCompanyIdentity,
@@ -25,8 +31,23 @@ export type JobPayload = {
   stageIssues?: SnapshotStageDiagnostics[];
 };
 
+export type QueueEnqueueReceipt = {
+  enqueuedAt: string;
+};
+
 export interface QueuePort {
   enqueue(stage: JobStage, payload: JobPayload): Promise<void>;
+}
+
+export interface QueueReceiptPort {
+  enqueueWithReceipt(
+    stage: JobStage,
+    payload: JobPayload,
+  ): Promise<QueueEnqueueReceipt>;
+}
+
+export interface QueueCountsReadPort {
+  getQueueCountsSampled(): Promise<QueueCountsResponse>;
 }
 
 export interface DocumentRepositoryPort {
@@ -73,6 +94,11 @@ export interface SnapshotRepositoryPort {
     symbol: string,
     runId?: string,
   ): Promise<ResearchSnapshotEntity | null>;
+}
+
+export interface RunsReadRepositoryPort {
+  listRuns(query: ListRunsQuery): Promise<ListRunsResponse>;
+  getRunDetail(runId: string): Promise<RunDetailResponse | null>;
 }
 
 export interface LlmPort {
