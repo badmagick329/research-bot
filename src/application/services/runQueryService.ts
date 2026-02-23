@@ -3,6 +3,7 @@ import type {
   LatestSnapshotResponse,
   ListRunsResponse,
   QueueCountsResponse,
+  RunSummary,
   RunDetailResponse,
 } from "../../core/entities/opsConsole";
 import type { RunQueryUseCasePort } from "../../core/ports/inboundPorts";
@@ -50,7 +51,46 @@ export class RunQueryService implements RunQueryUseCasePort {
    * Delegates run listing to read-model repository so pagination semantics remain infrastructure-owned.
    */
   async listRuns(query: ListRunsQuery): Promise<ListRunsResponse> {
-    return this.runsReadRepository.listRuns(query);
+    const persisted = await this.runsReadRepository.listRuns(query);
+    const normalizedSymbol = query.symbol?.trim().toUpperCase();
+
+    if (!normalizedSymbol) {
+      return persisted;
+    }
+
+    const queued =
+      await this.queueReads.getLatestRunStateBySymbol(normalizedSymbol);
+    if (!queued) {
+      return persisted;
+    }
+
+    const queuedSummary: RunSummary = {
+      runId: queued.runId,
+      taskId: queued.taskId,
+      requestedSymbol: queued.requestedSymbol,
+      canonicalSymbol: queued.canonicalSymbol,
+      status: queued.status,
+      evidence: {
+        documents: 0,
+        metrics: 0,
+        filings: 0,
+      },
+      createdAt: queued.requestedAt,
+      updatedAt: queued.updatedAt,
+    };
+
+    const alreadyPresent = persisted.items.some(
+      (item) => item.runId === queuedSummary.runId,
+    );
+
+    if (alreadyPresent) {
+      return persisted;
+    }
+
+    return {
+      ...persisted,
+      items: [queuedSummary, ...persisted.items],
+    };
   }
 
   /**

@@ -244,6 +244,35 @@ export class BullMqQueue
   }
 
   /**
+   * Projects the most recent queue-backed run for a symbol so list views can include in-flight activity.
+   */
+  async getLatestRunStateBySymbol(
+    symbol: string,
+  ): Promise<QueueRunState | null> {
+    const normalized = symbol.trim().toUpperCase();
+    if (!normalized) {
+      return null;
+    }
+
+    const observations = await this.collectSymbolObservations(normalized);
+    if (observations.length === 0) {
+      return null;
+    }
+
+    const latest = observations
+      .slice()
+      .sort(
+        (left, right) => right.updatedAt.getTime() - left.updatedAt.getTime(),
+      )[0];
+
+    if (!latest) {
+      return null;
+    }
+
+    return this.getRunState(latest.payload.runId);
+  }
+
+  /**
    * Collects run-specific job observations across all queue stages to derive a consistent status projection.
    */
   private async collectRunObservations(
@@ -272,6 +301,64 @@ export class BullMqQueue
         );
         return jobs
           .filter((job) => job.data.runId === runId)
+          .map(
+            (job) =>
+              ({
+                stage,
+                payload: job.data,
+                state: (job.finishedOn
+                  ? job.failedReason
+                    ? "failed"
+                    : "completed"
+                  : job.processedOn
+                    ? "active"
+                    : job.opts.delay && job.opts.delay > 0
+                      ? "delayed"
+                      : "waiting") as QueueJobLifecycleState,
+                updatedAt: new Date(
+                  job.finishedOn ??
+                    job.processedOn ??
+                    job.timestamp ??
+                    Date.now(),
+                ),
+              }) satisfies StageObservation,
+          );
+      }),
+    );
+
+    return observationsByStage.flat();
+  }
+
+  /**
+   * Collects queue observations for a symbol across stages so list views can locate the newest in-flight run.
+   */
+  private async collectSymbolObservations(
+    symbol: string,
+  ): Promise<StageObservation[]> {
+    const lifecycleStates: QueueJobLifecycleState[] = [
+      "active",
+      "waiting",
+      "delayed",
+      "completed",
+      "failed",
+    ];
+
+    const observationsByStage = await Promise.all(
+      (Object.keys(queueNames) as JobStage[]).map(async (stage) => {
+        const queue = this.queues.get(stage);
+        if (!queue) {
+          throw new Error(`Queue not configured for stage ${stage}`);
+        }
+
+        const jobs = await queue.getJobs(
+          lifecycleStates,
+          0,
+          RUN_STATE_SCAN_LIMIT,
+          false,
+        );
+
+        return jobs
+          .filter((job) => job.data.symbol.toUpperCase() === symbol)
           .map(
             (job) =>
               ({

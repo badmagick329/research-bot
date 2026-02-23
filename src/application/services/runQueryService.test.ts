@@ -12,6 +12,7 @@ describe("RunQueryService", () => {
     const queueCounts: QueueCountsReadPort & QueueRunReadPort = {
       getQueueCountsSampled: async () => ({ items: [] }),
       getRunState: async () => null,
+      getLatestRunStateBySymbol: async () => null,
     };
 
     const snapshotLookups: string[] = [];
@@ -59,6 +60,7 @@ describe("RunQueryService", () => {
         ],
       }),
       getRunState: async () => null,
+      getLatestRunStateBySymbol: async () => null,
     };
 
     const snapshots: SnapshotRepositoryPort = {
@@ -94,6 +96,7 @@ describe("RunQueryService", () => {
     const queueCounts: QueueCountsReadPort & QueueRunReadPort = {
       getQueueCountsSampled: async () => ({ items: [] }),
       getRunState: async () => null,
+      getLatestRunStateBySymbol: async () => null,
     };
 
     const snapshots: SnapshotRepositoryPort = {
@@ -163,6 +166,7 @@ describe("RunQueryService", () => {
         ],
         updatedAt: "2026-02-23T00:00:05.000Z",
       }),
+      getLatestRunStateBySymbol: async () => null,
     };
 
     const snapshots: SnapshotRepositoryPort = {
@@ -187,5 +191,67 @@ describe("RunQueryService", () => {
     expect(detail?.run.status).toBe("running");
     expect(detail?.run.runId).toBe("run-queued");
     expect(detail?.run.stages[0]?.status).toBe("running");
+  });
+
+  it("prepends queue-backed in-flight run to list when symbol filter is provided", async () => {
+    const queueCounts: QueueCountsReadPort & QueueRunReadPort = {
+      getQueueCountsSampled: async () => ({ items: [] }),
+      getRunState: async () => null,
+      getLatestRunStateBySymbol: async () => ({
+        runId: "run-live",
+        taskId: "task-live",
+        symbol: "NVDA",
+        requestedAt: "2026-02-23T01:00:00.000Z",
+        requestedSymbol: "NVDA",
+        canonicalSymbol: "NVDA",
+        status: "running",
+        stages: [
+          { stage: "ingest", status: "running" },
+          { stage: "normalize", status: "not_started" },
+          { stage: "embed", status: "not_started" },
+          { stage: "synthesize", status: "not_started" },
+        ],
+        updatedAt: "2026-02-23T01:00:05.000Z",
+      }),
+    };
+
+    const snapshots: SnapshotRepositoryPort = {
+      save: async () => {},
+      latestBySymbol: async () => null,
+    };
+
+    const runsReadRepository: RunsReadRepositoryPort = {
+      listRuns: async () => ({
+        items: [
+          {
+            runId: "run-persisted",
+            taskId: "task-persisted",
+            requestedSymbol: "NVDA",
+            canonicalSymbol: "NVDA",
+            status: "success",
+            evidence: {
+              documents: 2,
+              metrics: 1,
+              filings: 1,
+            },
+            createdAt: "2026-02-23T00:00:00.000Z",
+            updatedAt: "2026-02-23T00:05:00.000Z",
+          },
+        ],
+      }),
+      getRunDetail: async () => null,
+    };
+
+    const service = new RunQueryService(
+      queueCounts,
+      snapshots,
+      runsReadRepository,
+    );
+
+    const result = await service.listRuns({ symbol: "NVDA", limit: 10 });
+
+    expect(result.items[0]?.runId).toBe("run-live");
+    expect(result.items[0]?.status).toBe("running");
+    expect(result.items[1]?.runId).toBe("run-persisted");
   });
 });

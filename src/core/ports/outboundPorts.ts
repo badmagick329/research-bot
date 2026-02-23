@@ -72,6 +72,11 @@ export interface QueueRunReadPort {
    * Resolves in-flight queue state by run id so monitor UIs can render pre-snapshot progress.
    */
   getRunState(runId: string): Promise<QueueRunState | null>;
+
+  /**
+   * Resolves latest in-flight queue state by symbol so list views can include pre-snapshot runs.
+   */
+  getLatestRunStateBySymbol(symbol: string): Promise<QueueRunState | null>;
 }
 
 export interface DocumentRepositoryPort {
