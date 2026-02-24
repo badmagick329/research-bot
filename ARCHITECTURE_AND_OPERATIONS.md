@@ -41,6 +41,9 @@
   - resolved identity
   - data quality alerts
   - evidence-derived thesis/risks/catalysts/sources
+  - thesis top section is `Action Summary` for fast decision scanning
+    - decision taxonomy: `Buy | Watch | Avoid`
+    - required action blocks: reasons to invest, reasons to stay away, if/then triggers, thesis invalidation
 - Web snapshot thesis rendering:
   - `snapshot.thesis` remains persisted as raw markdown text
   - UI renders markdown with GFM support and sanitization (`react-markdown`, `remark-gfm`, `rehype-sanitize`)
@@ -122,6 +125,8 @@
   - use run monitor (`/runs?runId=...`) to inspect queue-backed stage state (`queued` / `running` / `failed`)
 - For web thesis readability checks:
   - verify headings/lists/links render as formatted markdown (not raw markdown text)
+  - verify `Action Summary` appears before `Overview`
+  - under weak evidence quality, treat `Watch` as the expected default decision
 
 ## 4) Migrations
 
@@ -223,7 +228,8 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 6. Open run monitor (`/runs?runId=...`) and confirm polling (~5s) to terminal state.
 7. Fetch snapshot with `--prettify`.
 8. In web snapshot view, confirm thesis markdown renders as formatted sections/lists.
-9. Confirm `Resolved identity` and `Data quality alerts` sections are present when relevant.
+9. Confirm thesis starts with `Action Summary` and includes `Decision`, `If/Then triggers`, and `Thesis invalidation`.
+10. Confirm `Resolved identity` and `Data quality alerts` sections are present when relevant.
 
 If no snapshot appears:
 

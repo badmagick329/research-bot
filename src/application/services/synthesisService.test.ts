@@ -24,7 +24,24 @@ const payload: JobPayload = {
   requestedAt: "2026-02-17T00:00:00.000Z",
 };
 
-const validThesis = `# Overview
+const validThesis = `# Action Summary
+- Decision: Watch [N1] [M1]
+- Timeframe fit: Short-term (0-3m) reactive to guidance; Long-term (12m+) constructive if execution persists [N1] [M2]
+- Reasons to invest:
+  - Product and demand updates remain constructive [N1]
+  - Revenue growth still supports medium-term upside if execution holds [M2]
+- Reasons to stay away:
+  - Current evidence still lacks direct holder-flow confirmation [N1]
+  - Regulatory detail on event durability is limited [F1]
+- If/Then triggers:
+  - If revenue growth remains above 10% then consider gradual accumulation [M2]
+  - If filing commentary confirms demand durability then increase conviction [F1]
+  - If execution headlines weaken materially then reduce exposure [N1]
+- Thesis invalidation:
+  - If growth falls below expectations without margin offset then thesis weakens [M2]
+  - If filings contradict operational momentum then thesis breaks [F1]
+
+# Overview
 TTWO demand remains stable [N1] [M1]
 
 # Shareholder/Institutional Dynamics
@@ -40,9 +57,26 @@ Recent filing did not contradict operating momentum [F1]
 No position-level holder flow provided in evidence [N1]
 
 # Conclusion
-Neutral-to-constructive setup with execution dependency [N1] [M1] [F1]`;
+Decision remains Watch because evidence quality is still mixed despite constructive signals [N1] [M1] [F1]`;
 
-const noEvidenceThesis = `# Overview
+const noEvidenceThesis = `# Action Summary
+- Decision: Watch
+- Timeframe fit: Short-term (0-3m) inconclusive; Long-term (12m+) pending evidence
+- Reasons to invest:
+  - Limited current support from available inputs.
+  - Potential upside exists if new disclosures arrive.
+- Reasons to stay away:
+  - Data coverage is too sparse for directional conviction.
+  - Missing metrics and filings prevent durable valuation calls.
+- If/Then triggers:
+  - If two or more issuer-specific headlines appear then rerun and reassess.
+  - If fresh metrics are available then update valuation view.
+  - If new filings include quantified guidance then reassess decision.
+- Thesis invalidation:
+  - If incoming data contradicts current assumptions then reset thesis.
+  - If evidence remains sparse across next cycle then defer action.
+
+# Overview
 Evidence is sparse for this run.
 
 # Shareholder/Institutional Dynamics
@@ -226,6 +260,13 @@ describe("SynthesisService", () => {
     expect(prompts[0]).toContain("News relevance diagnostics:");
     expect(prompts[0]).toContain("relevantHeadlinesCount=1");
     expect(prompts[0]).toContain("relevanceCoverage=1/1");
+    expect(prompts[0]).toContain("evidenceWeak=true");
+    expect(prompts[0]).toContain(
+      "Return Markdown with headings in this order: Action Summary, Overview",
+    );
+    expect(prompts[0]).toContain(
+      "If evidenceWeak=true, default Decision to Watch",
+    );
     expect(prompts[0]).toContain("N1 finnhub: TTWO issues updated game launch guidance");
     expect(prompts[0]).not.toContain("Stocks to buy this week across Wall Street");
 
@@ -235,6 +276,8 @@ describe("SynthesisService", () => {
     }
 
     expect(saved.thesis).toBe(validThesis);
+    expect(saved.thesis.startsWith("# Action Summary")).toBeTrue();
+    expect(saved.thesis).toContain("- If/Then triggers:");
     expect(saved.score).toBe(24.5);
     expect(saved.confidence).toBe(0.82);
   });
@@ -245,7 +288,7 @@ describe("SynthesisService", () => {
       summarize: async () => ok(""),
       synthesize: async (prompt) => {
         prompts.push(prompt);
-        return ok(noEvidenceThesis);
+        return ok(validThesis);
       },
     };
 

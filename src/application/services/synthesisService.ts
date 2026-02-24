@@ -30,6 +30,8 @@ type RelevanceSelection = {
   lowRelevance: boolean;
 };
 
+type ThesisDecision = "buy" | "watch" | "avoid";
+
 /**
  * Consolidates evidence into a durable snapshot so decision outputs remain traceable to stored sources.
  */
@@ -563,6 +565,22 @@ export class SynthesisService {
   }
 
   /**
+   * Converts evidence coverage quality into a simple weak/strong flag so synthesis can default to non-directional decisions.
+   */
+  private isEvidenceWeak(
+    selection: RelevanceSelection,
+    metricsCount: number,
+    filingsCount: number,
+  ): boolean {
+    return (
+      selection.lowRelevance ||
+      selection.selectedRelevantCount < 3 ||
+      metricsCount < 3 ||
+      filingsCount === 0
+    );
+  }
+
+  /**
    * Builds the primary synthesis prompt so initial and repair attempts share one consistent evidence contract.
    */
   private buildSynthesisPrompt(args: {
@@ -576,6 +594,7 @@ export class SynthesisService {
     filingLines: string;
     relevanceSelection: RelevanceSelection;
     shouldForceIdentityUncertainty: boolean;
+    evidenceWeak: boolean;
   }): string {
     const relevanceCoverage =
       args.relevanceSelection.selected.length === 0
@@ -607,6 +626,7 @@ export class SynthesisService {
       `- relevantHeadlinesCount=${args.relevanceSelection.relevantHeadlinesCount}`,
       `- relevanceCoverage=${relevanceCoverage}`,
       `- lowRelevance=${args.relevanceSelection.lowRelevance}`,
+      `- evidenceWeak=${args.evidenceWeak}`,
       "",
       "News headlines:",
       args.sourceLines || "- none",
@@ -618,11 +638,25 @@ export class SynthesisService {
       args.filingLines || "- none",
       "",
       "Output requirements:",
-      "- Return Markdown with headings: Overview, Shareholder/Institutional Dynamics, Valuation and Growth Interpretation, Regulatory Filings, Missing Evidence, Conclusion.",
+      "- Return Markdown with headings in this order: Action Summary, Overview, Shareholder/Institutional Dynamics, Valuation and Growth Interpretation, Regulatory Filings, Missing Evidence, Conclusion.",
+      "- Under # Action Summary, include exactly these labeled bullets:",
+      "  - Decision: Buy|Watch|Avoid",
+      "  - Timeframe fit: Short-term (0-3m) ... ; Long-term (12m+) ...",
+      "  - Reasons to invest:",
+      "  - Reasons to stay away:",
+      "  - If/Then triggers:",
+      "  - Thesis invalidation:",
+      "- Under Reasons to invest and Reasons to stay away, add 2-3 supporting sub-bullets each with citations.",
+      "- Under If/Then triggers, add 3-5 sub-bullets in 'If ... then ...' form.",
+      "- Under Thesis invalidation, add 2-3 sub-bullets describing clear thesis break conditions.",
+      "- Decision and each If/Then trigger must include at least one citation when evidence exists.",
+      "- If evidenceWeak=true, default Decision to Watch unless evidence strongly contradicts that default.",
       "- For each section, tie claims to one or more evidence items (N#, M#, F# labels).",
       "- Explain what changed in shareholder/institutional dynamics.",
       "- Connect valuation or growth interpretation to provided metrics when available.",
       "- Use filings to support or challenge narrative when available.",
+      "- Keep Overview/Valuation/Regulatory/Missing Evidence/Conclusion consistent with Action Summary.",
+      "- In Conclusion, reaffirm Decision or explicitly explain any downgrade caused by evidence gaps.",
       "- Explicitly state missing evidence if a section is empty.",
       "- If metrics diagnostics indicate missing or degraded metrics, mention that limitation in Missing Evidence.",
       "- If provider failures or pipeline stage issues are present, call them out explicitly in Missing Evidence.",
@@ -641,10 +675,12 @@ export class SynthesisService {
     thesis: string,
     hasEvidence: boolean,
     shouldForceIdentityUncertainty: boolean,
+    evidenceWeak: boolean,
   ): string[] {
     const issues: string[] = [];
 
     const requiredHeadings = [
+      "# Action Summary",
       "# Overview",
       "# Shareholder/Institutional Dynamics",
       "# Valuation and Growth Interpretation",
@@ -658,11 +694,84 @@ export class SynthesisService {
         issues.push(`Missing heading: ${heading}`);
       }
     });
+    if (
+      thesis.includes("# Action Summary") &&
+      thesis.includes("# Overview") &&
+      thesis.indexOf("# Action Summary") > thesis.indexOf("# Overview")
+    ) {
+      issues.push("Action Summary must appear before Overview.");
+    }
+
+    const actionSummarySection = this.extractHeadingSection(
+      thesis,
+      "Action Summary",
+    );
+    if (!actionSummarySection) {
+      issues.push("Action Summary section content is missing.");
+    }
+
+    const decision = this.extractDecision(actionSummarySection);
+    if (!decision) {
+      issues.push("Action Summary Decision must be Buy, Watch, or Avoid.");
+    } else if (evidenceWeak && decision !== "watch") {
+      issues.push("Weak evidence must default Decision to Watch.");
+    }
+
+    const requiredActionLabels = [
+      "Reasons to invest:",
+      "Reasons to stay away:",
+      "If/Then triggers:",
+      "Thesis invalidation:",
+    ];
+    requiredActionLabels.forEach((label) => {
+      if (!actionSummarySection || !actionSummarySection.includes(label)) {
+        issues.push(`Missing Action Summary label: ${label}`);
+      }
+    });
 
     const citationMatches = thesis.match(/\b[NMF]\d+\b/g) ?? [];
     if (hasEvidence && citationMatches.length < 4) {
       issues.push("Citation density is too low for available evidence.");
     }
+
+    if (actionSummarySection && hasEvidence) {
+      const actionSummaryCitations =
+        actionSummarySection.match(/\b[NMF]\d+\b/g) ?? [];
+      if (actionSummaryCitations.length < 4) {
+        issues.push("Action Summary citation density is too low.");
+      }
+    }
+
+    const decisionLine = actionSummarySection
+      ?.split("\n")
+      .find((line) => /decision:/i.test(line));
+    if (hasEvidence && decisionLine && !/\b[NMF]\d+\b/.test(decisionLine)) {
+      issues.push("Action Summary Decision line must include evidence citation.");
+    }
+
+    const triggerLines = this.extractActionSubBullets(
+      actionSummarySection,
+      "If/Then triggers:",
+    );
+    if (triggerLines.length < 3 || triggerLines.length > 5) {
+      issues.push("If/Then triggers must include between 3 and 5 sub-bullets.");
+    }
+    triggerLines.forEach((line) => {
+      const normalized = line.toLowerCase();
+      if (!normalized.includes("if ") || !normalized.includes(" then ")) {
+        issues.push(`Trigger must be conditional (If ... then ...): ${line}`);
+      }
+      if (
+        normalized.includes("monitor developments") ||
+        normalized.includes("watch news") ||
+        normalized.includes("stay tuned")
+      ) {
+        issues.push(`Trigger is too generic: ${line}`);
+      }
+      if (hasEvidence && !/\b[NMF]\d+\b/.test(line)) {
+        issues.push(`Trigger missing citation: ${line}`);
+      }
+    });
 
     if (hasEvidence) {
       const sections = thesis
@@ -716,6 +825,93 @@ export class SynthesisService {
       "Current thesis draft:",
       draftThesis,
     ].join("\n");
+  }
+
+  /**
+   * Extracts markdown section body by heading so validation can apply section-specific quality checks.
+   */
+  private extractHeadingSection(thesis: string, heading: string): string | null {
+    const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(
+      `# ${escapedHeading}\\n([\\s\\S]*?)(\\n# |$)`,
+      "i",
+    );
+    const match = thesis.match(regex);
+    return match?.[1]?.trim() ?? null;
+  }
+
+  /**
+   * Parses the action decision label so weak-evidence policy can enforce conservative directional output.
+   */
+  private extractDecision(
+    actionSummarySection: string | null,
+  ): ThesisDecision | null {
+    if (!actionSummarySection) {
+      return null;
+    }
+
+    const decisionLine = actionSummarySection
+      .split("\n")
+      .find((line) => /decision:/i.test(line));
+    if (!decisionLine) {
+      return null;
+    }
+
+    if (/decision:\s*buy\b/i.test(decisionLine)) {
+      return "buy";
+    }
+
+    if (/decision:\s*watch\b/i.test(decisionLine)) {
+      return "watch";
+    }
+
+    if (/decision:\s*avoid\b/i.test(decisionLine)) {
+      return "avoid";
+    }
+
+    return null;
+  }
+
+  /**
+   * Collects sub-bullets under a labeled action block so trigger quality and citation checks remain deterministic.
+   */
+  private extractActionSubBullets(
+    actionSummarySection: string | null,
+    label: string,
+  ): string[] {
+    if (!actionSummarySection) {
+      return [];
+    }
+
+    const lines = actionSummarySection.split("\n");
+    const labelIndex = lines.findIndex((line) => line.includes(label));
+    if (labelIndex < 0) {
+      return [];
+    }
+
+    const bullets: string[] = [];
+    for (let index = labelIndex + 1; index < lines.length; index += 1) {
+      const line = lines[index]?.trim() ?? "";
+      if (!line) {
+        continue;
+      }
+
+      if (
+        /^(?:-\s+)?(?:Reasons to invest:|Reasons to stay away:|If\/Then triggers:|Thesis invalidation:)/i.test(
+          line,
+        )
+      ) {
+        break;
+      }
+
+      if (/^[-*]\s+/.test(line)) {
+        bullets.push(line);
+      } else {
+        break;
+      }
+    }
+
+    return bullets;
   }
 
   /**
@@ -877,6 +1073,11 @@ export class SynthesisService {
       payload.resolvedIdentity,
       relevanceSelection,
     );
+    const evidenceWeak = this.isEvidenceWeak(
+      relevanceSelection,
+      latestMetrics.length,
+      filings.length,
+    );
 
     const prompt = this.buildSynthesisPrompt({
       synthesisTarget,
@@ -889,6 +1090,7 @@ export class SynthesisService {
       filingLines,
       relevanceSelection,
       shouldForceIdentityUncertainty,
+      evidenceWeak,
     });
 
     const thesisResult = await this.llm.synthesize(prompt);
@@ -904,6 +1106,7 @@ export class SynthesisService {
       thesis,
       selectedDocs.length + latestMetrics.length + filings.length > 0,
       shouldForceIdentityUncertainty,
+      evidenceWeak,
     );
 
     if (validationIssues.length > 0) {
@@ -920,6 +1123,7 @@ export class SynthesisService {
         repairedThesis,
         selectedDocs.length + latestMetrics.length + filings.length > 0,
         shouldForceIdentityUncertainty,
+        evidenceWeak,
       );
       thesis = repairedIssues.length <= validationIssues.length ? repairedThesis : thesis;
     }
