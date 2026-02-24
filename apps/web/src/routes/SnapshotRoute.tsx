@@ -1,5 +1,8 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import ReactMarkdown from "react-markdown";
+import rehypeSanitize from "rehype-sanitize";
+import remarkGfm from "remark-gfm";
 import type {
   ResearchSnapshotEntity,
   SnapshotDiagnostics,
@@ -219,7 +222,7 @@ function SnapshotContent({ snapshot, qualityAlerts }: SnapshotContentProps) {
 
       <section className="space-y-2">
         <h4 className="text-sm font-semibold text-slate-100">Thesis</h4>
-        <p className="text-sm text-slate-200">{snapshot.thesis}</p>
+        <ThesisMarkdown content={snapshot.thesis} />
       </section>
 
       <section className="grid gap-6 lg:grid-cols-2">
@@ -280,6 +283,70 @@ function SnapshotContent({ snapshot, qualityAlerts }: SnapshotContentProps) {
         )}
       </section>
     </article>
+  );
+}
+
+type ThesisMarkdownProps = {
+  content: string;
+};
+
+/**
+ * Renders synthesized thesis markdown safely so structured sections stay readable without exposing raw HTML.
+ */
+function ThesisMarkdown({ content }: ThesisMarkdownProps) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeSanitize]}
+      components={{
+        h1: ({ children }) => (
+          <h5 className="mt-4 text-base font-semibold text-slate-100 first:mt-0">
+            {children}
+          </h5>
+        ),
+        h2: ({ children }) => (
+          <h5 className="mt-4 text-base font-semibold text-slate-100 first:mt-0">
+            {children}
+          </h5>
+        ),
+        h3: ({ children }) => (
+          <h6 className="mt-3 text-sm font-semibold text-slate-100 first:mt-0">
+            {children}
+          </h6>
+        ),
+        p: ({ children }) => (
+          <p className="mt-2 text-sm leading-6 text-slate-200 first:mt-0">
+            {children}
+          </p>
+        ),
+        ul: ({ children }) => (
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-200 first:mt-0">
+            {children}
+          </ul>
+        ),
+        ol: ({ children }) => (
+          <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-slate-200 first:mt-0">
+            {children}
+          </ol>
+        ),
+        li: ({ children }) => <li>{children}</li>,
+        strong: ({ children }) => (
+          <strong className="font-semibold text-slate-100">{children}</strong>
+        ),
+        a: ({ children, href }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            className="text-blue-300 underline underline-offset-2 hover:text-blue-200"
+          >
+            {children}
+          </a>
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
   );
 }
 

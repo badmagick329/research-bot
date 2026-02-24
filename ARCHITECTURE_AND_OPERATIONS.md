@@ -6,13 +6,13 @@
 
 - Clean architecture with strict boundaries.
 - Host runtime: CLI + worker + API on Bun.
-- Ops console UI runtime: Vite dev server in `apps/web` (proxying `/api` to Bun API).
+- Ops console UI runtime: Vite dev server in `apps/web` (proxying `/api` to Bun API by default).
 - Web API routing precedence:
   - if `VITE_API_BASE_URL` is set, browser requests go directly to that URL
   - if `VITE_API_BASE_URL` is empty, browser requests use relative `/api` and Vite proxy
 - Infra runtime: Docker services for Postgres + Redis.
 - Pipeline: `ingest -> normalize -> embed -> synthesize`.
-- Stage payloads are run-scoped and carry: `runId`, `taskId`, `symbol`, and diagnostics context.
+- Stage payloads are run-scoped and carry `runId`, `taskId`, `symbol`, and diagnostics context.
 - Enqueue path resolves company identity before ingestion:
   - input can be ticker (for example `RYCEY`) or mapped alias (for example `ROLLS ROYCE`)
   - payload carries `resolvedIdentity` (`requestedSymbol`, `canonicalSymbol`, `companyName`, `aliases`, `confidence`, `resolutionSource`)
@@ -35,10 +35,13 @@
   - `normalize`: LLM failures degrade and continue
   - `embed`: embedding failures/mismatches degrade and continue
   - `synthesize`: still runs to materialize a snapshot with explicit quality alerts
-- Snapshot prettify output surfaces:
+- Snapshot output surfaces:
   - resolved identity
   - data quality alerts
   - evidence-derived thesis/risks/catalysts/sources
+- Web snapshot thesis rendering:
+  - `snapshot.thesis` remains persisted as raw markdown text
+  - UI renders markdown with GFM support and sanitization (`react-markdown`, `remark-gfm`, `rehype-sanitize`)
 
 ### Retry + idempotency model
 
@@ -52,9 +55,7 @@
 - BullMQ retries: `2` (total attempts `3`) with exponential backoff.
 - Job idempotency key is hourly: `${symbol}-${stage}-${hour}`.
 - Use `--force` to bypass idempotency dedupe for immediate reruns.
-- Enqueue API responses are dedupe-aware and return:
-  - queued job identity (`runId`, `taskId`)
-  - `deduped` flag indicating whether an existing queued job was reused
+- Enqueue API responses are dedupe-aware and return queued job identity (`runId`, `taskId`) plus `deduped`.
 
 ## 2) Code map
 
@@ -104,7 +105,7 @@
 
 ## 3) Operational rules
 
-- Run CLI/worker from host terminal; Docker is for infra services only.
+- Run CLI/worker from host terminal; Docker is only for infra services.
 - `snapshot` is read-only; it never triggers pipeline execution.
 - Queue names and custom job ids must not include `:`.
 - Restart worker after config/code changes affecting providers/adapters/resolver map.
@@ -115,6 +116,8 @@
   - use `--force` after provider/resolver behavior changes to avoid stale idempotent jobs
 - For run-monitor investigations before snapshot creation:
   - use run monitor (`/runs?runId=...`) to inspect queue-backed stage state (`queued` / `running` / `failed`)
+- For web thesis readability checks:
+  - verify headings/lists/links render as formatted markdown (not raw markdown text)
 
 ## 4) Migrations
 
@@ -129,8 +132,9 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 
 ### Note on current identity/diagnostics changes
 
-- The recent identity and diagnostics additions are stored inside existing `jsonb` snapshot diagnostics payloads.
-- No new SQL migration is required unless table/column shape changes.
+- Identity/diagnostics additions are stored in existing `jsonb` snapshot diagnostics payloads.
+- No SQL migration is required unless table/column shape changes.
+- Markdown thesis rendering change is UI-only; no migration required.
 
 ## 5) Runbook
 
@@ -201,7 +205,8 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 5. Enqueue one symbol (or mapped company alias).
 6. Open run monitor (`/runs?runId=...`) and confirm polling (~5s) to terminal state.
 7. Fetch snapshot with `--prettify`.
-8. Confirm `Resolved identity` and `Data quality alerts` sections are present when relevant.
+8. In web snapshot view, confirm thesis markdown renders as formatted sections/lists.
+9. Confirm `Resolved identity` and `Data quality alerts` sections are present when relevant.
 
 If no snapshot appears:
 
