@@ -18,6 +18,9 @@ import type {
 } from "../../core/entities/research";
 import type {
   DocumentRepositoryPort,
+  EmbeddingMemoryMatch,
+  EmbeddingMemoryRepositoryPort,
+  EmbeddingMemorySearchOptions,
   EmbeddingRepositoryPort,
   FilingsRepositoryPort,
   MetricsRepositoryPort,
@@ -623,7 +626,9 @@ export class PostgresRunsReadRepositoryService implements RunsReadRepositoryPort
 /**
  * Bridges pgvector operations behind a port so embedding storage remains replaceable.
  */
-export class PgVectorEmbeddingRepositoryService implements EmbeddingRepositoryPort {
+export class PgVectorEmbeddingRepositoryService
+  implements EmbeddingRepositoryPort, EmbeddingMemoryRepositoryPort
+{
   constructor(private readonly sqlClient: postgres.Sql<{}>) {}
 
   /**
@@ -650,5 +655,55 @@ export class PgVectorEmbeddingRepositoryService implements EmbeddingRepositoryPo
         embedding = EXCLUDED.embedding,
         updated_at = now();
     `;
+  }
+
+  /**
+   * Retrieves prior-run semantic matches for a symbol so synthesis can pull contextual memory without leaking current run rows.
+   */
+  async findSimilarBySymbol(
+    symbol: string,
+    queryEmbedding: number[],
+    options: EmbeddingMemorySearchOptions,
+  ): Promise<EmbeddingMemoryMatch[]> {
+    const queryVector = `[${queryEmbedding.join(",")}]`;
+    const symbolUpper = symbol.toUpperCase();
+    const limit = Math.max(1, Math.trunc(options.limit));
+
+    const excludeRunClause = options.excludeRunId
+      ? this.sqlClient`AND (run_id IS NULL OR run_id <> ${options.excludeRunId})`
+      : this.sqlClient``;
+
+    const rows = await this.sqlClient<{
+      document_id: string;
+      symbol: string;
+      run_id: string | null;
+      content: string;
+      similarity: number;
+      created_at: string;
+    }[]>`
+      SELECT
+        document_id,
+        symbol,
+        run_id,
+        content,
+        (1 - (embedding <=> ${queryVector}::vector))::float8 AS similarity,
+        created_at
+      FROM embeddings
+      WHERE symbol = ${symbolUpper}
+        AND created_at >= ${options.from.toISOString()}::timestamptz
+        AND (1 - (embedding <=> ${queryVector}::vector)) >= ${options.minSimilarity}
+        ${excludeRunClause}
+      ORDER BY embedding <=> ${queryVector}::vector ASC
+      LIMIT ${limit}
+    `;
+
+    return rows.map((row) => ({
+      documentId: row.document_id,
+      symbol: row.symbol,
+      runId: row.run_id ?? undefined,
+      content: row.content,
+      similarity: Number(row.similarity),
+      createdAt: new Date(row.created_at),
+    }));
   }
 }

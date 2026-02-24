@@ -7,6 +7,8 @@ import type { MetricPointEntity } from "../../core/entities/metric";
 import type { ResearchSnapshotEntity } from "../../core/entities/research";
 import type {
   DocumentRepositoryPort,
+  EmbeddingMemoryRepositoryPort,
+  EmbeddingPort,
   FilingsRepositoryPort,
   JobPayload,
   LlmPort,
@@ -100,6 +102,8 @@ const createService = (args: {
   filings: FilingEntity[];
   llm: LlmPort;
   now?: Date;
+  embeddingPort?: EmbeddingPort;
+  memoryRepo?: EmbeddingMemoryRepositoryPort;
 }) => {
   const documentRepo: DocumentRepositoryPort = {
     upsertMany: async () => {},
@@ -132,10 +136,24 @@ const createService = (args: {
     next: () => "snapshot-1",
   };
 
+  const embeddingPort: EmbeddingPort =
+    args.embeddingPort ??
+    ({
+      embedTexts: async () => ok([[0.11, 0.22, 0.33]]),
+    } satisfies EmbeddingPort);
+
+  const memoryRepo: EmbeddingMemoryRepositoryPort =
+    args.memoryRepo ??
+    ({
+      findSimilarBySymbol: async () => [],
+    } satisfies EmbeddingMemoryRepositoryPort);
+
   const service = new SynthesisService(
     documentRepo,
     metricsRepo,
     filingsRepo,
+    embeddingPort,
+    memoryRepo,
     snapshotRepo,
     args.llm,
     clock,
@@ -603,5 +621,71 @@ describe("SynthesisService", () => {
     expect(prompts[1]).toContain(
       "Explicitly mention identity uncertainty in Missing Evidence.",
     );
+  });
+
+  it("injects cross-run memory into prompt and excludes current run from retrieval", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-1",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "f-1",
+        type: "news",
+        title: "TTWO growth momentum headline",
+        summary: "Growth update",
+        content: "TTWO saw new momentum.",
+        url: "https://example.com/ttwo-memory-seed",
+        publishedAt: new Date("2026-02-17T08:00:00.000Z"),
+        language: "en",
+        topics: ["growth"],
+        sourceType: "api",
+        rawPayload: { related: "TTWO" },
+        createdAt: new Date("2026-02-17T08:00:00.000Z"),
+      },
+    ];
+
+    let capturedExcludeRunId: string | undefined;
+    let capturedFrom: Date | undefined;
+    const memoryRepo: EmbeddingMemoryRepositoryPort = {
+      findSimilarBySymbol: async (_symbol, _queryEmbedding, options) => {
+        capturedExcludeRunId = options.excludeRunId;
+        capturedFrom = options.from;
+        return [
+          {
+            documentId: "historical-doc-1",
+            symbol: "TTWO",
+            runId: "old-run",
+            content: "Prior run context around growth durability and margin sensitivity.",
+            similarity: 0.81,
+            createdAt: new Date("2026-01-20T00:00:00.000Z"),
+          },
+        ];
+      },
+    };
+
+    const prompts: string[] = [];
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async (prompt) => {
+        prompts.push(prompt);
+        return ok(validThesis);
+      },
+    };
+
+    const { service } = createService({
+      docs,
+      metrics: [],
+      filings: [],
+      llm,
+      memoryRepo,
+      now: new Date("2026-02-17T12:00:00.000Z"),
+    });
+
+    await service.run(payload);
+
+    expect(prompts[0]).toContain("Cross-run memory (semantic matches, prior runs):");
+    expect(prompts[0]).toContain("R1 run=old-run similarity=0.810");
+    expect(capturedExcludeRunId).toBe("run-1");
+    expect(capturedFrom?.toISOString()).toBe("2025-11-19T12:00:00.000Z");
   });
 });

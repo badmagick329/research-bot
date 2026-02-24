@@ -3,6 +3,9 @@ import type {
   DocumentRepositoryPort,
   MetricsRepositoryPort,
   FilingsRepositoryPort,
+  EmbeddingPort,
+  EmbeddingMemoryRepositoryPort,
+  EmbeddingMemoryMatch,
   LlmPort,
   SnapshotRepositoryPort,
   ClockPort,
@@ -36,10 +39,16 @@ type ThesisDecision = "buy" | "watch" | "avoid";
  * Consolidates evidence into a durable snapshot so decision outputs remain traceable to stored sources.
  */
 export class SynthesisService {
+  private readonly memoryTopK = 6;
+  private readonly memoryWindowDays = 90;
+  private readonly memoryMinSimilarity = 0.72;
+
   constructor(
     private readonly documentRepo: DocumentRepositoryPort,
     private readonly metricsRepo: MetricsRepositoryPort,
     private readonly filingsRepo: FilingsRepositoryPort,
+    private readonly embeddingPort: EmbeddingPort,
+    private readonly embeddingMemoryRepo: EmbeddingMemoryRepositoryPort,
     private readonly snapshotRepo: SnapshotRepositoryPort,
     private readonly llm: LlmPort,
     private readonly clock: ClockPort,
@@ -565,6 +574,143 @@ export class SynthesisService {
   }
 
   /**
+   * Appends stage degradation diagnostics to snapshot payload state from within synthesis-time fallback paths.
+   */
+  private withStageIssue(
+    payload: JobPayload,
+    issue: SnapshotStageDiagnostics,
+  ): JobPayload {
+    return {
+      ...payload,
+      stageIssues: [...(payload.stageIssues ?? []), issue],
+    };
+  }
+
+  /**
+   * Builds a compact semantic query from current-run evidence so retrieval stays anchored to active thesis context.
+   */
+  private buildMemoryQueryText(
+    docs: DocumentEntity[],
+    metrics: MetricPointEntity[],
+    filings: FilingEntity[],
+  ): string {
+    const headlinePart = docs
+      .slice(0, 5)
+      .map((doc) => doc.title)
+      .join(" | ");
+    const metricsPart = metrics
+      .slice(0, 5)
+      .map(
+        (metric) =>
+          `${metric.metricName}=${this.formatMetricValue(metric)}${metric.metricUnit ? ` ${metric.metricUnit}` : ""}`,
+      )
+      .join(" | ");
+    const filingsPart = filings
+      .slice(0, 3)
+      .map((filing) => `${filing.filingType} ${filing.filedAt.toISOString().slice(0, 10)}`)
+      .join(" | ");
+
+    return [
+      headlinePart ? `Headlines: ${headlinePart}` : "",
+      metricsPart ? `Metrics: ${metricsPart}` : "",
+      filingsPart ? `Filings: ${filingsPart}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  /**
+   * Retrieves prior-run semantic matches and degrades gracefully when embedding lookup fails.
+   */
+  private async fetchCrossRunMemory(
+    payload: JobPayload,
+    docs: DocumentEntity[],
+    metrics: MetricPointEntity[],
+    filings: FilingEntity[],
+    now: Date,
+  ): Promise<{ matches: EmbeddingMemoryMatch[]; nextPayload: JobPayload }> {
+    const queryText = this.buildMemoryQueryText(docs, metrics, filings);
+    if (!queryText) {
+      return { matches: [], nextPayload: payload };
+    }
+
+    const queryEmbeddingResult = await this.embeddingPort.embedTexts([queryText]);
+    if (queryEmbeddingResult.isErr()) {
+      return {
+        matches: [],
+        nextPayload: this.withStageIssue(payload, {
+          stage: "embed",
+          status: "degraded",
+          reason: `Cross-run memory degraded due to ${queryEmbeddingResult.error.provider}: ${queryEmbeddingResult.error.message}`,
+          provider: queryEmbeddingResult.error.provider,
+          code: queryEmbeddingResult.error.code,
+          retryable: queryEmbeddingResult.error.retryable,
+        }),
+      };
+    }
+
+    const queryEmbedding = queryEmbeddingResult.value.at(0);
+    if (!queryEmbedding) {
+      return {
+        matches: [],
+        nextPayload: this.withStageIssue(payload, {
+          stage: "embed",
+          status: "degraded",
+          reason: "Cross-run memory degraded because query embedding was empty.",
+          provider: "embedding-memory",
+          code: "dimension_mismatch",
+          retryable: false,
+        }),
+      };
+    }
+
+    try {
+      const matches = await this.embeddingMemoryRepo.findSimilarBySymbol(
+        payload.symbol,
+        queryEmbedding,
+        {
+          limit: this.memoryTopK,
+          excludeRunId: payload.runId,
+          from: new Date(
+            now.getTime() - this.memoryWindowDays * 24 * 60 * 60 * 1000,
+          ),
+          minSimilarity: this.memoryMinSimilarity,
+        },
+      );
+
+      return { matches, nextPayload: payload };
+    } catch (error) {
+      return {
+        matches: [],
+        nextPayload: this.withStageIssue(payload, {
+          stage: "embed",
+          status: "degraded",
+          reason: `Cross-run memory degraded due to retrieval error: ${error instanceof Error ? error.message : String(error)}`,
+          provider: "embedding-memory",
+          code: "provider_error",
+          retryable: false,
+        }),
+      };
+    }
+  }
+
+  /**
+   * Formats memory matches into deterministic prompt labels so synthesis can cite historical context as R# references.
+   */
+  private formatMemoryLines(matches: EmbeddingMemoryMatch[]): string {
+    if (matches.length === 0) {
+      return "- none";
+    }
+
+    return matches
+      .map((match, index) => {
+        const snippet = match.content.replace(/\s+/g, " ").trim().slice(0, 220);
+        return `- R${index + 1} run=${match.runId ?? "unknown"} similarity=${match.similarity.toFixed(3)} created=${match.createdAt.toISOString().slice(0, 10)}: ${snippet}`;
+      })
+      .join("\n");
+  }
+
+  /**
    * Converts evidence coverage quality into a simple weak/strong flag so synthesis can default to non-directional decisions.
    */
   private isEvidenceWeak(
@@ -592,6 +738,7 @@ export class SynthesisService {
     sourceLines: string;
     metricLines: string;
     filingLines: string;
+    memoryLines: string;
     relevanceSelection: RelevanceSelection;
     shouldForceIdentityUncertainty: boolean;
     evidenceWeak: boolean;
@@ -637,6 +784,9 @@ export class SynthesisService {
       "Regulatory filings:",
       args.filingLines || "- none",
       "",
+      "Cross-run memory (semantic matches, prior runs):",
+      args.memoryLines,
+      "",
       "Output requirements:",
       "- Return Markdown with headings in this order: Action Summary, Overview, Shareholder/Institutional Dynamics, Valuation and Growth Interpretation, Regulatory Filings, Missing Evidence, Conclusion.",
       "- Under # Action Summary, include exactly these labeled bullets:",
@@ -651,6 +801,8 @@ export class SynthesisService {
       "- Under Thesis invalidation, add 2-3 sub-bullets describing clear thesis break conditions.",
       "- Decision and each If/Then trigger must include at least one citation when evidence exists.",
       "- If evidenceWeak=true, default Decision to Watch unless evidence strongly contradicts that default.",
+      "- Use R# memory references only as supporting context, not as sole support for directional decisions when current-run evidence exists.",
+      "- If memory conflicts with current-run evidence, explicitly call out the conflict in Missing Evidence.",
       "- For each section, tie claims to one or more evidence items (N#, M#, F# labels).",
       "- Explain what changed in shareholder/institutional dynamics.",
       "- Connect valuation or growth interpretation to provided metrics when available.",
@@ -676,6 +828,7 @@ export class SynthesisService {
     hasEvidence: boolean,
     shouldForceIdentityUncertainty: boolean,
     evidenceWeak: boolean,
+    memoryCount: number,
   ): string[] {
     const issues: string[] = [];
 
@@ -747,6 +900,23 @@ export class SynthesisService {
       .find((line) => /decision:/i.test(line));
     if (hasEvidence && decisionLine && !/\b[NMF]\d+\b/.test(decisionLine)) {
       issues.push("Action Summary Decision line must include evidence citation.");
+    }
+
+    const memoryCitations = thesis.match(/\bR\d+\b/g) ?? [];
+    if (
+      hasEvidence &&
+      memoryCitations.length > 0 &&
+      citationMatches.length === 0
+    ) {
+      issues.push(
+        "Current-run evidence exists, but thesis relies only on memory citations.",
+      );
+    }
+
+    if (hasEvidence && memoryCount > 0 && !/\b[NMF]\d+\b/.test(thesis)) {
+      issues.push(
+        "Directional narrative must anchor to current-run evidence when memory is present.",
+      );
     }
 
     const triggerLines = this.extractActionSubBullets(
@@ -1078,6 +1248,17 @@ export class SynthesisService {
       latestMetrics.length,
       filings.length,
     );
+    const now = this.clock.now();
+    const memoryResult = await this.fetchCrossRunMemory(
+      payload,
+      selectedDocs,
+      latestMetrics,
+      filings,
+      now,
+    );
+    const memoryMatches = memoryResult.matches;
+    const payloadWithMemoryDiagnostics = memoryResult.nextPayload;
+    const memoryLines = this.formatMemoryLines(memoryMatches);
 
     const prompt = this.buildSynthesisPrompt({
       synthesisTarget,
@@ -1088,6 +1269,7 @@ export class SynthesisService {
       sourceLines,
       metricLines,
       filingLines,
+      memoryLines,
       relevanceSelection,
       shouldForceIdentityUncertainty,
       evidenceWeak,
@@ -1107,6 +1289,7 @@ export class SynthesisService {
       selectedDocs.length + latestMetrics.length + filings.length > 0,
       shouldForceIdentityUncertainty,
       evidenceWeak,
+      memoryMatches.length,
     );
 
     if (validationIssues.length > 0) {
@@ -1124,11 +1307,11 @@ export class SynthesisService {
         selectedDocs.length + latestMetrics.length + filings.length > 0,
         shouldForceIdentityUncertainty,
         evidenceWeak,
+        memoryMatches.length,
       );
       thesis = repairedIssues.length <= validationIssues.length ? repairedThesis : thesis;
     }
 
-    const now = this.clock.now();
     const score = this.computeScore(
       selectedDocs.length,
       latestMetrics.length,
@@ -1162,7 +1345,7 @@ export class SynthesisService {
       diagnostics: {
         metrics: payload.metricsDiagnostics,
         providerFailures: payload.providerFailures,
-        stageIssues: payload.stageIssues,
+        stageIssues: payloadWithMemoryDiagnostics.stageIssues,
         identity: payload.resolvedIdentity,
       },
       createdAt: now,

@@ -25,6 +25,7 @@
 ### Data + failure model
 
 - Synthesis consumes `news + metrics + filings` evidence and writes snapshots.
+- Synthesis also performs symbol-scoped cross-run semantic memory retrieval from stored embeddings (default lookback: 90 days, excluding current run).
 - Ingestion requires at least one successful source call (`news` or `metrics` or `filings`), even when arrays are empty.
 - Boundary adapters return typed `Result` errors (`provider`, `code`, `retryable`, optional `httpStatus`).
 - Diagnostics are first-class and flow across stages:
@@ -44,6 +45,7 @@
   - thesis top section is `Action Summary` for fast decision scanning
     - decision taxonomy: `Buy | Watch | Avoid`
     - required action blocks: reasons to invest, reasons to stay away, if/then triggers, thesis invalidation
+  - optional cross-run memory references (`R#`) as supporting context only (current-run evidence remains primary)
 - Web snapshot thesis rendering:
   - `snapshot.thesis` remains persisted as raw markdown text
   - UI renders markdown with GFM support and sanitization (`react-markdown`, `remark-gfm`, `rehype-sanitize`)
@@ -95,6 +97,7 @@
 - `src/infra/llm/ollamaLlm.ts`
 - `src/infra/llm/openAiLlm.ts`
 - `src/infra/llm/ollamaEmbedding.ts`
+- `src/infra/db/repositories.ts` (`PgVectorEmbeddingRepositoryService` write + memory retrieval)
 
 ### Persistence
 
@@ -127,6 +130,7 @@
   - verify headings/lists/links render as formatted markdown (not raw markdown text)
   - verify `Action Summary` appears before `Overview`
   - under weak evidence quality, treat `Watch` as the expected default decision
+  - confirm cross-run memory citations (`R#`) do not replace current-run citations (`N#`/`M#`/`F#`) for directional decisions
 
 ## 4) Migrations
 
@@ -242,6 +246,7 @@ If no snapshot appears:
   - Ollama: `OLLAMA_BASE_URL`, chat model availability
   - OpenAI: `OPENAI_API_KEY`, model name, outbound network access
 - confirm Ollama embedding reachability + local embedding model availability
+- if cross-run memory looks weak/empty, verify prior runs successfully completed embed stage (memory depends on historical embedding coverage)
 - retry enqueue with `--force`
 
 ### v1 limitations

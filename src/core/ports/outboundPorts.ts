@@ -117,6 +117,33 @@ export interface EmbeddingRepositoryPort {
   ): Promise<void>;
 }
 
+export type EmbeddingMemorySearchOptions = {
+  limit: number;
+  excludeRunId?: string;
+  from: Date;
+  minSimilarity: number;
+};
+
+export type EmbeddingMemoryMatch = {
+  documentId: string;
+  symbol: string;
+  runId?: string;
+  content: string;
+  similarity: number;
+  createdAt: Date;
+};
+
+export interface EmbeddingMemoryRepositoryPort {
+  /**
+   * Retrieves semantically similar historical symbol memory so synthesis can reference prior-run context.
+   */
+  findSimilarBySymbol(
+    symbol: string,
+    queryEmbedding: number[],
+    options: EmbeddingMemorySearchOptions,
+  ): Promise<EmbeddingMemoryMatch[]>;
+}
+
 export interface SnapshotRepositoryPort {
   save(snapshot: ResearchSnapshotEntity): Promise<void>;
   latestBySymbol(

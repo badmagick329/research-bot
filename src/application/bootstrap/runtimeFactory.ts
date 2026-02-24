@@ -244,6 +244,8 @@ export const createRuntime = async () => {
     documentRepo,
     metricsRepo,
     filingsRepo,
+    embedder,
+    embeddingsRepo,
     snapshotsRepo,
     llm,
     clock,
