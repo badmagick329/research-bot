@@ -2,6 +2,27 @@ import { describe, expect, it } from "bun:test";
 import { CompanyResolver } from "./companyResolver";
 
 describe("CompanyResolver", () => {
+  it("resolves AMZN to Amazon manual identity", async () => {
+    const resolver = new CompanyResolver();
+
+    const result = await resolver.resolveCompany({ symbolOrName: "AMZN" });
+
+    expect(result.isOk()).toBeTrue();
+    if (result.isErr()) {
+      throw new Error(result.error.message);
+    }
+
+    expect(result.value.identity).toEqual({
+      requestedSymbol: "AMZN",
+      canonicalSymbol: "AMZN",
+      companyName: "Amazon.com, Inc.",
+      aliases: ["AMZN"],
+      exchange: "NASDAQ",
+      confidence: 0.99,
+      resolutionSource: "manual_map",
+    });
+  });
+
   it("resolves RYCEY to Rolls-Royce identity", async () => {
     const resolver = new CompanyResolver();
 

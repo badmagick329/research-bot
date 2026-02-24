@@ -15,6 +15,26 @@ type ManualIdentityRecord = {
 const TICKER_PATTERN = /^[A-Z0-9.\-]{1,12}$/;
 
 const MANUAL_IDENTITY_MAP: Record<string, ManualIdentityRecord> = {
+  AAPL: {
+    companyName: "Apple Inc.",
+    aliases: ["AAPL"],
+    exchange: "NASDAQ",
+  },
+  AMZN: {
+    companyName: "Amazon.com, Inc.",
+    aliases: ["AMZN"],
+    exchange: "NASDAQ",
+  },
+  MSFT: {
+    companyName: "Microsoft Corporation",
+    aliases: ["MSFT"],
+    exchange: "NASDAQ",
+  },
+  NVDA: {
+    companyName: "NVIDIA Corporation",
+    aliases: ["NVDA"],
+    exchange: "NASDAQ",
+  },
   RYCEY: {
     companyName: "Rolls-Royce Holdings plc",
     aliases: ["RYCEY", "RR.L"],
