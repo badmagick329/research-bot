@@ -7,6 +7,8 @@
 - Clean architecture with strict boundaries.
 - Host runtime: CLI + worker + API on Bun.
 - Ops console UI runtime: Vite dev server in `apps/web` (proxying `/api` to Bun API by default).
+- LLM runtime is provider-selectable for chat (`ollama` or `openai`) via `LLM_PROVIDER`.
+- Embedding runtime remains Ollama-backed (`OLLAMA_EMBED_MODEL`) and is independent from chat provider selection.
 - Web API routing precedence:
   - if `VITE_API_BASE_URL` is set, browser requests go directly to that URL
   - if `VITE_API_BASE_URL` is empty, browser requests use relative `/api` and Vite proxy
@@ -88,6 +90,7 @@
 - `src/infra/providers/alphavantage/alphaVantageMetricsProvider.ts`
 - `src/infra/providers/sec/secEdgarFilingsProvider.ts`
 - `src/infra/llm/ollamaLlm.ts`
+- `src/infra/llm/openAiLlm.ts`
 - `src/infra/llm/ollamaEmbedding.ts`
 
 ### Persistence
@@ -110,6 +113,7 @@
 - Queue names and custom job ids must not include `:`.
 - Restart worker after config/code changes affecting providers/adapters/resolver map.
 - Restart worker after changing provider limiter env values.
+- Restart worker after changing `LLM_PROVIDER`, chat model env vars, or API keys for chat adapters.
 - Embed model must match runtime/storage vector dimension expectation (currently 1024).
 - For identity-sensitive investigations:
   - prefer `snapshot --prettify` to inspect `Resolved identity` and `Data quality alerts`
@@ -141,8 +145,9 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 ### Prereqs
 
 - Bun, Docker + Compose installed.
-- Ollama running at `http://localhost:11434`.
-- Required models pulled locally (chat + embedding).
+- Ollama running at `http://localhost:11434` (required for embeddings; also required for chat when `LLM_PROVIDER=ollama`).
+- Required local embedding model pulled.
+- If using OpenAI for chat (`LLM_PROVIDER=openai`), valid OpenAI API key available.
 
 ### Setup
 
@@ -153,9 +158,21 @@ Use `migrate` (versioned SQL). Do not use `push` except local throwaway prototyp
 - `FINNHUB_MIN_INTERVAL_MS=1000`
 - `SEC_EDGAR_MIN_INTERVAL_MS=1000`
 
-3. `bun install`
-4. `docker compose up -d postgres redis`
-5. `bun run db:migrate`
+3. Select chat LLM provider:
+
+- Ollama chat (default):
+  - `LLM_PROVIDER=ollama`
+  - `OLLAMA_CHAT_MODEL=qwen2.5:7b-instruct`
+- OpenAI chat:
+  - `LLM_PROVIDER=openai`
+  - `OPENAI_API_KEY=...`
+  - `OPENAI_CHAT_MODEL=gpt-4.1`
+  - optional: `OPENAI_BASE_URL=https://api.openai.com`
+  - optional: `OPENAI_CHAT_TIMEOUT_MS=60000`
+
+4. `bun install`
+5. `docker compose up -d postgres redis`
+6. `bun run db:migrate`
 
 ### Local topology + defaults
 
@@ -215,7 +232,10 @@ If no snapshot appears:
 - if web shows `ECONNREFUSED` for `/api/*`, align `API_PORT` and `VITE_API_PROXY_TARGET`
 - if web calls wrong origin, clear or fix `VITE_API_BASE_URL`
 - confirm host URLs use `localhost` for Redis/Postgres
-- confirm Ollama reachability + local model availability
+- confirm chat provider reachability:
+  - Ollama: `OLLAMA_BASE_URL`, chat model availability
+  - OpenAI: `OPENAI_API_KEY`, model name, outbound network access
+- confirm Ollama embedding reachability + local embedding model availability
 - retry enqueue with `--force`
 
 ### v1 limitations

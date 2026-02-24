@@ -5,10 +5,12 @@ import { z } from "zod";
 const supportedNewsProviders = ["mock", "finnhub", "alphavantage"] as const;
 const supportedMetricsProviders = ["mock", "alphavantage"] as const;
 const supportedFilingsProviders = ["mock", "sec-edgar"] as const;
+const supportedLlmProviders = ["ollama", "openai"] as const;
 
 export type NewsProviderName = (typeof supportedNewsProviders)[number];
 export type MetricsProviderName = (typeof supportedMetricsProviders)[number];
 export type FilingsProviderName = (typeof supportedFilingsProviders)[number];
+export type LlmProviderName = (typeof supportedLlmProviders)[number];
 
 const envSchema = z.object({
   NODE_ENV: z
@@ -55,11 +57,16 @@ const envSchema = z.object({
   POSTGRES_URL: z
     .string()
     .default("postgres://postgres:postgres@localhost:5432/research_bot"),
+  LLM_PROVIDER: z.enum(supportedLlmProviders).default("ollama"),
   OLLAMA_BASE_URL: z.string().default("http://localhost:11434"),
   OLLAMA_CHAT_MODEL: z.string().default("qwen2.5:7b-instruct"),
   OLLAMA_EMBED_MODEL: z.string().default("nomic-embed-text"),
   OLLAMA_CHAT_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
   OLLAMA_EMBED_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  OPENAI_BASE_URL: z.string().default("https://api.openai.com"),
+  OPENAI_API_KEY: z.string().default(""),
+  OPENAI_CHAT_MODEL: z.string().default("gpt-4.1"),
+  OPENAI_CHAT_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   QUEUE_CONCURRENCY_INGEST: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_NORMALIZE: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_EMBED: z.coerce.number().int().positive().default(2),
@@ -154,3 +161,8 @@ export const metricsProvider = (): MetricsProviderName => env.METRICS_PROVIDER;
  * Resolves the configured filings adapter so ingestion can switch providers without use-case changes.
  */
 export const filingsProvider = (): FilingsProviderName => env.FILINGS_PROVIDER;
+
+/**
+ * Resolves the configured LLM adapter so runtime wiring can switch providers without use-case changes.
+ */
+export const llmProvider = (): LlmProviderName => env.LLM_PROVIDER;

@@ -7,6 +7,7 @@ import { RunQueryService } from "../services/runQueryService";
 import {
   env,
   filingsProvider,
+  llmProvider,
   metricsProvider,
   newsProviders,
 } from "../../shared/config/env";
@@ -21,6 +22,7 @@ import {
 } from "../../infra/db/repositories";
 import { OllamaEmbedding } from "../../infra/llm/ollamaEmbedding";
 import { OllamaLlm } from "../../infra/llm/ollamaLlm";
+import { OpenAiLlm } from "../../infra/llm/openAiLlm";
 import { AlphaVantageMetricsProvider } from "../../infra/providers/alphavantage/alphaVantageMetricsProvider";
 import { AlphaVantageNewsProvider } from "../../infra/providers/alphavantage/alphaVantageNewsProvider";
 import { FinnhubNewsProvider } from "../../infra/providers/finnhub/finnhubNewsProvider";
@@ -43,7 +45,10 @@ import type {
   MarketMetricsProviderPort,
   NewsProviderPort,
 } from "../../core/ports/inboundPorts";
-import type { ProviderRateLimiterPort } from "../../core/ports/outboundPorts";
+import type {
+  LlmPort,
+  ProviderRateLimiterPort,
+} from "../../core/ports/outboundPorts";
 
 const redisConfigFromUrl = (url: string) => {
   const parsed = new URL(url);
@@ -139,6 +144,28 @@ const createFilingsProvider = (
 };
 
 /**
+ * Resolves the configured LLM adapter so runtime can switch between local and external chat models.
+ */
+const createLlm = (httpClient: HttpJsonClient): LlmPort => {
+  if (llmProvider() === "openai") {
+    return new OpenAiLlm(
+      env.OPENAI_BASE_URL,
+      env.OPENAI_API_KEY,
+      env.OPENAI_CHAT_MODEL,
+      env.OPENAI_CHAT_TIMEOUT_MS,
+      httpClient,
+    );
+  }
+
+  return new OllamaLlm(
+    env.OLLAMA_BASE_URL,
+    env.OLLAMA_CHAT_MODEL,
+    env.OLLAMA_CHAT_TIMEOUT_MS,
+    httpClient,
+  );
+};
+
+/**
  * Centralizes runtime wiring so app and worker entry points share one composition root.
  */
 export const createRuntime = async () => {
@@ -165,12 +192,7 @@ export const createRuntime = async () => {
   const snapshotsRepo = new PostgresSnapshotRepositoryService(db);
   const runsReadRepository = new PostgresRunsReadRepositoryService(db);
 
-  const llm = new OllamaLlm(
-    env.OLLAMA_BASE_URL,
-    env.OLLAMA_CHAT_MODEL,
-    env.OLLAMA_CHAT_TIMEOUT_MS,
-    httpClient,
-  );
+  const llm = createLlm(httpClient);
   const embedder = new OllamaEmbedding(
     env.OLLAMA_BASE_URL,
     env.OLLAMA_EMBED_MODEL,
