@@ -821,6 +821,79 @@ export class SynthesisService {
   }
 
   /**
+   * Builds a compact label map so citation tokens remain human-traceable in rendered thesis output.
+   */
+  private buildEvidenceMapLines(
+    docs: DocumentEntity[],
+    metrics: MetricPointEntity[],
+    filings: FilingEntity[],
+    memoryMatches: EmbeddingMemoryMatch[],
+  ): string {
+    const lines: string[] = [];
+
+    docs.slice(0, 10).forEach((doc, index) => {
+      lines.push(`- N${index + 1}: news "${doc.title}"`);
+    });
+    metrics.slice(0, 8).forEach((metric, index) => {
+      lines.push(
+        `- M${index + 1}: metric ${metric.metricName}=${this.formatMetricValue(metric)}${metric.metricUnit ? ` ${metric.metricUnit}` : ""}`,
+      );
+    });
+    filings.slice(0, 6).forEach((filing, index) => {
+      lines.push(
+        `- F${index + 1}: filing ${filing.filingType} ${filing.filedAt.toISOString().slice(0, 10)}`,
+      );
+    });
+    memoryMatches.slice(0, 6).forEach((match, index) => {
+      lines.push(
+        `- R${index + 1}: prior-run memory similarity=${match.similarity.toFixed(3)} date=${match.createdAt.toISOString().slice(0, 10)}`,
+      );
+    });
+
+    return lines.length > 0 ? lines.join("\n") : "- none";
+  }
+
+  /**
+   * Rewrites Evidence Map deterministically so citation-label mapping is owned by code, not LLM output variance.
+   */
+  private upsertEvidenceMapSection(thesis: string, evidenceMapLines: string): string {
+    const evidenceMapSection = `# Evidence Map\n\n${evidenceMapLines}`;
+    const sections = thesis
+      .trim()
+      .split(/\n(?=# )/g)
+      .map((section) => section.trim())
+      .filter(Boolean);
+
+    const filteredSections = sections.filter(
+      (section) => !section.toLowerCase().startsWith("# evidence map"),
+    );
+
+    const mergedSections: string[] = [];
+    let inserted = false;
+
+    filteredSections.forEach((section) => {
+      if (!inserted && section.toLowerCase().startsWith("# overview")) {
+        mergedSections.push(evidenceMapSection);
+        inserted = true;
+      }
+      mergedSections.push(section);
+    });
+
+    if (!inserted) {
+      const actionSummaryIndex = mergedSections.findIndex((section) =>
+        section.toLowerCase().startsWith("# action summary"),
+      );
+      if (actionSummaryIndex >= 0) {
+        mergedSections.splice(actionSummaryIndex + 1, 0, evidenceMapSection);
+      } else {
+        mergedSections.unshift(evidenceMapSection);
+      }
+    }
+
+    return mergedSections.join("\n\n").trim();
+  }
+
+  /**
    * Validates synthesis output structure and citation density so weak drafts can be repaired before persistence.
    */
   private validateThesis(
@@ -834,6 +907,7 @@ export class SynthesisService {
 
     const requiredHeadings = [
       "# Action Summary",
+      "# Evidence Map",
       "# Overview",
       "# Shareholder/Institutional Dynamics",
       "# Valuation and Growth Interpretation",
@@ -849,16 +923,19 @@ export class SynthesisService {
     });
     if (
       thesis.includes("# Action Summary") &&
+      thesis.includes("# Evidence Map") &&
       thesis.includes("# Overview") &&
-      thesis.indexOf("# Action Summary") > thesis.indexOf("# Overview")
+      (thesis.indexOf("# Action Summary") > thesis.indexOf("# Evidence Map") ||
+        thesis.indexOf("# Evidence Map") > thesis.indexOf("# Overview"))
     ) {
-      issues.push("Action Summary must appear before Overview.");
+      issues.push("Heading order must be Action Summary, Evidence Map, then Overview.");
     }
 
     const actionSummarySection = this.extractHeadingSection(
       thesis,
       "Action Summary",
     );
+    const evidenceMapSection = this.extractHeadingSection(thesis, "Evidence Map");
     if (!actionSummarySection) {
       issues.push("Action Summary section content is missing.");
     }
@@ -881,6 +958,18 @@ export class SynthesisService {
         issues.push(`Missing Action Summary label: ${label}`);
       }
     });
+
+    if (!evidenceMapSection) {
+      issues.push("Evidence Map section content is missing.");
+    } else {
+      const labelMentions = evidenceMapSection.match(/\b[NMFR]\d+\b/g) ?? [];
+      if (hasEvidence && labelMentions.length < 3) {
+        issues.push("Evidence Map must include traceable citation labels.");
+      }
+      if (hasEvidence && !/\bM\d+\b/.test(evidenceMapSection)) {
+        issues.push("Evidence Map must include metric label mappings (M#).");
+      }
+    }
 
     const citationMatches = thesis.match(/\b[NMF]\d+\b/g) ?? [];
     if (hasEvidence && citationMatches.length < 4) {
@@ -1259,6 +1348,12 @@ export class SynthesisService {
     const memoryMatches = memoryResult.matches;
     const payloadWithMemoryDiagnostics = memoryResult.nextPayload;
     const memoryLines = this.formatMemoryLines(memoryMatches);
+    const evidenceMapLines = this.buildEvidenceMapLines(
+      selectedDocs,
+      latestMetrics,
+      filings,
+      memoryMatches,
+    );
 
     const prompt = this.buildSynthesisPrompt({
       synthesisTarget,
@@ -1283,7 +1378,10 @@ export class SynthesisService {
       );
     }
 
-    let thesis = thesisResult.value;
+    let thesis = this.upsertEvidenceMapSection(
+      thesisResult.value,
+      evidenceMapLines,
+    );
     const validationIssues = this.validateThesis(
       thesis,
       selectedDocs.length + latestMetrics.length + filings.length > 0,
@@ -1301,7 +1399,10 @@ export class SynthesisService {
         );
       }
 
-      const repairedThesis = repairedResult.value;
+      const repairedThesis = this.upsertEvidenceMapSection(
+        repairedResult.value,
+        evidenceMapLines,
+      );
       const repairedIssues = this.validateThesis(
         repairedThesis,
         selectedDocs.length + latestMetrics.length + filings.length > 0,

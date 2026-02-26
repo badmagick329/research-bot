@@ -23,6 +23,11 @@ export type EnqueueRunRequest = {
   force?: boolean;
 };
 
+export type RefreshThesisRequest = {
+  symbol: string;
+  runId?: string;
+};
+
 export type EnqueueRunResponse = {
   accepted: true;
   runId: string;
@@ -34,6 +39,8 @@ export type EnqueueRunResponse = {
   deduped: boolean;
   enqueuedAt: string;
 };
+
+export type RefreshThesisResponse = EnqueueRunResponse;
 
 export type QueueStageCounts = {
   waiting: number;

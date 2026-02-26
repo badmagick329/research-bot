@@ -43,6 +43,12 @@ const validThesis = `# Action Summary
   - If growth falls below expectations without margin offset then thesis weakens [M2]
   - If filings contradict operational momentum then thesis breaks [F1]
 
+# Evidence Map
+- N1: TTWO issues updated game launch guidance
+- M1: market_cap=33.00B usd
+- M2: revenue_growth_yoy=0.0800 ratio
+- F1: 8-K 2026-02-15
+
 # Overview
 TTWO demand remains stable [N1] [M1]
 
@@ -77,6 +83,9 @@ const noEvidenceThesis = `# Action Summary
 - Thesis invalidation:
   - If incoming data contradicts current assumptions then reset thesis.
   - If evidence remains sparse across next cycle then defer action.
+
+# Evidence Map
+- none
 
 # Overview
 Evidence is sparse for this run.
@@ -293,7 +302,11 @@ describe("SynthesisService", () => {
       throw new Error("expected snapshot to be saved");
     }
 
-    expect(saved.thesis).toBe(validThesis);
+    expect(saved.thesis).toContain("# Evidence Map");
+    expect(saved.thesis).toContain('- N1: news "TTWO issues updated game launch guidance"');
+    expect(saved.thesis).toContain("- M1: metric market_cap=33.00B usd");
+    expect(saved.thesis).toContain("- M2: metric revenue_growth_yoy=0.0800 ratio");
+    expect(saved.thesis).toContain("- F1: filing 8-K 2026-02-15");
     expect(saved.thesis.startsWith("# Action Summary")).toBeTrue();
     expect(saved.thesis).toContain("- If/Then triggers:");
     expect(saved.score).toBe(24.5);
@@ -555,7 +568,10 @@ describe("SynthesisService", () => {
       throw new Error("expected snapshot to be saved");
     }
 
-    expect(saved.thesis).toBe(validThesis);
+    expect(saved.thesis).toContain("# Evidence Map");
+    expect(saved.thesis).toContain('- N1: news "TTWO demand update"');
+    expect(saved.thesis).toContain("- M1: metric market_cap=33.00B usd");
+    expect(saved.thesis).toContain("- F1: filing 8-K 2026-02-15");
   });
 
   it("switches identity uncertainty instruction based on identity quality and relevance", async () => {

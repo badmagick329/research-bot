@@ -19,6 +19,7 @@ const readJsonObject = async (
 const createHandler = () => {
   const calls = {
     enqueueRun: [] as Array<{ symbol: string; force?: boolean }>,
+    refreshThesis: [] as Array<{ symbol: string; runId?: string }>,
     getLatestSnapshot: [] as string[],
     listRuns: [] as Array<{ symbol?: string; limit?: number; cursor?: string }>,
     getRunDetail: [] as string[],
@@ -35,6 +36,20 @@ const createHandler = () => {
         canonicalSymbol: request.symbol.toUpperCase(),
         idempotencyKey: "idempotency-1",
         forceApplied: Boolean(request.force),
+        deduped: false,
+        enqueuedAt: "2026-02-23T00:00:00.000Z",
+      };
+    },
+    refreshThesis: async (request) => {
+      calls.refreshThesis.push(request);
+      return {
+        accepted: true,
+        runId: request.runId ?? "run-1",
+        taskId: "task-1",
+        requestedSymbol: request.symbol,
+        canonicalSymbol: request.symbol.toUpperCase(),
+        idempotencyKey: "synthesize-refresh-1",
+        forceApplied: false,
         deduped: false,
         enqueuedAt: "2026-02-23T00:00:00.000Z",
       };
@@ -129,6 +144,24 @@ describe("createOpsConsoleApiHandler", () => {
 
     expect(response.status).toBe(202);
     expect(calls.enqueueRun).toEqual([{ symbol: "rycey", force: true }]);
+    expect(payload.accepted).toBe(true);
+  });
+
+  it("returns 202 for thesis refresh with optional run id", async () => {
+    const { handler, calls } = createHandler();
+    const request = new Request("http://localhost/api/snapshots/rycey/refresh-thesis", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ runId: "run-77" }),
+    });
+
+    const response = await handler(request);
+    const payload = await readJsonObject(response);
+
+    expect(response.status).toBe(202);
+    expect(calls.refreshThesis).toEqual([{ symbol: "RYCEY", runId: "run-77" }]);
     expect(payload.accepted).toBe(true);
   });
 
@@ -238,6 +271,9 @@ describe("createOpsConsoleApiHandler", () => {
       enqueueRun: async () => {
         throw new Error("idempotency conflict: existing job");
       },
+      refreshThesis: async () => {
+        throw new Error("idempotency conflict: existing job");
+      },
       getQueueCounts: async () => ({ items: [] }),
       getLatestSnapshot: async () => null,
       listRuns: async () => ({ items: [] }),
@@ -263,6 +299,9 @@ describe("createOpsConsoleApiHandler", () => {
   it("maps upstream enqueue failures to upstream_error code", async () => {
     const handler = createOpsConsoleApiHandler({
       enqueueRun: async () => {
+        throw new Error("provider_error: rate_limited by upstream adapter");
+      },
+      refreshThesis: async () => {
         throw new Error("provider_error: rate_limited by upstream adapter");
       },
       getQueueCounts: async () => ({ items: [] }),

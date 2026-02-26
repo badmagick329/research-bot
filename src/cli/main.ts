@@ -165,6 +165,65 @@ export const buildCli = () => {
     });
 
   cli
+    .command("refresh-thesis")
+    .requiredOption("--symbol <symbol>", "Ticker symbol")
+    .option(
+      "--run-id <runId>",
+      "Optional run id; defaults to the latest snapshot run for the symbol",
+    )
+    .action(async (opts: { symbol: string; runId?: string }) => {
+      const runtime = await createRuntime();
+      const normalizedSymbol = opts.symbol.trim().toUpperCase();
+      const snapshot = opts.runId
+        ? await runtime.snapshotsRepo.latestBySymbol(normalizedSymbol, opts.runId)
+        : await runtime.snapshotsRepo.latestBySymbol(normalizedSymbol);
+
+      if (!snapshot) {
+        logger.info(
+          { symbol: normalizedSymbol, runId: opts.runId },
+          "No snapshot found to refresh thesis",
+        );
+        process.exit(0);
+      }
+
+      if (!snapshot.runId || !snapshot.taskId) {
+        logger.error(
+          { symbol: normalizedSymbol, runId: snapshot.runId, taskId: snapshot.taskId },
+          "Snapshot missing run context required for thesis refresh",
+        );
+        process.exit(1);
+      }
+
+      const idempotencyKey = `${normalizedSymbol}-synthesize-refresh-${Date.now()}`;
+      const enqueueReceipt = await runtime.queue.enqueueWithReceipt("synthesize", {
+        runId: snapshot.runId,
+        taskId: snapshot.taskId,
+        symbol: normalizedSymbol,
+        idempotencyKey,
+        requestedAt: new Date().toISOString(),
+        resolvedIdentity: snapshot.diagnostics?.identity,
+        metricsDiagnostics: snapshot.diagnostics?.metrics,
+        providerFailures: snapshot.diagnostics?.providerFailures,
+        stageIssues: snapshot.diagnostics?.stageIssues,
+      });
+
+      logger.info(
+        {
+          refreshThesis: {
+            symbol: normalizedSymbol,
+            runId: enqueueReceipt.runId,
+            taskId: enqueueReceipt.taskId,
+            idempotencyKey,
+            enqueuedAt: enqueueReceipt.enqueuedAt,
+            deduped: enqueueReceipt.deduped,
+          },
+        },
+        "Enqueued thesis refresh (synthesize-only)",
+      );
+      process.exit(0);
+    });
+
+  cli
     .command("snapshot")
     .requiredOption("--symbol <symbol>", "Ticker symbol")
     .option("--prettify", "Render a human-friendly snapshot report")

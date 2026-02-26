@@ -6,6 +6,8 @@ import type {
   ListRunsQuery,
   ListRunsResponse,
   QueueCountsResponse,
+  RefreshThesisRequest,
+  RefreshThesisResponse,
   RunDetailResponse,
 } from "../../core/entities/opsConsole";
 
@@ -13,6 +15,9 @@ type ErrorCode = ApiErrorResponse["error"]["code"];
 
 type OpsConsoleApiDeps = {
   enqueueRun(request: EnqueueRunRequest): Promise<EnqueueRunResponse>;
+  refreshThesis(
+    request: RefreshThesisRequest,
+  ): Promise<RefreshThesisResponse>;
   getQueueCounts(): Promise<QueueCountsResponse>;
   getLatestSnapshot(symbol: string): Promise<LatestSnapshotResponse | null>;
   listRuns(query: ListRunsQuery): Promise<ListRunsResponse>;
@@ -37,6 +42,20 @@ export const createOpsConsoleApiHandler =
       if (request.method === "POST" && pathname === "/api/runs") {
         const payload = await parseEnqueueRequest(request);
         const response = await deps.enqueueRun(payload);
+        return json(202, response);
+      }
+
+      if (
+        request.method === "POST" &&
+        pathname.startsWith("/api/snapshots/") &&
+        pathname.endsWith("/refresh-thesis")
+      ) {
+        const symbol = parseSymbolFromThesisRefreshPath(pathname);
+        const payload = await parseRefreshThesisRequest(request);
+        const response = await deps.refreshThesis({
+          symbol,
+          runId: payload.runId,
+        });
         return json(202, response);
       }
 
@@ -132,6 +151,42 @@ const parseEnqueueRequest = async (
 };
 
 /**
+ * Parses thesis-refresh payload so optional run targeting stays explicit and strongly validated.
+ */
+const parseRefreshThesisRequest = async (
+  request: Request,
+): Promise<{ runId?: string }> => {
+  if (!request.body) {
+    return {};
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = await request.json();
+  } catch {
+    throw badRequest("Request body must be valid JSON.");
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw badRequest("Request body must be a JSON object.");
+  }
+
+  const candidate = parsed as Record<string, unknown>;
+  if (typeof candidate.runId === "undefined") {
+    return {};
+  }
+
+  if (typeof candidate.runId !== "string" || candidate.runId.trim().length < 1) {
+    throw badRequest("Field 'runId' must be a non-empty string when provided.");
+  }
+
+  return {
+    runId: candidate.runId.trim(),
+  };
+};
+
+/**
  * Parses list-runs query params with strict validation so pagination semantics remain predictable.
  */
 const parseListRunsQuery = (search: URLSearchParams): ListRunsQuery => {
@@ -213,6 +268,30 @@ const parseSymbolFromSnapshotPath = (pathname: string): string => {
 };
 
 /**
+ * Extracts snapshot symbol from thesis-refresh path so synthesize-only triggers stay route-safe.
+ */
+const parseSymbolFromThesisRefreshPath = (pathname: string): string => {
+  const segments = pathname.split("/").filter(Boolean);
+  if (
+    segments.length !== 4 ||
+    segments[0] !== "api" ||
+    segments[1] !== "snapshots" ||
+    segments[3] !== "refresh-thesis"
+  ) {
+    throw notFound("Route not found.");
+  }
+
+  const symbol = decodeURIComponent(segments[2] ?? "")
+    .trim()
+    .toUpperCase();
+  if (!symbol) {
+    throw badRequest("Path parameter 'symbol' must be a non-empty string.");
+  }
+
+  return symbol;
+};
+
+/**
  * Extracts run id from route path to keep endpoint parsing strict and deterministic.
  */
 const parseRunIdFromPath = (pathname: string): string => {
@@ -251,6 +330,19 @@ const mapErrorToApiFailure = (error: unknown): ApiFailure => {
         body: {
           error: {
             code: "bad_request",
+            message,
+            retryable: false,
+          },
+        },
+      };
+    }
+
+    if (normalizedMessage.includes("snapshot not found")) {
+      return {
+        status: 404,
+        body: {
+          error: {
+            code: "not_found",
             message,
             retryable: false,
           },

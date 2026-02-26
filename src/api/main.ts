@@ -4,6 +4,53 @@ import { env } from "../shared/config/env";
 import { logger } from "../shared/logger/logger";
 
 /**
+ * Builds one synthesize-stage payload from existing snapshot run context so thesis can be refreshed without re-ingesting data.
+ */
+const enqueueThesisRefresh = async (
+  symbol: string,
+  runId: string | undefined,
+  runtime: Awaited<ReturnType<typeof createRuntime>>,
+) => {
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const snapshot = runId
+    ? await runtime.snapshotsRepo.latestBySymbol(normalizedSymbol, runId)
+    : await runtime.snapshotsRepo.latestBySymbol(normalizedSymbol);
+
+  if (!snapshot) {
+    throw new Error("Snapshot not found for requested symbol.");
+  }
+
+  if (!snapshot.runId || !snapshot.taskId) {
+    throw new Error("Snapshot missing run context required for thesis refresh.");
+  }
+
+  const idempotencyKey = `${normalizedSymbol}-synthesize-refresh-${Date.now()}`;
+  const enqueueReceipt = await runtime.queue.enqueueWithReceipt("synthesize", {
+    runId: snapshot.runId,
+    taskId: snapshot.taskId,
+    symbol: normalizedSymbol,
+    idempotencyKey,
+    requestedAt: new Date().toISOString(),
+    resolvedIdentity: snapshot.diagnostics?.identity,
+    metricsDiagnostics: snapshot.diagnostics?.metrics,
+    providerFailures: snapshot.diagnostics?.providerFailures,
+    stageIssues: snapshot.diagnostics?.stageIssues,
+  });
+
+  return {
+    accepted: true as const,
+    runId: enqueueReceipt.runId,
+    taskId: enqueueReceipt.taskId,
+    requestedSymbol: normalizedSymbol,
+    canonicalSymbol: normalizedSymbol,
+    idempotencyKey,
+    forceApplied: false,
+    deduped: enqueueReceipt.deduped,
+    enqueuedAt: enqueueReceipt.enqueuedAt,
+  };
+};
+
+/**
  * Normalizes unknown failures into structured logs so API bootstrap and shutdown errors stay diagnosable.
  */
 const toErrorDetails = (error: unknown) => {
@@ -31,6 +78,8 @@ const run = async (): Promise<void> => {
         "ingest",
         Boolean(request.force),
       ),
+    refreshThesis: (request) =>
+      enqueueThesisRefresh(request.symbol, request.runId, runtime),
     getQueueCounts: () => runtime.runQueryService.getQueueCounts(),
     getLatestSnapshot: (symbol) =>
       runtime.runQueryService.getLatestSnapshot(symbol),

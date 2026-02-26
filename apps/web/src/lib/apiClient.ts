@@ -6,6 +6,7 @@ import type {
   ListRunsQuery,
   ListRunsResponse,
   QueueCountsResponse,
+  RefreshThesisResponse,
   RunDetailResponse,
 } from "@contracts/opsConsole";
 import { getWebEnv } from "./env";
@@ -38,6 +39,7 @@ export class OpsConsoleApiError extends Error {
 export function createOpsConsoleApiClient() {
   return {
     enqueueRun,
+    refreshThesis,
     getQueueCounts,
     getLatestSnapshot,
     listRuns,
@@ -55,6 +57,25 @@ async function enqueueRun(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+/**
+ * Triggers synthesize-only thesis refresh so operators can rerun thesis generation without ingesting providers again.
+ */
+async function refreshThesis(
+  symbol: string,
+  runId?: string,
+): Promise<RefreshThesisResponse> {
+  const normalized = symbol.trim().toUpperCase();
+  const encoded = encodeURIComponent(normalized);
+
+  return request<RefreshThesisResponse>(
+    `/api/snapshots/${encoded}/refresh-thesis`,
+    {
+      method: "POST",
+      body: JSON.stringify(runId ? { runId } : {}),
+    },
+  );
 }
 
 /**

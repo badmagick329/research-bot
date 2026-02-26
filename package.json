@@ -10,6 +10,7 @@
     "web:build": "bun run --cwd apps/web build",
     "web:typecheck": "bun run --cwd apps/web typecheck",
     "enqueue": "bun run src/index.ts enqueue",
+    "refresh-thesis": "bun run src/index.ts refresh-thesis",
     "status": "bun run src/index.ts status",
     "snapshot": "bun run src/index.ts snapshot",
     "worker": "bun run src/workers/main.ts",

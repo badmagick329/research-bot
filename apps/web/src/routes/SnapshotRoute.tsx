@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
@@ -7,6 +7,7 @@ import type {
   ResearchSnapshotEntity,
   SnapshotDiagnostics,
 } from "@contracts/research";
+import { Link } from "react-router-dom";
 import { DiagnosticChips } from "../components/DiagnosticChips";
 import { EmptyState } from "../components/states/EmptyState";
 import { ErrorState } from "../components/states/ErrorState";
@@ -27,6 +28,10 @@ export function SnapshotRoute() {
   const [validationMessage, setValidationMessage] = useState<string | null>(
     null,
   );
+  const [refreshPollingActive, setRefreshPollingActive] = useState(false);
+  const [refreshBaselineCreatedAt, setRefreshBaselineCreatedAt] = useState<
+    string | null
+  >(null);
 
   const snapshotQuery = useQuery({
     queryKey: ["latest-snapshot", submittedSymbol],
@@ -37,6 +42,75 @@ export function SnapshotRoute() {
   const qualityAlerts = useMemo(() => {
     return mapDiagnosticsToChips(snapshotQuery.data?.snapshot.diagnostics);
   }, [snapshotQuery.data?.snapshot.diagnostics]);
+
+  const refreshThesisMutation = useMutation({
+    mutationFn: async () => {
+      if (!snapshotQuery.data) {
+        throw new Error("Load a snapshot before refreshing thesis.");
+      }
+
+      setRefreshBaselineCreatedAt(
+        new Date(snapshotQuery.data.snapshot.createdAt).toISOString(),
+      );
+      return apiClient.refreshThesis(
+        snapshotQuery.data.snapshot.symbol,
+        snapshotQuery.data.snapshot.runId,
+      );
+    },
+    onSuccess: () => {
+      setRefreshPollingActive(true);
+    },
+  });
+
+  useEffect(() => {
+    if (!refreshPollingActive || !submittedSymbol) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      void snapshotQuery.refetch();
+    }, 3000);
+
+    const timeout = setTimeout(() => {
+      setRefreshPollingActive(false);
+    }, 60000);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [refreshPollingActive, submittedSymbol, snapshotQuery]);
+
+  useEffect(() => {
+    if (!refreshPollingActive || !refreshBaselineCreatedAt || !snapshotQuery.data) {
+      return;
+    }
+
+    const baselineMs = new Date(refreshBaselineCreatedAt).getTime();
+    const currentMs = new Date(snapshotQuery.data.snapshot.createdAt).getTime();
+    if (Number.isFinite(baselineMs) && Number.isFinite(currentMs) && currentMs > baselineMs) {
+      setRefreshPollingActive(false);
+    }
+  }, [
+    refreshBaselineCreatedAt,
+    refreshPollingActive,
+    snapshotQuery.data,
+  ]);
+
+  const refreshErrorMessage = useMemo(() => {
+    if (!refreshThesisMutation.error) {
+      return null;
+    }
+
+    if (refreshThesisMutation.error instanceof OpsConsoleApiError) {
+      if (refreshThesisMutation.error.code === "upstream_error") {
+        return `${refreshThesisMutation.error.message}${refreshThesisMutation.error.retryable ? " Retry in a moment." : ""}`;
+      }
+      return refreshThesisMutation.error.message;
+    }
+
+    return "Unable to refresh thesis.";
+  }, [refreshThesisMutation.error]);
 
   return (
     <section className="space-y-6 rounded-xl border border-slate-800 bg-slate-900 p-6">
@@ -106,10 +180,59 @@ export function SnapshotRoute() {
       ) : null}
 
       {snapshotQuery.data ? (
-        <SnapshotContent
-          snapshot={snapshotQuery.data.snapshot}
-          qualityAlerts={qualityAlerts}
-        />
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                refreshThesisMutation.reset();
+                void refreshThesisMutation.mutateAsync();
+              }}
+              disabled={refreshThesisMutation.isPending}
+              className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-700"
+            >
+              {refreshThesisMutation.isPending
+                ? "Refreshing thesis..."
+                : "Refresh thesis only"}
+            </button>
+            <p className="text-xs text-slate-400">
+              Re-runs synthesize stage only using stored evidence for this run.
+            </p>
+            {refreshPollingActive ? (
+              <p className="text-xs text-slate-300">
+                Waiting for new snapshot...
+              </p>
+            ) : null}
+          </div>
+
+          {refreshErrorMessage ? (
+            <ErrorState title="Thesis refresh failed" message={refreshErrorMessage} />
+          ) : null}
+
+          {refreshThesisMutation.data ? (
+            <section className="rounded-xl border border-emerald-700/60 bg-emerald-900/20 p-4">
+              <h3 className="text-sm font-semibold text-emerald-200">
+                Thesis refresh accepted
+              </h3>
+              <p className="mt-2 text-sm text-emerald-100">
+                Run queued at {formatUnknownDate(refreshThesisMutation.data.enqueuedAt)}.
+              </p>
+              <div className="mt-3">
+                <Link
+                  to={`/runs?runId=${encodeURIComponent(refreshThesisMutation.data.runId)}`}
+                  className="text-sm font-medium text-emerald-200 underline underline-offset-2 hover:text-emerald-100"
+                >
+                  Open run monitor
+                </Link>
+              </div>
+            </section>
+          ) : null}
+
+          <SnapshotContent
+            snapshot={snapshotQuery.data.snapshot}
+            qualityAlerts={qualityAlerts}
+          />
+        </div>
       ) : null}
     </section>
   );
