@@ -72,6 +72,13 @@ export type SnapshotDiagnostics = {
   providerFailures?: SnapshotProviderFailureDiagnostics[];
   stageIssues?: SnapshotStageDiagnostics[];
   identity?: ResolvedCompanyIdentity;
+  newsQuality?: {
+    total: number;
+    issuerMatched: number;
+    excluded: number;
+    mode: string;
+  };
+  decisionReasons?: string[];
 };
 
 export type ResearchSnapshotEntity = {

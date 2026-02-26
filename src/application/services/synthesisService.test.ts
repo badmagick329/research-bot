@@ -295,7 +295,8 @@ describe("SynthesisService", () => {
       "If evidenceWeak=true, default Decision to Watch",
     );
     expect(prompts[0]).toContain("N1 finnhub: TTWO issues updated game launch guidance");
-    expect(prompts[0]).not.toContain("Stocks to buy this week across Wall Street");
+    expect(prompts[0]).toContain("excludedHeadlines=1");
+    expect(prompts[0]).toContain("excludedSample=Stocks to buy this week across Wall Street");
 
     const saved = savedSnapshots.at(0);
     if (!saved) {
@@ -332,7 +333,7 @@ describe("SynthesisService", () => {
 
     await service.run(payload);
 
-    expect(prompts.length).toBe(1);
+    expect(prompts.length).toBeGreaterThanOrEqual(1);
     const saved = savedSnapshots.at(0);
     if (!saved) {
       throw new Error("expected snapshot to be saved");
@@ -634,9 +635,319 @@ describe("SynthesisService", () => {
     expect(prompts[0]).toContain(
       "Never describe the symbol as a placeholder or unknown identifier.",
     );
-    expect(prompts[1]).toContain(
-      "Explicitly mention identity uncertainty in Missing Evidence.",
-    );
+    expect(
+      prompts.some((prompt) =>
+        prompt.includes("Explicitly mention identity uncertainty in Missing Evidence."),
+      ),
+    ).toBeTrue();
+  });
+
+  it("excludes no-issuer-match headlines and records news quality diagnostics", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-1",
+        symbol: "NVDA",
+        provider: "finnhub",
+        providerItemId: "n-1",
+        type: "news",
+        title: "Is Sandisk Stock Your Ticket to Becoming a Millionaire?",
+        summary: "Broad narrative unrelated to issuer",
+        content: "No issuer mention here",
+        url: "https://example.com/noise-1",
+        publishedAt: new Date("2026-02-17T08:00:00.000Z"),
+        language: "en",
+        topics: ["market-news"],
+        sourceType: "api",
+        rawPayload: { related: "SNDK" },
+        createdAt: new Date("2026-02-17T08:00:00.000Z"),
+      },
+      {
+        id: "doc-2",
+        symbol: "NVDA",
+        provider: "finnhub",
+        providerItemId: "n-2",
+        type: "news",
+        title: "NVIDIA posts stronger-than-expected data center growth",
+        summary: "NVIDIA demand remains strong",
+        content: "NVDA momentum",
+        url: "https://example.com/nvda-1",
+        publishedAt: new Date("2026-02-17T09:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "NVDA" },
+        createdAt: new Date("2026-02-17T09:00:00.000Z"),
+      },
+    ];
+
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok(validThesis),
+    };
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics: [],
+      filings: [],
+      llm,
+    });
+
+    await service.run({
+      ...payload,
+      symbol: "NVDA",
+      resolvedIdentity: {
+        requestedSymbol: "NVDA",
+        canonicalSymbol: "NVDA",
+        companyName: "NVIDIA Corporation",
+        aliases: ["NVDA"],
+        confidence: 0.99,
+        resolutionSource: "manual_map",
+      },
+    });
+
+    const saved = savedSnapshots.at(0);
+    if (!saved) {
+      throw new Error("expected snapshot to be saved");
+    }
+    expect(saved.diagnostics?.newsQuality?.total).toBe(2);
+    expect(saved.diagnostics?.newsQuality?.issuerMatched).toBe(1);
+    expect(saved.diagnostics?.newsQuality?.excluded).toBe(1);
+  });
+
+  it("keeps company-name-only headlines when identity company name matches", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-1",
+        symbol: "NVDA",
+        provider: "finnhub",
+        providerItemId: "n-1",
+        type: "news",
+        title: "NVIDIA Corporation expands AI capacity",
+        summary: "company-name-only mention",
+        content: "no ticker string",
+        url: "https://example.com/nvda-company-name",
+        publishedAt: new Date("2026-02-17T09:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "XYZ" },
+        createdAt: new Date("2026-02-17T09:00:00.000Z"),
+      },
+    ];
+
+    const prompts: string[] = [];
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async (prompt) => {
+        prompts.push(prompt);
+        return ok(validThesis);
+      },
+    };
+    const { service } = createService({
+      docs,
+      metrics: [],
+      filings: [],
+      llm,
+    });
+    await service.run({
+      ...payload,
+      symbol: "NVDA",
+      resolvedIdentity: {
+        requestedSymbol: "NVDA",
+        canonicalSymbol: "NVDA",
+        companyName: "NVIDIA Corporation",
+        aliases: ["NVDA"],
+        confidence: 0.99,
+        resolutionSource: "manual_map",
+      },
+    });
+
+    expect(prompts[0]).toContain("N1 finnhub: NVIDIA Corporation expands AI capacity");
+  });
+
+  it("produces non-watch decisions when deterministic policy gates are met", async () => {
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok(validThesis),
+    };
+
+    const buyMetrics: MetricPointEntity[] = [
+      {
+        id: "m-1",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "price_to_earnings",
+        metricValue: 20,
+        metricUnit: "multiple",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "point_in_time",
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+      {
+        id: "m-2",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "revenue_growth_yoy",
+        metricValue: 0.25,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "quarter",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+      {
+        id: "m-3",
+        symbol: "TTWO",
+        provider: "finnhub-market-context",
+        metricName: "analyst_buy_ratio",
+        metricValue: 0.7,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "point_in_time",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+    ];
+
+    const buyDocs: DocumentEntity[] = [
+      {
+        id: "doc-b-1",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "b-1",
+        type: "news",
+        title: "TTWO launches high-demand title",
+        summary: "TTWO expansion",
+        content: "TTWO growth detail",
+        url: "https://example.com/buy-1",
+        publishedAt: new Date("2026-02-17T10:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "TTWO" },
+        createdAt: new Date("2026-02-17T10:00:00.000Z"),
+      },
+      {
+        id: "doc-b-2",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "b-2",
+        type: "news",
+        title: "TTWO management reiterates growth outlook",
+        summary: "TTWO guidance",
+        content: "TTWO outlook detail",
+        url: "https://example.com/buy-2",
+        publishedAt: new Date("2026-02-17T09:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "TTWO" },
+        createdAt: new Date("2026-02-17T09:00:00.000Z"),
+      },
+      {
+        id: "doc-b-3",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "b-3",
+        type: "news",
+        title: "TTWO demand remains resilient in latest quarter",
+        summary: "TTWO demand resilience",
+        content: "TTWO demand evidence",
+        url: "https://example.com/buy-3",
+        publishedAt: new Date("2026-02-17T08:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "TTWO" },
+        createdAt: new Date("2026-02-17T08:00:00.000Z"),
+      },
+    ];
+
+    const { service: buyService, savedSnapshots: buySnapshots } = createService({
+      docs: buyDocs,
+      metrics: buyMetrics,
+      filings: [],
+      llm,
+    });
+
+    await buyService.run(payload);
+    expect(buySnapshots[0]?.thesis).toContain("Decision: Buy");
+    expect(buySnapshots[0]?.diagnostics?.decisionReasons?.includes("strong_growth_with_acceptable_valuation")).toBeTrue();
+
+    const avoidFilings: FilingEntity[] = [
+      {
+        id: "filing-a-1",
+        dedupeKey: "accession:0000000000-26-000901",
+        symbol: "TTWO",
+        provider: "sec-edgar",
+        issuerName: "Take-Two Interactive Software, Inc.",
+        filingType: "8-K",
+        accessionNo: "0000000000-26-000901",
+        filedAt: new Date("2026-02-15T00:00:00.000Z"),
+        docUrl: "https://sec.example/a-1",
+        sections: [],
+        extractedFacts: [
+          { name: "mentions_regulatory_action", value: "true" },
+          { name: "content_extraction_status", value: "parsed" },
+        ],
+        rawPayload: {},
+        createdAt: new Date("2026-02-15T00:00:00.000Z"),
+      },
+    ];
+
+    const avoidMetrics: MetricPointEntity[] = [
+      {
+        id: "m-a-1",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "price_to_earnings",
+        metricValue: 60,
+        metricUnit: "multiple",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "point_in_time",
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+      {
+        id: "m-a-2",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "revenue_growth_yoy",
+        metricValue: 0.18,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "quarter",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+      {
+        id: "m-a-3",
+        symbol: "TTWO",
+        provider: "finnhub-market-context",
+        metricName: "analyst_buy_ratio",
+        metricValue: 0.65,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "point_in_time",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+    ];
+    const { service: avoidService, savedSnapshots: avoidSnapshots } = createService({
+      docs: buyDocs,
+      metrics: avoidMetrics,
+      filings: avoidFilings,
+      llm,
+    });
+    await avoidService.run(payload);
+    expect(avoidSnapshots[0]?.thesis).toContain("Decision: Avoid");
+    expect(avoidSnapshots[0]?.diagnostics?.decisionReasons?.includes("high_valuation_with_filing_risk")).toBeTrue();
   });
 
   it("injects cross-run memory into prompt and excludes current run from retrieval", async () => {

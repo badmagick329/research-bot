@@ -299,6 +299,8 @@ export const createRuntime = async () => {
     {
       relevanceMode: newsRelevanceMode(),
       minRelevanceScore: env.NEWS_MIN_RELEVANCE_SCORE,
+      issuerMatchMinFields: env.NEWS_ISSUER_MATCH_MIN_FIELDS,
+      thesisTriggerMinNumeric: env.THESIS_TRIGGER_MIN_NUMERIC,
     },
   );
   const runQueryService = new RunQueryService(

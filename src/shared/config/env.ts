@@ -70,6 +70,8 @@ const envSchema = z.object({
   OPENAI_CHAT_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   NEWS_RELEVANCE_MODE: z.enum(supportedNewsRelevanceModes).default("high_precision"),
   NEWS_MIN_RELEVANCE_SCORE: z.coerce.number().int().min(1).default(7),
+  NEWS_ISSUER_MATCH_MIN_FIELDS: z.coerce.number().int().min(1).default(1),
+  THESIS_TRIGGER_MIN_NUMERIC: z.coerce.number().int().min(1).max(5).default(3),
   QUEUE_CONCURRENCY_INGEST: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_NORMALIZE: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_EMBED: z.coerce.number().int().positive().default(2),

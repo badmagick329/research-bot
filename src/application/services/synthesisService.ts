@@ -31,10 +31,35 @@ type RelevanceSelection = {
   relevantHeadlinesCount: number;
   selectedRelevantCount: number;
   lowRelevance: boolean;
+  totalHeadlinesCount: number;
+  issuerMatchedHeadlinesCount: number;
+  excludedHeadlinesCount: number;
+  excludedHeadlineReasons: string[];
 };
 
 type ThesisDecision = "buy" | "watch" | "avoid";
 type RelevanceMode = "high_precision" | "balanced";
+type IssuerIdentityPatterns = {
+  exactTokens: Set<string>;
+  phraseTokens: Set<string>;
+};
+type ActionMatrixRow = {
+  signalId: string;
+  label: string;
+  currentValue: string;
+  condition: string;
+  action: string;
+  citations: string[];
+  hasNumericThreshold: boolean;
+};
+type DecisionContext = {
+  evidenceWeak: boolean;
+  lowRelevance: boolean;
+  valuationStress: boolean;
+  growthStrength: boolean;
+  filingRiskFlag: boolean;
+  analystSupport: boolean;
+};
 
 /**
  * Consolidates evidence into a durable snapshot so decision outputs remain traceable to stored sources.
@@ -45,6 +70,8 @@ export class SynthesisService {
   private readonly memoryMinSimilarity = 0.72;
   private readonly relevanceMode: RelevanceMode;
   private readonly minRelevanceScore: number;
+  private readonly issuerMatchMinFields: number;
+  private readonly thesisTriggerMinNumeric: number;
 
   constructor(
     private readonly documentRepo: DocumentRepositoryPort,
@@ -56,10 +83,17 @@ export class SynthesisService {
     private readonly llm: LlmPort,
     private readonly clock: ClockPort,
     private readonly ids: IdGeneratorPort,
-    options?: { relevanceMode?: RelevanceMode; minRelevanceScore?: number },
+    options?: {
+      relevanceMode?: RelevanceMode;
+      minRelevanceScore?: number;
+      issuerMatchMinFields?: number;
+      thesisTriggerMinNumeric?: number;
+    },
   ) {
     this.relevanceMode = options?.relevanceMode ?? "high_precision";
     this.minRelevanceScore = options?.minRelevanceScore ?? 7;
+    this.issuerMatchMinFields = options?.issuerMatchMinFields ?? 1;
+    this.thesisTriggerMinNumeric = options?.thesisTriggerMinNumeric ?? 3;
   }
 
   /**
@@ -438,23 +472,106 @@ export class SynthesisService {
   }
 
   /**
-   * Builds issuer tokens so relevance checks can score symbol, aliases, and company-name mentions deterministically.
+   * Builds normalized issuer identity patterns so symbol/name/alias matching can gate headline inclusion deterministically.
    */
-  private buildIssuerTokens(
+  private buildIssuerIdentityPatterns(
     symbol: string,
     identity: ResolvedCompanyIdentity | undefined,
-  ): string[] {
-    const tokens = new Set<string>();
+  ): IssuerIdentityPatterns {
+    const exactTokens = new Set<string>();
+    const phraseTokens = new Set<string>();
 
-    tokens.add(symbol.toLowerCase());
+    const addToken = (raw: string) => {
+      const normalized = raw.trim().toLowerCase();
+      if (!normalized) {
+        return;
+      }
+
+      const punctuationStripped = normalized
+        .replace(/[.,]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const noSuffix = punctuationStripped
+        .replace(/\b(inc|incorporated|corp|corporation|co|company|plc|ltd|limited)\b/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      [normalized, punctuationStripped, noSuffix].forEach((candidate) => {
+        if (!candidate) {
+          return;
+        }
+        if (/^[a-z0-9]{2,5}$/.test(candidate)) {
+          exactTokens.add(candidate);
+        } else {
+          phraseTokens.add(candidate);
+        }
+      });
+    };
+
+    addToken(symbol);
     if (identity) {
-      tokens.add(identity.canonicalSymbol.toLowerCase());
-      tokens.add(identity.requestedSymbol.toLowerCase());
-      identity.aliases.forEach((alias) => tokens.add(alias.toLowerCase()));
-      tokens.add(identity.companyName.toLowerCase());
+      addToken(identity.canonicalSymbol);
+      addToken(identity.requestedSymbol);
+      identity.aliases.forEach(addToken);
+      addToken(identity.companyName);
     }
 
-    return Array.from(tokens).filter((token) => token.length >= 2);
+    return { exactTokens, phraseTokens };
+  }
+
+  /**
+   * Enforces issuer identity gating so non-issuer headlines are excluded before relevance ranking.
+   */
+  private matchesIssuerIdentity(
+    doc: DocumentEntity,
+    patterns: IssuerIdentityPatterns,
+  ): { matched: boolean; fieldsMatched: number; reason?: string } {
+    const normalize = (value: string) =>
+      value
+        .toLowerCase()
+        .replace(/[.,]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const fields = {
+      title: normalize(doc.title),
+      summary: normalize(doc.summary ?? ""),
+      content: normalize(doc.content),
+      payload: normalize(this.extractPayloadTickerHints(doc.rawPayload).join(" ")),
+    };
+
+    const fieldValues = Object.values(fields);
+    const matchesField = (fieldValue: string): boolean => {
+      if (!fieldValue) {
+        return false;
+      }
+
+      for (const token of patterns.exactTokens) {
+        const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp(`\\b${escaped}\\b`, "i").test(fieldValue)) {
+          return true;
+        }
+      }
+
+      for (const phrase of patterns.phraseTokens) {
+        if (fieldValue.includes(phrase)) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    const fieldsMatched = fieldValues.filter(matchesField).length;
+    if (fieldsMatched >= this.issuerMatchMinFields) {
+      return { matched: true, fieldsMatched };
+    }
+
+    return {
+      matched: false,
+      fieldsMatched,
+      reason: `issuer_match_fields=${fieldsMatched}/${this.issuerMatchMinFields}`,
+    };
   }
 
   /**
@@ -463,6 +580,7 @@ export class SynthesisService {
   private scoreDocumentRelevance(
     doc: DocumentEntity,
     issuerTokens: string[],
+    issuerMatched: boolean,
   ): RankedDocument {
     const title = doc.title.toLowerCase();
     const summary = (doc.summary ?? "").toLowerCase();
@@ -517,6 +635,10 @@ export class SynthesisService {
       score -= 1;
     }
 
+    if (!issuerMatched) {
+      score -= 15;
+    }
+
     if (this.relevanceMode === "high_precision" && !issuerMentioned) {
       score -= 8;
     }
@@ -542,12 +664,33 @@ export class SynthesisService {
         relevantHeadlinesCount: 0,
         selectedRelevantCount: 0,
         lowRelevance: true,
+        totalHeadlinesCount: 0,
+        issuerMatchedHeadlinesCount: 0,
+        excludedHeadlinesCount: 0,
+        excludedHeadlineReasons: [],
       };
     }
 
-    const issuerTokens = this.buildIssuerTokens(symbol, identity);
-    const ranked = docs
-      .map((doc) => this.scoreDocumentRelevance(doc, issuerTokens))
+    const identityPatterns = this.buildIssuerIdentityPatterns(symbol, identity);
+    const issuerTokens = [
+      ...identityPatterns.exactTokens.values(),
+      ...identityPatterns.phraseTokens.values(),
+    ];
+
+    const excludedHeadlineReasons: string[] = [];
+    const issuerMatched = docs.filter((doc) => {
+      const match = this.matchesIssuerIdentity(doc, identityPatterns);
+      if (!match.matched) {
+        const reason = `${doc.title.slice(0, 96)} (${match.reason ?? "no_issuer_match"})`;
+        if (excludedHeadlineReasons.length < 5) {
+          excludedHeadlineReasons.push(reason);
+        }
+      }
+      return match.matched;
+    });
+
+    const ranked = issuerMatched
+      .map((doc) => this.scoreDocumentRelevance(doc, issuerTokens, true))
       .sort((left, right) => {
         if (right.score !== left.score) {
           return right.score - left.score;
@@ -576,6 +719,10 @@ export class SynthesisService {
       relevantHeadlinesCount: relevant.length,
       selectedRelevantCount,
       lowRelevance,
+      totalHeadlinesCount: docs.length,
+      issuerMatchedHeadlinesCount: issuerMatched.length,
+      excludedHeadlinesCount: docs.length - issuerMatched.length,
+      excludedHeadlineReasons,
     };
   }
 
@@ -746,12 +893,195 @@ export class SynthesisService {
     metricsCount: number,
     filingsCount: number,
   ): boolean {
+    void filingsCount;
     return (
       selection.lowRelevance ||
       selection.selectedRelevantCount < 3 ||
-      metricsCount < 3 ||
-      filingsCount === 0
+      metricsCount < 3
     );
+  }
+
+  /**
+   * Derives deterministic decision context flags so non-Watch outcomes can be reached only when objective evidence gates pass.
+   */
+  private buildDecisionContext(
+    selection: RelevanceSelection,
+    metrics: MetricPointEntity[],
+    filings: FilingEntity[],
+  ): DecisionContext {
+    const byName = new Map(metrics.map((metric) => [metric.metricName, metric]));
+    const pe = byName.get("price_to_earnings")?.metricValue;
+    const growthRatio = byName.get("revenue_growth_yoy")?.metricValue;
+    const analystSupport = (byName.get("analyst_buy_ratio")?.metricValue ?? 0) >= 0.55;
+
+    const filingRiskFlag = filings.some((filing) =>
+      filing.extractedFacts.some(
+        (fact) =>
+          (fact.name === "mentions_risk_factor_change" ||
+            fact.name === "mentions_regulatory_action") &&
+          fact.value === "true",
+      ),
+    );
+
+    return {
+      evidenceWeak: this.isEvidenceWeak(selection, metrics.length, filings.length),
+      lowRelevance: selection.lowRelevance,
+      valuationStress: typeof pe === "number" && pe >= 45,
+      growthStrength: typeof growthRatio === "number" && growthRatio >= 0.15,
+      filingRiskFlag,
+      analystSupport,
+    };
+  }
+
+  /**
+   * Applies deterministic policy gates for Buy/Watch/Avoid so final stance is auditable and less dependent on LLM phrasing.
+   */
+  private deriveDecisionFromContext(
+    context: DecisionContext,
+  ): { decision: ThesisDecision; reasons: string[] } {
+    const reasons: string[] = [];
+
+    if (context.filingRiskFlag && context.valuationStress) {
+      reasons.push("high_valuation_with_filing_risk");
+      return { decision: "avoid", reasons };
+    }
+
+    if (!context.evidenceWeak && !context.valuationStress && context.growthStrength) {
+      reasons.push("strong_growth_with_acceptable_valuation");
+      if (context.analystSupport) {
+        reasons.push("analyst_supportive");
+      }
+      return { decision: "buy", reasons };
+    }
+
+    reasons.push("conservative_default_watch");
+    if (context.evidenceWeak) {
+      reasons.push("evidence_weak");
+    }
+    if (context.valuationStress) {
+      reasons.push("valuation_stress");
+    }
+
+    return { decision: "watch", reasons };
+  }
+
+  /**
+   * Builds deterministic action triggers from concrete metrics/facts so If/Then guidance remains executable and non-generic.
+   */
+  private buildActionMatrix(
+    metrics: MetricPointEntity[],
+    filings: FilingEntity[],
+  ): ActionMatrixRow[] {
+    const byName = new Map(metrics.map((metric) => [metric.metricName, metric]));
+    const rows: ActionMatrixRow[] = [];
+
+    const pe = byName.get("price_to_earnings");
+    if (pe) {
+      rows.push({
+        signalId: "valuation_pe",
+        label: "Valuation multiple pressure",
+        currentValue: `${this.formatMetricValue(pe)}${pe.metricUnit ? ` ${pe.metricUnit}` : ""}`,
+        condition: `If P/E falls below 35 or earnings growth re-accelerates above 20%`,
+        action: "then upgrade one notch",
+        citations: ["M1"],
+        hasNumericThreshold: true,
+      });
+    }
+
+    const growth = byName.get("revenue_growth_yoy");
+    if (growth) {
+      rows.push({
+        signalId: "growth_revenue",
+        label: "Top-line momentum",
+        currentValue: `${(growth.metricValue * 100).toFixed(1)}%`,
+        condition: "If revenue growth stays above 15% for next two quarters",
+        action: "then add on strength",
+        citations: ["M2"],
+        hasNumericThreshold: true,
+      });
+    }
+
+    const analyst = byName.get("analyst_buy_ratio");
+    if (analyst) {
+      rows.push({
+        signalId: "analyst_support",
+        label: "Analyst stance",
+        currentValue: `${(analyst.metricValue * 100).toFixed(1)}% buy`,
+        condition: "If analyst buy ratio drops below 45%",
+        action: "then downgrade one notch",
+        citations: ["M3"],
+        hasNumericThreshold: true,
+      });
+    }
+
+    const nextEarnings = byName.get("earnings_event_days_to_next");
+    if (nextEarnings) {
+      rows.push({
+        signalId: "earnings_timing",
+        label: "Event timing risk",
+        currentValue: `${Math.round(nextEarnings.metricValue)} days`,
+        condition: "If next earnings are within 10 days and valuation remains above 45x",
+        action: "then hold size constant",
+        citations: ["M4"],
+        hasNumericThreshold: true,
+      });
+    }
+
+    const filingRisk = filings.some((filing) =>
+      filing.extractedFacts.some(
+        (fact) => fact.name === "mentions_regulatory_action" && fact.value === "true",
+      ),
+    );
+    rows.push({
+      signalId: "filing_risk",
+      label: "Regulatory risk signal",
+      currentValue: filingRisk ? "true" : "false",
+      condition: "If filing risk signals turn true in next disclosure",
+      action: "then reduce risk exposure",
+      citations: ["F1"],
+      hasNumericThreshold: filingRisk,
+    });
+
+    const filtered = rows.slice(0, 5);
+    const numericCount = filtered.filter((row) => row.hasNumericThreshold).length;
+    if (numericCount < this.thesisTriggerMinNumeric) {
+      filtered.push({
+        signalId: "insufficient_signal",
+        label: "Insufficient numeric signal coverage",
+        currentValue: `${numericCount} numeric triggers`,
+        condition: `If at least ${this.thesisTriggerMinNumeric} numeric triggers become available`,
+        action: "then re-evaluate decision confidence",
+        citations: ["M1"],
+        hasNumericThreshold: true,
+      });
+    }
+
+    while (filtered.length < 3) {
+      const idx = filtered.length + 1;
+      filtered.push({
+        signalId: `coverage_fallback_${idx}`,
+        label: "Coverage completion trigger",
+        currentValue: `${metrics.length} metrics / ${filings.length} filings`,
+        condition: `If available metric count reaches ${this.thesisTriggerMinNumeric + 2}`,
+        action: "then upgrade confidence one step",
+        citations: ["M1"],
+        hasNumericThreshold: true,
+      });
+    }
+
+    return filtered.slice(0, 5);
+  }
+
+  /**
+   * Renders deterministic action matrix rows for prompt constraints and post-processing merges.
+   */
+  private formatActionMatrix(rows: ActionMatrixRow[]): string {
+    return rows
+      .map(
+        (row, index) =>
+          `- T${index + 1} ${row.label}: current=${row.currentValue}; ${row.condition}, ${row.action} (${row.citations.join(", ")})`,
+      )
+      .join("\n");
   }
 
   /**
@@ -767,6 +1097,9 @@ export class SynthesisService {
     metricLines: string;
     filingLines: string;
     memoryLines: string;
+    actionMatrixLines: string;
+    decisionFromContext: ThesisDecision;
+    decisionReasonLines: string;
     relevanceSelection: RelevanceSelection;
     shouldForceIdentityUncertainty: boolean;
     evidenceWeak: boolean;
@@ -802,6 +1135,12 @@ export class SynthesisService {
       `- relevanceCoverage=${relevanceCoverage}`,
       `- lowRelevance=${args.relevanceSelection.lowRelevance}`,
       `- evidenceWeak=${args.evidenceWeak}`,
+      `- totalHeadlines=${args.relevanceSelection.totalHeadlinesCount}`,
+      `- issuerMatchedHeadlines=${args.relevanceSelection.issuerMatchedHeadlinesCount}`,
+      `- excludedHeadlines=${args.relevanceSelection.excludedHeadlinesCount}`,
+      args.relevanceSelection.excludedHeadlineReasons.length > 0
+        ? `- excludedSample=${args.relevanceSelection.excludedHeadlineReasons.join(" | ")}`
+        : "- excludedSample=none",
       "",
       "News headlines:",
       args.sourceLines || "- none",
@@ -815,6 +1154,13 @@ export class SynthesisService {
       "Cross-run memory (semantic matches, prior runs):",
       args.memoryLines,
       "",
+      "Deterministic action matrix seed (must be preserved in If/Then triggers):",
+      args.actionMatrixLines,
+      "",
+      "Deterministic decision seed:",
+      `- decision=${args.decisionFromContext}`,
+      args.decisionReasonLines,
+      "",
       "Output requirements:",
       "- Return Markdown with headings in this order: Action Summary, Overview, Shareholder/Institutional Dynamics, Valuation and Growth Interpretation, Regulatory Filings, Missing Evidence, Conclusion.",
       "- Under # Action Summary, include exactly these labeled bullets:",
@@ -825,9 +1171,11 @@ export class SynthesisService {
       "  - If/Then triggers:",
       "  - Thesis invalidation:",
       "- Under Reasons to invest and Reasons to stay away, add 2-3 supporting sub-bullets each with citations.",
-      "- Under If/Then triggers, add 3-5 sub-bullets in 'If ... then ...' form.",
+      "- Under If/Then triggers, add 3-5 sub-bullets in 'If ... then ...' form using numeric thresholds or filing booleans only.",
       "- Under Thesis invalidation, add 2-3 sub-bullets describing clear thesis break conditions.",
       "- Decision and each If/Then trigger must include at least one citation when evidence exists.",
+      "- Decision should default to deterministic seed decision unless evidence in this run clearly contradicts it.",
+      "- Avoid generic trigger language such as 'watch for', 'monitor', 'could', or 'may'.",
       "- If evidenceWeak=true, default Decision to Watch unless evidence strongly contradicts that default.",
       "- Use R# memory references only as supporting context, not as sole support for directional decisions when current-run evidence exists.",
       "- If memory conflicts with current-run evidence, explicitly call out the conflict in Missing Evidence.",
@@ -841,6 +1189,7 @@ export class SynthesisService {
       "- If metrics diagnostics indicate missing or degraded metrics, mention that limitation in Missing Evidence.",
       "- If provider failures or pipeline stage issues are present, call them out explicitly in Missing Evidence.",
       "- If lowRelevance=true, explicitly state that weak issuer-specific headline relevance limits confidence.",
+      "- If excludedHeadlines is high versus issuerMatchedHeadlines, explicitly mention noise pressure in Missing Evidence.",
       "- Treat listed aliases as the same issuer unless evidence explicitly contradicts this.",
       args.shouldForceIdentityUncertainty
         ? "- Explicitly mention identity uncertainty in Missing Evidence."
@@ -919,6 +1268,91 @@ export class SynthesisService {
     }
 
     return mergedSections.join("\n\n").trim();
+  }
+
+  /**
+   * Rewrites Action Summary decision and trigger block from deterministic policy/matrix to keep final output actionable and auditable.
+   */
+  private upsertActionSummaryDeterminism(
+    thesis: string,
+    decision: ThesisDecision,
+    actionMatrix: ActionMatrixRow[],
+  ): string {
+    const section = this.extractHeadingSection(thesis, "Action Summary");
+    if (!section) {
+      return thesis;
+    }
+
+    const decisionLabel = decision.charAt(0).toUpperCase() + decision.slice(1);
+    const firstCitation = actionMatrix.flatMap((row) => row.citations).at(0) ?? "M1";
+    const decisionLine = `- Decision: ${decisionLabel} [${firstCitation}]`;
+    const triggerLines = actionMatrix
+      .slice(0, 5)
+      .map((row) => `  - If ${row.condition.replace(/^If\s+/i, "")}, ${row.action} [${row.citations.join("] [")}]`)
+      .join("\n");
+
+    const lines = section.split("\n");
+    const rebuilt: string[] = [];
+    let decisionInjected = false;
+    let triggerInjected = false;
+    let skippingTriggerBody = false;
+    const labelRegex =
+      /^(?:-\s*)?(?:\*\*)?(Reasons to invest:|Reasons to stay away:|If\/Then triggers:|Thesis invalidation:)(?:\*\*)?/i;
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      const labelMatch = line.match(labelRegex);
+      if (labelMatch) {
+        const label = (labelMatch[1] ?? "").toLowerCase();
+
+        if (label.includes("if/then triggers")) {
+          rebuilt.push("- If/Then triggers:");
+          rebuilt.push(triggerLines);
+          triggerInjected = true;
+          skippingTriggerBody = true;
+          continue;
+        }
+
+        skippingTriggerBody = false;
+      }
+
+      if (skippingTriggerBody) {
+        if (labelRegex.test(line)) {
+          skippingTriggerBody = false;
+        } else {
+          continue;
+        }
+      }
+
+      if (/^-?\s*\*{0,2}decision\*{0,2}:/i.test(line)) {
+        rebuilt.push(decisionLine);
+        decisionInjected = true;
+        continue;
+      }
+
+      rebuilt.push(rawLine);
+    }
+
+    if (!decisionInjected) {
+      rebuilt.splice(0, 0, decisionLine);
+    }
+    if (!triggerInjected) {
+      const idx = rebuilt.findIndex((line) =>
+        /thesis invalidation:/i.test(line),
+      );
+      if (idx >= 0) {
+        rebuilt.splice(idx, 0, "- If/Then triggers:", triggerLines);
+      } else {
+        rebuilt.push("- If/Then triggers:", triggerLines);
+      }
+    }
+
+    const updatedSection = rebuilt.join("\n");
+
+    return thesis.replace(
+      /# Action Summary\n[\s\S]*?(?=\n# |\s*$)/i,
+      `# Action Summary\n${updatedSection}\n`,
+    );
   }
 
   /**
@@ -1018,6 +1452,12 @@ export class SynthesisService {
     if (hasEvidence && decisionLine && !/\b[NMF]\d+\b/.test(decisionLine)) {
       issues.push("Action Summary Decision line must include evidence citation.");
     }
+    if (
+      decisionLine &&
+      /(watch for|monitor|stay tuned|could\b|may\b)/i.test(decisionLine.toLowerCase())
+    ) {
+      issues.push("Action Summary Decision line uses generic placeholder language.");
+    }
 
     const memoryCitations = thesis.match(/\bR\d+\b/g) ?? [];
     if (
@@ -1048,10 +1488,20 @@ export class SynthesisService {
       if (!normalized.includes("if ") || !normalized.includes(" then ")) {
         issues.push(`Trigger must be conditional (If ... then ...): ${line}`);
       }
+      if (!/\d/.test(normalized) && !/(true|false)/.test(normalized)) {
+        issues.push(`Trigger missing numeric or boolean threshold: ${line}`);
+      }
+      if (!/(upgrade|downgrade|add|reduce|hold|re-evaluate)/.test(normalized)) {
+        issues.push(`Trigger missing explicit action verb: ${line}`);
+      }
       if (
         normalized.includes("monitor developments") ||
         normalized.includes("watch news") ||
-        normalized.includes("stay tuned")
+        normalized.includes("stay tuned") ||
+        normalized.includes("watch for") ||
+        normalized.includes("monitor") ||
+        /\bcould\b/.test(normalized) ||
+        /\bmay\b/.test(normalized)
       ) {
         issues.push(`Trigger is too generic: ${line}`);
       }
@@ -1102,6 +1552,8 @@ export class SynthesisService {
     return [
       "Repair this thesis draft by fixing all validation failures.",
       "Keep the same required headings and only use provided evidence.",
+      "Replace generic trigger phrasing with threshold/action trigger phrasing.",
+      "No placeholder guidance language (watch for/monitor/could/may).",
       "",
       "Validation failures:",
       ...issues.map((issue) => `- ${issue}`),
@@ -1387,11 +1839,19 @@ export class SynthesisService {
       payload.resolvedIdentity,
       relevanceSelection,
     );
-    const evidenceWeak = this.isEvidenceWeak(
+    const decisionContext = this.buildDecisionContext(
       relevanceSelection,
-      latestMetrics.length,
-      filings.length,
+      latestMetrics,
+      filings,
     );
+    const evidenceWeak = decisionContext.evidenceWeak;
+    const decisionResult = this.deriveDecisionFromContext(decisionContext);
+    const actionMatrix = this.buildActionMatrix(latestMetrics, filings);
+    const actionMatrixLines = this.formatActionMatrix(actionMatrix);
+    const decisionReasonLines =
+      decisionResult.reasons.length > 0
+        ? decisionResult.reasons.map((reason) => `- ${reason}`).join("\n")
+        : "- none";
     const now = this.clock.now();
     const memoryResult = await this.fetchCrossRunMemory(
       payload,
@@ -1420,6 +1880,9 @@ export class SynthesisService {
       metricLines,
       filingLines,
       memoryLines,
+      actionMatrixLines,
+      decisionFromContext: decisionResult.decision,
+      decisionReasonLines,
       relevanceSelection,
       shouldForceIdentityUncertainty,
       evidenceWeak,
@@ -1433,9 +1896,10 @@ export class SynthesisService {
       );
     }
 
-    let thesis = this.upsertEvidenceMapSection(
-      thesisResult.value,
-      evidenceMapLines,
+    let thesis = this.upsertActionSummaryDeterminism(
+      this.upsertEvidenceMapSection(thesisResult.value, evidenceMapLines),
+      decisionResult.decision,
+      actionMatrix,
     );
     const validationIssues = this.validateThesis(
       thesis,
@@ -1454,9 +1918,10 @@ export class SynthesisService {
         );
       }
 
-      const repairedThesis = this.upsertEvidenceMapSection(
-        repairedResult.value,
-        evidenceMapLines,
+      const repairedThesis = this.upsertActionSummaryDeterminism(
+        this.upsertEvidenceMapSection(repairedResult.value, evidenceMapLines),
+        decisionResult.decision,
+        actionMatrix,
       );
       const repairedIssues = this.validateThesis(
         repairedThesis,
@@ -1503,6 +1968,13 @@ export class SynthesisService {
         providerFailures: payload.providerFailures,
         stageIssues: payloadWithMemoryDiagnostics.stageIssues,
         identity: payload.resolvedIdentity,
+        newsQuality: {
+          total: relevanceSelection.totalHeadlinesCount,
+          issuerMatched: relevanceSelection.issuerMatchedHeadlinesCount,
+          excluded: relevanceSelection.excludedHeadlinesCount,
+          mode: this.relevanceMode,
+        },
+        decisionReasons: decisionResult.reasons.slice(0, 8),
       },
       createdAt: now,
     });
