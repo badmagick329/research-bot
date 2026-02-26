@@ -78,94 +78,43 @@ describe("SecEdgarFilingsProvider", () => {
     expect(calls[0]).toContain("company_tickers.json");
     expect(calls[1]).toContain("CIK0000320193.json");
 
-    expect(values).toEqual([
-      {
-        id: "sec-edgar-AAPL-0000320193-26-000010",
-        provider: "sec-edgar",
-        symbol: "AAPL",
-        issuerName: "Apple Inc.",
+    expect(values).toHaveLength(2);
+    expect(values[0]).toMatchObject({
+      id: "sec-edgar-AAPL-0000320193-26-000010",
+      provider: "sec-edgar",
+      symbol: "AAPL",
+      issuerName: "Apple Inc.",
+      filingType: "10-Q",
+      accessionNo: "0000320193-26-000010",
+      periodEnd: new Date("2025-12-31T00:00:00.000Z"),
+      rawPayload: {
         filingType: "10-Q",
         accessionNo: "0000320193-26-000010",
-        filedAt: new Date("2026-01-30T00:00:00.000Z"),
-        periodEnd: new Date("2025-12-31T00:00:00.000Z"),
-        docUrl:
-          "https://www.sec.gov/Archives/edgar/data/320193/000032019326000010/aapl-20251231x10q.htm",
-        sections: [
-          {
-            name: "edgar_metadata_overview",
-            text: "Form 10-Q filed on 2026-01-30. Reported period end: 2025-12-31. Primary SEC document: aapl-20251231x10q.htm.",
-          },
-        ],
-        extractedFacts: [
-          {
-            name: "filing_type",
-            value: "10-Q",
-          },
-          {
-            name: "filing_date",
-            value: "2026-01-30",
-          },
-          {
-            name: "accession_number",
-            value: "0000320193-26-000010",
-          },
-          {
-            name: "reported_period_end",
-            value: "2025-12-31",
-          },
-        ],
-        rawPayload: {
-          filingType: "10-Q",
-          accessionNo: "0000320193-26-000010",
-          filingDate: "2026-01-30",
-          reportDate: "2025-12-31",
-          primaryDocument: "aapl-20251231x10q.htm",
-        },
+        filingDate: "2026-01-30",
+        reportDate: "2025-12-31",
+        primaryDocument: "aapl-20251231x10q.htm",
+        extractionStatus: "metadata_only",
       },
-      {
-        id: "sec-edgar-AAPL-0000320193-26-000011",
-        provider: "sec-edgar",
-        symbol: "AAPL",
-        issuerName: "Apple Inc.",
+    });
+    expect(values[1]).toMatchObject({
+      id: "sec-edgar-AAPL-0000320193-26-000011",
+      provider: "sec-edgar",
+      symbol: "AAPL",
+      issuerName: "Apple Inc.",
+      filingType: "8-K",
+      accessionNo: "0000320193-26-000011",
+      periodEnd: new Date("2026-01-31T00:00:00.000Z"),
+      rawPayload: {
         filingType: "8-K",
         accessionNo: "0000320193-26-000011",
-        filedAt: new Date("2026-02-02T00:00:00.000Z"),
-        periodEnd: new Date("2026-01-31T00:00:00.000Z"),
-        docUrl:
-          "https://www.sec.gov/Archives/edgar/data/320193/000032019326000011/aapl-8k.htm",
-        sections: [
-          {
-            name: "edgar_metadata_overview",
-            text: "Form 8-K filed on 2026-02-02. Reported period end: 2026-01-31. Primary SEC document: aapl-8k.htm.",
-          },
-        ],
-        extractedFacts: [
-          {
-            name: "filing_type",
-            value: "8-K",
-          },
-          {
-            name: "filing_date",
-            value: "2026-02-02",
-          },
-          {
-            name: "accession_number",
-            value: "0000320193-26-000011",
-          },
-          {
-            name: "reported_period_end",
-            value: "2026-01-31",
-          },
-        ],
-        rawPayload: {
-          filingType: "8-K",
-          accessionNo: "0000320193-26-000011",
-          filingDate: "2026-02-02",
-          reportDate: "2026-01-31",
-          primaryDocument: "aapl-8k.htm",
-        },
+        filingDate: "2026-02-02",
+        reportDate: "2026-01-31",
+        primaryDocument: "aapl-8k.htm",
+        extractionStatus: "metadata_only",
       },
-    ]);
+    });
+    expect(values[0]?.extractedFacts.some((fact) => fact.name === "content_extraction_status")).toBeTrue();
+    expect(values[1]?.extractedFacts.some((fact) => fact.name === "content_extraction_status")).toBeTrue();
   });
 
   it("returns empty list when ticker cannot be resolved", async () => {

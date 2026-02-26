@@ -9,6 +9,7 @@ import {
   filingsProvider,
   llmProvider,
   metricsProvider,
+  newsRelevanceMode,
   newsProviders,
 } from "../../shared/config/env";
 import { createDb } from "../../infra/db/client";
@@ -26,6 +27,7 @@ import { OpenAiLlm } from "../../infra/llm/openAiLlm";
 import { AlphaVantageMetricsProvider } from "../../infra/providers/alphavantage/alphaVantageMetricsProvider";
 import { AlphaVantageNewsProvider } from "../../infra/providers/alphavantage/alphaVantageNewsProvider";
 import { FinnhubNewsProvider } from "../../infra/providers/finnhub/finnhubNewsProvider";
+import { FinnhubMarketContextProvider } from "../../infra/providers/finnhub/finnhubMarketContextProvider";
 import { MockFilingsProvider } from "../../infra/providers/mocks/mockFilingsProvider";
 import { MockMarketMetricsProvider } from "../../infra/providers/mocks/mockMarketMetricsProvider";
 import { MockNewsProvider } from "../../infra/providers/mocks/mockNewsProvider";
@@ -42,6 +44,7 @@ import {
 import { RedisProviderRateLimiter } from "../../infra/system/redisProviderRateLimiter";
 import type {
   FilingsProviderPort,
+  MarketContextProviderPort,
   MarketMetricsProviderPort,
   NewsProviderPort,
 } from "../../core/ports/inboundPorts";
@@ -49,6 +52,7 @@ import type {
   LlmPort,
   ProviderRateLimiterPort,
 } from "../../core/ports/outboundPorts";
+import { ok } from "neverthrow";
 
 const redisConfigFromUrl = (url: string) => {
   const parsed = new URL(url);
@@ -144,6 +148,43 @@ const createFilingsProvider = (
 };
 
 /**
+ * Resolves market-context enrichment adapter and falls back to empty enrichment when Finnhub credentials are unavailable.
+ */
+const createMarketContextProvider = (
+  httpClient: HttpJsonClient,
+  providerRateLimiter: ProviderRateLimiterPort,
+): MarketContextProviderPort => {
+  if (!env.FINNHUB_API_KEY.trim()) {
+    return {
+      fetchMarketContext: async (request) =>
+        ok({
+          peerRelativeValuation: [],
+          earningsGuidance: [],
+          analystTrend: [],
+          diagnostics: {
+            provider: "market-context-disabled",
+            symbol: request.symbol,
+            status: "empty",
+            itemCounts: {
+              peerRelativeValuation: 0,
+              earningsGuidance: 0,
+              analystTrend: 0,
+            },
+          },
+        }),
+    };
+  }
+
+  return new FinnhubMarketContextProvider(
+    env.FINNHUB_BASE_URL,
+    env.FINNHUB_API_KEY,
+    env.FINNHUB_TIMEOUT_MS,
+    httpClient,
+    providerRateLimiter,
+  );
+};
+
+/**
  * Resolves the configured LLM adapter so runtime can switch between local and external chat models.
  */
 const createLlm = (httpClient: HttpJsonClient): LlmPort => {
@@ -210,6 +251,10 @@ export const createRuntime = async () => {
     httpClient,
     providerRateLimiter,
   );
+  const marketContextProvider = createMarketContextProvider(
+    httpClient,
+    providerRateLimiter,
+  );
 
   const orchestratorService = new ResearchOrchestratorService(
     queue,
@@ -228,6 +273,7 @@ export const createRuntime = async () => {
     ids,
     env.APP_NEWS_LOOKBACK_DAYS,
     env.APP_FILINGS_LOOKBACK_DAYS,
+    marketContextProvider,
   );
   const normalizationService = new NormalizationService(
     documentRepo,
@@ -250,6 +296,10 @@ export const createRuntime = async () => {
     llm,
     clock,
     ids,
+    {
+      relevanceMode: newsRelevanceMode(),
+      minRelevanceScore: env.NEWS_MIN_RELEVANCE_SCORE,
+    },
   );
   const runQueryService = new RunQueryService(
     queue,

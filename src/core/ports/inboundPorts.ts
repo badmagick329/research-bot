@@ -41,6 +41,11 @@ export type MetricsRequest = {
   asOf?: Date;
 };
 
+export type MarketContextRequest = {
+  symbol: string;
+  asOf?: Date;
+};
+
 export type NormalizedMarketMetricPoint = {
   id: string;
   provider: string;
@@ -79,6 +84,73 @@ export type MetricsFetchDiagnostics = {
 export type MetricsFetchResult = {
   metrics: NormalizedMarketMetricPoint[];
   diagnostics: MetricsFetchDiagnostics;
+};
+
+export type MarketContextMetricName =
+  | "peer_pe_percentile"
+  | "peer_pe_premium_pct"
+  | "peer_rev_growth_percentile"
+  | "earnings_surprise_pct_last"
+  | "earnings_event_days_to_next"
+  | "analyst_buy_ratio"
+  | "analyst_buy_ratio_delta_30d"
+  | "analyst_consensus_score";
+
+type MarketContextSignalBase = {
+  metricName: MarketContextMetricName;
+  metricValue: number;
+  metricUnit?: string;
+  asOf: Date;
+  confidence?: number;
+  rawPayload: unknown;
+};
+
+export type PeerRelativeValuationSignal = MarketContextSignalBase & {
+  metricName:
+    | "peer_pe_percentile"
+    | "peer_pe_premium_pct"
+    | "peer_rev_growth_percentile";
+};
+
+export type EarningsGuidanceSignal = MarketContextSignalBase & {
+  metricName: "earnings_surprise_pct_last" | "earnings_event_days_to_next";
+};
+
+export type AnalystTrendSignal = MarketContextSignalBase & {
+  metricName:
+    | "analyst_buy_ratio"
+    | "analyst_buy_ratio_delta_30d"
+    | "analyst_consensus_score";
+};
+
+export type MarketContextFetchDiagnostics = {
+  provider: string;
+  symbol: string;
+  status:
+    | "ok"
+    | "empty"
+    | "rate_limited"
+    | "timeout"
+    | "provider_error"
+    | "auth_invalid"
+    | "config_invalid"
+    | "malformed_response"
+    | "transport_error"
+    | "invalid_json";
+  itemCounts: {
+    peerRelativeValuation: number;
+    earningsGuidance: number;
+    analystTrend: number;
+  };
+  reason?: string;
+  httpStatus?: number;
+};
+
+export type MarketContextFetchResult = {
+  peerRelativeValuation: PeerRelativeValuationSignal[];
+  earningsGuidance: EarningsGuidanceSignal[];
+  analystTrend: AnalystTrendSignal[];
+  diagnostics: MarketContextFetchDiagnostics;
 };
 
 export type FilingsRequest = {
@@ -132,6 +204,12 @@ export interface FilingsProviderPort {
   fetchFilings(
     request: FilingsRequest,
   ): Promise<Result<NormalizedFiling[], AppBoundaryError>>;
+}
+
+export interface MarketContextProviderPort {
+  fetchMarketContext(
+    request: MarketContextRequest,
+  ): Promise<Result<MarketContextFetchResult, AppBoundaryError>>;
 }
 
 export interface CompanyResolverPort {

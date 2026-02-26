@@ -60,6 +60,20 @@ const asDate = (value: string | undefined): Date | null => {
 const asAccessionPathPart = (accessionNo: string): string =>
   accessionNo.replaceAll("-", "");
 
+const MAX_FILING_BYTES = 900_000;
+const FILING_TEXT_SNIPPET_LIMIT = 520;
+const stripHtml = (value: string): string =>
+  value
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+
 type SecEdgarFilingsError =
   | { code: "config_invalid"; message: string }
   | {
@@ -124,7 +138,7 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
     }
 
     return ok(
-      this.toNormalizedFilings(
+      await this.toNormalizedFilings(
         symbol,
         request,
         cikResult.value,
@@ -191,12 +205,12 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
   /**
    * Converts SEC recent-filing arrays into bounded, date-filtered normalized filings.
    */
-  private toNormalizedFilings(
+  private async toNormalizedFilings(
     symbol: string,
     request: FilingsRequest,
     cik: string,
     submission: EdgarSubmissionResponse,
-  ): NormalizedFiling[] {
+  ): Promise<NormalizedFiling[]> {
     const recent = submission.filings?.recent;
     const forms = recent?.form ?? [];
     const accessionNumbers = recent?.accessionNumber ?? [];
@@ -242,6 +256,7 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
         periodEnd,
         accessionNo,
       );
+      const extraction = await this.extractFilingSignals(docUrl, filingType);
 
       results.push({
         id: `sec-edgar-${symbol}-${accessionNo}`,
@@ -253,14 +268,16 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
         filedAt: filingDate,
         periodEnd,
         docUrl,
-        sections,
-        extractedFacts,
+        sections: [...sections, ...extraction.sections],
+        extractedFacts: [...extractedFacts, ...extraction.facts],
         rawPayload: {
           filingType,
           accessionNo,
           filingDate: filingDates[index],
           reportDate: reportDates[index],
           primaryDocument,
+          extractionStatus: extraction.status,
+          extractionReason: extraction.reason,
         },
       });
     }
@@ -320,6 +337,152 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
         value: periodEnd ? periodEnd.toISOString().slice(0, 10) : "unavailable",
       },
     ];
+  }
+
+  /**
+   * Fetches filing text within strict bounds and derives deterministic section/fact signals.
+   */
+  private async extractFilingSignals(
+    docUrl: string,
+    filingType: string,
+  ): Promise<{
+    sections: Array<{ name: string; text: string }>;
+    facts: Array<{ name: string; value: string; unit?: string; period?: string }>;
+    status: "parsed" | "metadata_only";
+    reason?: string;
+  }> {
+    const fallback = {
+      sections: [] as Array<{ name: string; text: string }>,
+      facts: [
+        {
+          name: "content_extraction_status",
+          value: "metadata_only",
+        },
+      ] as Array<{ name: string; value: string; unit?: string; period?: string }>,
+      status: "metadata_only" as const,
+      reason: undefined as string | undefined,
+    };
+
+    try {
+      await this.providerRateLimiter.waitForSlot("sec-edgar");
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      const response = await fetch(docUrl, {
+        method: "GET",
+        signal: controller.signal,
+        headers: {
+          "User-Agent": this.userAgent,
+          Accept: "text/html,text/plain;q=0.9,*/*;q=0.8",
+        },
+      });
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        return { ...fallback, reason: `content_fetch_http_${response.status}` };
+      }
+
+      const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+      if (
+        contentType.includes("pdf") ||
+        contentType.includes("zip") ||
+        contentType.includes("octet-stream")
+      ) {
+        return { ...fallback, reason: "unsupported_content_type" };
+      }
+
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength > MAX_FILING_BYTES) {
+        return { ...fallback, reason: "content_too_large" };
+      }
+
+      const rawText = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
+      const normalizedText = stripHtml(rawText).toLowerCase();
+      if (!normalizedText || normalizedText.length < 60) {
+        return { ...fallback, reason: "content_unparseable" };
+      }
+
+      const riskSnippet = this.extractSnippet(normalizedText, [
+        "risk factor",
+        "material weakness",
+        "uncertainty",
+      ]);
+      const guidanceSnippet = this.extractSnippet(normalizedText, [
+        "guidance",
+        "outlook",
+        "forecast",
+      ]);
+      const liquiditySnippet = this.extractSnippet(normalizedText, [
+        "liquidity",
+        "cash flow",
+        "working capital",
+      ]);
+      const regulatorySnippet = this.extractSnippet(normalizedText, [
+        "investigation",
+        "litigation",
+        "regulatory",
+        "compliance",
+      ]);
+
+      const facts = [
+        {
+          name: "mentions_risk_factor_change",
+          value: String(/risk factor|material weakness|uncertainty/.test(normalizedText)),
+        },
+        {
+          name: "mentions_guidance_update",
+          value: String(/guidance|outlook|forecast/.test(normalizedText)),
+        },
+        {
+          name: "mentions_margin_pressure",
+          value: String(/margin pressure|gross margin decline|operating margin decline/.test(normalizedText)),
+        },
+        {
+          name: "mentions_demand_strength",
+          value: String(/strong demand|demand remained strong|record demand/.test(normalizedText)),
+        },
+        {
+          name: "mentions_regulatory_action",
+          value: String(/investigation|litigation|regulatory action|subpoena/.test(normalizedText)),
+        },
+        {
+          name: "content_extraction_status",
+          value: "parsed",
+        },
+      ];
+
+      const sections = [
+        { name: "risk_factor_signals", text: riskSnippet },
+        { name: "guidance_signals", text: guidanceSnippet },
+        { name: "liquidity_signals", text: liquiditySnippet },
+        { name: "legal_regulatory_signals", text: regulatorySnippet },
+      ].filter((section) => section.text.length > 0);
+
+      return {
+        sections,
+        facts,
+        status: "parsed",
+      };
+    } catch {
+      return { ...fallback, reason: `${filingType.toLowerCase()}_content_parse_error` };
+    }
+  }
+
+  /**
+   * Extracts a bounded context snippet around the earliest keyword hit to keep filing evidence concise and deterministic.
+   */
+  private extractSnippet(text: string, keywords: string[]): string {
+    const hitIndex = keywords
+      .map((keyword) => text.indexOf(keyword))
+      .filter((index) => index >= 0)
+      .sort((left, right) => left - right)[0];
+
+    if (typeof hitIndex !== "number") {
+      return "";
+    }
+
+    const start = Math.max(0, hitIndex - 120);
+    const end = Math.min(text.length, hitIndex + FILING_TEXT_SNIPPET_LIMIT);
+    return text.slice(start, end).trim();
   }
 
   /**

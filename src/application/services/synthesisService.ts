@@ -34,6 +34,7 @@ type RelevanceSelection = {
 };
 
 type ThesisDecision = "buy" | "watch" | "avoid";
+type RelevanceMode = "high_precision" | "balanced";
 
 /**
  * Consolidates evidence into a durable snapshot so decision outputs remain traceable to stored sources.
@@ -42,6 +43,8 @@ export class SynthesisService {
   private readonly memoryTopK = 6;
   private readonly memoryWindowDays = 90;
   private readonly memoryMinSimilarity = 0.72;
+  private readonly relevanceMode: RelevanceMode;
+  private readonly minRelevanceScore: number;
 
   constructor(
     private readonly documentRepo: DocumentRepositoryPort,
@@ -53,7 +56,11 @@ export class SynthesisService {
     private readonly llm: LlmPort,
     private readonly clock: ClockPort,
     private readonly ids: IdGeneratorPort,
-  ) {}
+    options?: { relevanceMode?: RelevanceMode; minRelevanceScore?: number },
+  ) {
+    this.relevanceMode = options?.relevanceMode ?? "high_precision";
+    this.minRelevanceScore = options?.minRelevanceScore ?? 7;
+  }
 
   /**
    * Treats mock providers as fallback-only evidence so historical mock rows don't pollute real runs.
@@ -463,18 +470,22 @@ export class SynthesisService {
     const payloadHints = this.extractPayloadTickerHints(doc.rawPayload);
 
     let score = 0;
+    let issuerMentioned = false;
 
     issuerTokens.forEach((token) => {
       if (title.includes(token)) {
         score += 4;
+        issuerMentioned = true;
       }
 
       if (summary.includes(token) || content.includes(token)) {
         score += 2;
+        issuerMentioned = true;
       }
 
       if (payloadHints.includes(token)) {
         score += 3;
+        issuerMentioned = true;
       }
     });
 
@@ -488,6 +499,12 @@ export class SynthesisService {
       "europe off",
       "etf",
       "net worth",
+      "best stocks",
+      "top stocks",
+      "to watch",
+      "market wrap",
+      "broad market",
+      "daily movers",
     ];
 
     noisyHeadlineTerms.forEach((term) => {
@@ -500,7 +517,14 @@ export class SynthesisService {
       score -= 1;
     }
 
-    const isRelevant = score >= 5;
+    if (this.relevanceMode === "high_precision" && !issuerMentioned) {
+      score -= 8;
+    }
+
+    const minScore = this.relevanceMode === "high_precision" ? this.minRelevanceScore : 5;
+    const isRelevant =
+      score >= minScore &&
+      (this.relevanceMode !== "high_precision" || issuerMentioned);
     return { doc, score, isRelevant };
   }
 
@@ -534,7 +558,11 @@ export class SynthesisService {
 
     const relevant = ranked.filter((item) => item.isRelevant);
     const selectedRanked =
-      relevant.length > 0 ? relevant.slice(0, 10) : ranked.slice(0, 5);
+      relevant.length > 0
+        ? relevant.slice(0, 10)
+        : this.relevanceMode === "high_precision"
+          ? ranked.slice(0, 3)
+          : ranked.slice(0, 5);
     const selectedRelevantCount = selectedRanked.filter(
       (item) => item.isRelevant,
     ).length;
@@ -1276,6 +1304,33 @@ export class SynthesisService {
   }
 
   /**
+   * Renders compact extracted-fact highlights so filing evidence contributes concrete signals instead of metadata-only labels.
+   */
+  private formatFilingFactHighlights(filing: FilingEntity): string {
+    const priorityFacts = [
+      "mentions_risk_factor_change",
+      "mentions_guidance_update",
+      "mentions_margin_pressure",
+      "mentions_demand_strength",
+      "mentions_regulatory_action",
+      "content_extraction_status",
+    ];
+
+    const highlighted = filing.extractedFacts
+      .filter(
+        (fact) =>
+          priorityFacts.includes(fact.name) &&
+          (fact.value === "true" ||
+            fact.value === "false" ||
+            fact.name === "content_extraction_status"),
+      )
+      .slice(0, 4)
+      .map((fact) => `${fact.name}=${fact.value}`);
+
+    return highlighted.length > 0 ? ` | facts: ${highlighted.join(", ")}` : "";
+  }
+
+  /**
    * Materializes the latest thesis snapshot to provide a stable read model for downstream consumers.
    */
   async run(payload: JobPayload): Promise<void> {
@@ -1313,7 +1368,7 @@ export class SynthesisService {
       .slice(0, 6)
       .map(
         (filing, index) =>
-          `- F${index + 1} ${filing.provider}: ${filing.filingType} filed ${filing.filedAt.toISOString().slice(0, 10)}${filing.accessionNo ? ` accession ${filing.accessionNo}` : ""}${filing.docUrl ? ` (${filing.docUrl})` : ""}`,
+          `- F${index + 1} ${filing.provider}: ${filing.filingType} filed ${filing.filedAt.toISOString().slice(0, 10)}${filing.accessionNo ? ` accession ${filing.accessionNo}` : ""}${filing.docUrl ? ` (${filing.docUrl})` : ""}${this.formatFilingFactHighlights(filing)}`,
       )
       .join("\n");
 

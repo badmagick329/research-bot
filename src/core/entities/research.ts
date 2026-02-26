@@ -49,7 +49,7 @@ export type SnapshotProviderFailureStatus =
   | "invalid_json";
 
 export type SnapshotProviderFailureDiagnostics = {
-  source: "news" | "metrics" | "filings";
+  source: "news" | "metrics" | "filings" | "market-context";
   provider: string;
   status: SnapshotProviderFailureStatus;
   itemCount: number;

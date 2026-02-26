@@ -7,7 +7,41 @@ import type { AppBoundaryError } from "../../core/entities/appError";
 import { err, ok, type Result } from "neverthrow";
 import { logger } from "../../shared/logger/logger";
 
-const normalizeUrl = (value: string): string => value.trim().toLowerCase();
+const trackingParamPrefixes = ["utm_", "fbclid", "gclid", "mc_cid", "mc_eid"];
+
+const normalizeUrl = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    const normalizedPath =
+      parsed.pathname.length > 1 && parsed.pathname.endsWith("/")
+        ? parsed.pathname.slice(0, -1)
+        : parsed.pathname;
+    const params = new URLSearchParams(parsed.search);
+    Array.from(params.keys()).forEach((key) => {
+      const normalizedKey = key.toLowerCase();
+      if (trackingParamPrefixes.some((prefix) => normalizedKey.startsWith(prefix))) {
+        params.delete(key);
+      }
+    });
+
+    const query = params.toString();
+    return `${parsed.protocol}//${parsed.host.toLowerCase()}${normalizedPath.toLowerCase()}${query ? `?${query}` : ""}`;
+  } catch {
+    return trimmed.toLowerCase();
+  }
+};
+
+const normalizeTitle = (title: string): string =>
+  title
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ");
 
 /**
  * Aggregates multiple provider adapters so ingestion can keep breadth and remain available during single-vendor outages.
@@ -63,6 +97,7 @@ export class MultiNewsProvider implements NewsProviderPort {
     }
 
     const dedupedByUrl = new Map<string, NormalizedNewsItem>();
+    const dedupedByTitle = new Map<string, NormalizedNewsItem>();
     const withoutUrl: NormalizedNewsItem[] = [];
 
     merged.forEach((item) => {
@@ -81,8 +116,20 @@ export class MultiNewsProvider implements NewsProviderPort {
       }
     });
 
+    dedupedByUrl.forEach((item) => {
+      const titleKey = normalizeTitle(item.title);
+      if (!titleKey) {
+        return;
+      }
+
+      const existing = dedupedByTitle.get(titleKey);
+      if (!existing || item.publishedAt.getTime() > existing.publishedAt.getTime()) {
+        dedupedByTitle.set(titleKey, item);
+      }
+    });
+
     return ok(
-      [...dedupedByUrl.values(), ...withoutUrl]
+      [...dedupedByTitle.values(), ...withoutUrl]
         .sort(
           (left, right) =>
             right.publishedAt.getTime() - left.publishedAt.getTime(),

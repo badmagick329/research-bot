@@ -6,6 +6,7 @@ const supportedNewsProviders = ["mock", "finnhub", "alphavantage"] as const;
 const supportedMetricsProviders = ["mock", "alphavantage"] as const;
 const supportedFilingsProviders = ["mock", "sec-edgar"] as const;
 const supportedLlmProviders = ["ollama", "openai"] as const;
+const supportedNewsRelevanceModes = ["high_precision", "balanced"] as const;
 
 export type NewsProviderName = (typeof supportedNewsProviders)[number];
 export type MetricsProviderName = (typeof supportedMetricsProviders)[number];
@@ -67,6 +68,8 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().default(""),
   OPENAI_CHAT_MODEL: z.string().default("gpt-4.1"),
   OPENAI_CHAT_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  NEWS_RELEVANCE_MODE: z.enum(supportedNewsRelevanceModes).default("high_precision"),
+  NEWS_MIN_RELEVANCE_SCORE: z.coerce.number().int().min(1).default(7),
   QUEUE_CONCURRENCY_INGEST: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_NORMALIZE: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_EMBED: z.coerce.number().int().positive().default(2),
@@ -166,3 +169,9 @@ export const filingsProvider = (): FilingsProviderName => env.FILINGS_PROVIDER;
  * Resolves the configured LLM adapter so runtime wiring can switch providers without use-case changes.
  */
 export const llmProvider = (): LlmProviderName => env.LLM_PROVIDER;
+
+/**
+ * Resolves relevance policy mode so synthesis can choose precision/recall behavior deterministically.
+ */
+export const newsRelevanceMode = (): "high_precision" | "balanced" =>
+  env.NEWS_RELEVANCE_MODE;

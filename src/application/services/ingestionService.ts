@@ -12,6 +12,8 @@ import type {
 } from "../../core/ports/outboundPorts";
 import type {
   MetricsFetchResult,
+  MarketContextFetchResult,
+  MarketContextProviderPort,
   NewsProviderPort,
   MarketMetricsProviderPort,
   FilingsProviderPort,
@@ -22,6 +24,26 @@ import type {
   SnapshotProviderFailureDiagnostics,
   SnapshotProviderFailureStatus,
 } from "../../core/entities/research";
+import { ok } from "neverthrow";
+
+const noopMarketContextProvider: MarketContextProviderPort = {
+  fetchMarketContext: async (request) =>
+    ok({
+      peerRelativeValuation: [],
+      earningsGuidance: [],
+      analystTrend: [],
+      diagnostics: {
+        provider: "market-context-disabled",
+        symbol: request.symbol,
+        status: "empty",
+        itemCounts: {
+          peerRelativeValuation: 0,
+          earningsGuidance: 0,
+          analystTrend: 0,
+        },
+      },
+    }),
+};
 
 /**
  * Keeps provider IO at the pipeline edge so downstream stages always consume normalized persisted records.
@@ -39,6 +61,7 @@ export class IngestionService {
     private readonly ids: IdGeneratorPort,
     private readonly newsLookbackDays: number,
     private readonly filingsLookbackDays: number,
+    private readonly marketContextProvider: MarketContextProviderPort = noopMarketContextProvider,
   ) {}
 
   /**
@@ -61,7 +84,7 @@ export class IngestionService {
    * Converts boundary provider failures into snapshot diagnostics so degraded runs remain explicit downstream.
    */
   private toProviderFailure(
-    source: "news" | "metrics" | "filings",
+    source: "news" | "metrics" | "filings" | "market-context",
     error: AppBoundaryError,
   ): SnapshotProviderFailureDiagnostics {
     return {
@@ -117,7 +140,8 @@ export class IngestionService {
       now.getTime() - this.filingsLookbackDays * 24 * 60 * 60 * 1000,
     );
 
-    const [newsResult, metricsResult, filingsResult] = await Promise.all([
+    const [newsResult, metricsResult, filingsResult, marketContextResult] =
+      await Promise.all([
       this.newsProvider.fetchArticles({
         symbol: payload.symbol,
         from: newsFrom,
@@ -130,6 +154,10 @@ export class IngestionService {
         from: filingsFrom,
         to: now,
         limit: 10,
+      }),
+      this.marketContextProvider.fetchMarketContext({
+        symbol: payload.symbol,
+        asOf: now,
       }),
     ]);
 
@@ -207,6 +235,14 @@ export class IngestionService {
       );
     }
 
+    const marketContextPayload: MarketContextFetchResult | null =
+      marketContextResult.isOk() ? marketContextResult.value : null;
+    if (marketContextResult.isErr()) {
+      providerFailures.push(
+        this.toProviderFailure("market-context", marketContextResult.error),
+      );
+    }
+
     const documents: DocumentEntity[] = news.map((item) => ({
       id: this.ids.next(),
       runId: payload.runId,
@@ -246,6 +282,29 @@ export class IngestionService {
       createdAt: now,
     }));
 
+    const marketContextMetrics: MetricPointEntity[] = [
+      ...(marketContextPayload?.peerRelativeValuation ?? []),
+      ...(marketContextPayload?.earningsGuidance ?? []),
+      ...(marketContextPayload?.analystTrend ?? []),
+    ].map((item) => ({
+      id: this.ids.next(),
+      runId: payload.runId,
+      taskId: payload.taskId,
+      symbol: payload.symbol,
+      provider: marketContextPayload?.diagnostics.provider ?? "finnhub-market-context",
+      metricName: item.metricName,
+      metricValue: item.metricValue,
+      metricUnit: item.metricUnit,
+      currency: "USD",
+      asOf: item.asOf,
+      periodType: "point_in_time" as const,
+      periodStart: undefined,
+      periodEnd: undefined,
+      confidence: item.confidence,
+      rawPayload: item.rawPayload,
+      createdAt: now,
+    }));
+
     const filingEntities: FilingEntity[] = filings.map((item) => ({
       id: this.ids.next(),
       runId: payload.runId,
@@ -269,9 +328,31 @@ export class IngestionService {
       createdAt: now,
     }));
 
+    const marketContextDocuments: DocumentEntity[] = (
+      marketContextPayload?.earningsGuidance ?? []
+    ).map((item, index) => ({
+      id: this.ids.next(),
+      runId: payload.runId,
+      taskId: payload.taskId,
+      symbol: payload.symbol,
+      provider: marketContextPayload?.diagnostics.provider ?? "finnhub-market-context",
+      providerItemId: `${payload.symbol}-${item.metricName}-${item.asOf.toISOString()}-${index}`,
+      type: "analysis",
+      title: `Market context ${item.metricName}`,
+      summary: `${item.metricName}=${item.metricValue.toFixed(4)}`,
+      content: `${item.metricName}=${item.metricValue.toFixed(4)}${item.metricUnit ? ` ${item.metricUnit}` : ""}`,
+      url: "",
+      publishedAt: item.asOf,
+      language: "en",
+      topics: ["market-context", "earnings"],
+      sourceType: "api",
+      rawPayload: item.rawPayload,
+      createdAt: now,
+    }));
+
     await Promise.all([
-      this.documentRepo.upsertMany(documents),
-      this.metricsRepo.upsertMany(metricEntities),
+      this.documentRepo.upsertMany([...documents, ...marketContextDocuments]),
+      this.metricsRepo.upsertMany([...metricEntities, ...marketContextMetrics]),
       this.filingsRepo.upsertMany(filingEntities),
     ]);
 
