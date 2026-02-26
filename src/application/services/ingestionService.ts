@@ -32,6 +32,7 @@ const noopMarketContextProvider: MarketContextProviderPort = {
       peerRelativeValuation: [],
       earningsGuidance: [],
       analystTrend: [],
+      priceContext: [],
       diagnostics: {
         provider: "market-context-disabled",
         symbol: request.symbol,
@@ -40,6 +41,7 @@ const noopMarketContextProvider: MarketContextProviderPort = {
           peerRelativeValuation: 0,
           earningsGuidance: 0,
           analystTrend: 0,
+          priceContext: 0,
         },
       },
     }),
@@ -286,6 +288,7 @@ export class IngestionService {
       ...(marketContextPayload?.peerRelativeValuation ?? []),
       ...(marketContextPayload?.earningsGuidance ?? []),
       ...(marketContextPayload?.analystTrend ?? []),
+      ...(marketContextPayload?.priceContext ?? []),
     ].map((item) => ({
       id: this.ids.next(),
       runId: payload.runId,
@@ -328,9 +331,14 @@ export class IngestionService {
       createdAt: now,
     }));
 
-    const marketContextDocuments: DocumentEntity[] = (
-      marketContextPayload?.earningsGuidance ?? []
-    ).map((item, index) => ({
+    const marketContextSignals = [
+      ...(marketContextPayload?.peerRelativeValuation ?? []),
+      ...(marketContextPayload?.earningsGuidance ?? []),
+      ...(marketContextPayload?.analystTrend ?? []),
+      ...(marketContextPayload?.priceContext ?? []),
+    ];
+
+    const marketContextDocuments: DocumentEntity[] = marketContextSignals.map((item, index) => ({
       id: this.ids.next(),
       runId: payload.runId,
       taskId: payload.taskId,
@@ -344,7 +352,7 @@ export class IngestionService {
       url: "",
       publishedAt: item.asOf,
       language: "en",
-      topics: ["market-context", "earnings"],
+      topics: ["market-context", item.metricName],
       sourceType: "api",
       rawPayload: item.rawPayload,
       createdAt: now,

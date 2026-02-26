@@ -278,6 +278,11 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
           primaryDocument,
           extractionStatus: extraction.status,
           extractionReason: extraction.reason,
+          parseMode: extraction.status === "parsed" ? "content" : "metadata_only",
+          parseFailureReason:
+            extraction.status === "parsed"
+              ? null
+              : (extraction.reason ?? "unknown"),
         },
       });
     }
@@ -358,10 +363,19 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
           name: "content_extraction_status",
           value: "metadata_only",
         },
+        {
+          name: "parse_mode",
+          value: "metadata_only",
+        },
       ] as Array<{ name: string; value: string; unit?: string; period?: string }>,
       status: "metadata_only" as const,
       reason: undefined as string | undefined,
     };
+    const metadataFallback = (reason: string) => ({
+      ...fallback,
+      facts: [...fallback.facts, { name: "parse_failure_reason", value: reason }],
+      reason,
+    });
 
     try {
       await this.providerRateLimiter.waitForSlot("sec-edgar");
@@ -378,7 +392,7 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
       clearTimeout(timeout);
 
       if (!response.ok) {
-        return { ...fallback, reason: `content_fetch_http_${response.status}` };
+        return metadataFallback(`content_fetch_http_${response.status}`);
       }
 
       const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
@@ -387,24 +401,29 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
         contentType.includes("zip") ||
         contentType.includes("octet-stream")
       ) {
-        return { ...fallback, reason: "unsupported_content_type" };
+        return metadataFallback("unsupported_content_type");
       }
 
       const buffer = await response.arrayBuffer();
       if (buffer.byteLength > MAX_FILING_BYTES) {
-        return { ...fallback, reason: "content_too_large" };
+        return metadataFallback("content_too_large");
       }
 
       const rawText = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
       const normalizedText = stripHtml(rawText).toLowerCase();
       if (!normalizedText || normalizedText.length < 60) {
-        return { ...fallback, reason: "content_unparseable" };
+        return metadataFallback("content_unparseable");
       }
 
       const riskSnippet = this.extractSnippet(normalizedText, [
         "risk factor",
         "material weakness",
         "uncertainty",
+      ]);
+      const mdaSnippet = this.extractSnippet(normalizedText, [
+        "management's discussion",
+        "management discussion and analysis",
+        "results of operations",
       ]);
       const guidanceSnippet = this.extractSnippet(normalizedText, [
         "guidance",
@@ -421,6 +440,13 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
         "litigation",
         "regulatory",
         "compliance",
+      ]);
+      const capitalAllocationSnippet = this.extractSnippet(normalizedText, [
+        "share repurchase",
+        "buyback",
+        "capital allocation",
+        "dividend",
+        "capex",
       ]);
 
       const facts = [
@@ -445,15 +471,45 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
           value: String(/investigation|litigation|regulatory action|subpoena/.test(normalizedText)),
         },
         {
+          name: "mentions_capex_increase",
+          value: String(
+            /capex (?:increase|increased|up)|capital expenditures? (?:increase|increased|up)/.test(
+              normalizedText,
+            ),
+          ),
+        },
+        {
+          name: "mentions_buyback",
+          value: String(/share repurchase|buyback|repurchase program/.test(normalizedText)),
+        },
+        {
+          name: "mentions_supply_constraint",
+          value: String(/supply constraint|supply chain disruption|component shortage/.test(normalizedText)),
+        },
+        {
+          name: "contains_quantified_outlook",
+          value: String(
+            /(guidance|outlook|forecast)[^.!?]{0,80}\d+(\.\d+)?\s*(%|percent|million|billion)/.test(
+              normalizedText,
+            ),
+          ),
+        },
+        {
           name: "content_extraction_status",
           value: "parsed",
+        },
+        {
+          name: "parse_mode",
+          value: "content",
         },
       ];
 
       const sections = [
+        { name: "mda_signals", text: mdaSnippet },
         { name: "risk_factor_signals", text: riskSnippet },
         { name: "guidance_signals", text: guidanceSnippet },
         { name: "liquidity_signals", text: liquiditySnippet },
+        { name: "capital_allocation_signals", text: capitalAllocationSnippet },
         { name: "legal_regulatory_signals", text: regulatorySnippet },
       ].filter((section) => section.text.length > 0);
 
@@ -463,7 +519,7 @@ export class SecEdgarFilingsProvider implements FilingsProviderPort {
         status: "parsed",
       };
     } catch {
-      return { ...fallback, reason: `${filingType.toLowerCase()}_content_parse_error` };
+      return metadataFallback(`${filingType.toLowerCase()}_content_parse_error`);
     }
   }
 

@@ -6,6 +6,7 @@ import type {
   MarketContextFetchResult,
   MarketContextProviderPort,
   MarketContextRequest,
+  PriceContextSignal,
   PeerRelativeValuationSignal,
 } from "../../../core/ports/inboundPorts";
 import type { ProviderRateLimiterPort } from "../../../core/ports/outboundPorts";
@@ -38,6 +39,12 @@ type FinnhubEarningsCalendarPayload = {
     epsActual?: number;
     epsEstimate?: number;
   }>;
+};
+
+type FinnhubCandlesPayload = {
+  c?: number[];
+  t?: number[];
+  s?: string;
 };
 
 /**
@@ -78,9 +85,10 @@ export class FinnhubMarketContextProvider implements MarketContextProviderPort {
       return err(peerMetricSignals.error);
     }
 
-    const [earningsSignals, analystSignals] = await Promise.all([
+    const [earningsSignals, analystSignals, priceContextSignalsResult] = await Promise.all([
       this.buildEarningsSignals(symbol, asOf),
       this.buildAnalystSignals(symbol, asOf),
+      this.buildPriceContextSignals(symbol, asOf),
     ]);
 
     if (earningsSignals.isErr()) {
@@ -91,17 +99,29 @@ export class FinnhubMarketContextProvider implements MarketContextProviderPort {
       return err(analystSignals.error);
     }
 
+    // Treat price-context as optional enrichment because some Finnhub plans
+    // don't allow candle access for all symbols/endpoints.
+    const priceContextSignals = priceContextSignalsResult.isOk()
+      ? priceContextSignalsResult.value
+      : [];
+    const priceContextWarning =
+      priceContextSignalsResult.isErr()
+        ? `price_context_unavailable:${priceContextSignalsResult.error.code}${typeof priceContextSignalsResult.error.httpStatus === "number" ? `:${priceContextSignalsResult.error.httpStatus}` : ""}`
+        : undefined;
+
     const value: MarketContextFetchResult = {
       peerRelativeValuation: peerMetricSignals.value,
       earningsGuidance: earningsSignals.value,
       analystTrend: analystSignals.value,
+      priceContext: priceContextSignals,
       diagnostics: {
         provider: "finnhub-market-context",
         symbol,
         status:
           peerMetricSignals.value.length +
             earningsSignals.value.length +
-            analystSignals.value.length >
+            analystSignals.value.length +
+            priceContextSignals.length >
           0
             ? "ok"
             : "empty",
@@ -109,7 +129,9 @@ export class FinnhubMarketContextProvider implements MarketContextProviderPort {
           peerRelativeValuation: peerMetricSignals.value.length,
           earningsGuidance: earningsSignals.value.length,
           analystTrend: analystSignals.value.length,
+          priceContext: priceContextSignals.length,
         },
+        reason: priceContextWarning,
       },
     };
 
@@ -383,6 +405,85 @@ export class FinnhubMarketContextProvider implements MarketContextProviderPort {
   }
 
   /**
+   * Builds price-context signals from daily candles so synthesis can anchor actions to deterministic momentum and volatility regimes.
+   */
+  private async buildPriceContextSignals(
+    symbol: string,
+    asOf: Date,
+  ): Promise<Result<PriceContextSignal[], AppBoundaryError>> {
+    const to = Math.floor(asOf.getTime() / 1000);
+    const from = Math.floor(
+      new Date(asOf.getTime() - 220 * 24 * 60 * 60 * 1000).getTime() / 1000,
+    );
+    const url = new URL("/api/v1/stock/candle", this.baseUrl);
+    url.searchParams.set("symbol", symbol);
+    url.searchParams.set("resolution", "D");
+    url.searchParams.set("from", String(from));
+    url.searchParams.set("to", String(to));
+    url.searchParams.set("token", this.apiKey);
+
+    const payloadResult = await this.requestJson<FinnhubCandlesPayload>(
+      url.toString(),
+    );
+    if (payloadResult.isErr()) {
+      return err(payloadResult.error);
+    }
+
+    const closes = payloadResult.value.c ?? [];
+    const status = payloadResult.value.s ?? "";
+    if (status.toLowerCase() !== "ok" || !Array.isArray(closes) || closes.length < 30) {
+      return ok([]);
+    }
+
+    const numericCloses = closes.filter(
+      (value): value is number => typeof value === "number" && Number.isFinite(value),
+    );
+    if (numericCloses.length < 30) {
+      return ok([]);
+    }
+
+    const latestClose = numericCloses[numericCloses.length - 1];
+    const close3m = numericCloses[Math.max(0, numericCloses.length - 63)];
+    const close6m = numericCloses[Math.max(0, numericCloses.length - 126)];
+    const returns20d = this.computeDailyReturns(numericCloses.slice(-21));
+    const volatilityRegimeScore = this.computeVolatilityRegimeScore(returns20d);
+
+    const signals: PriceContextSignal[] = [];
+    if (typeof latestClose === "number" && typeof close3m === "number" && close3m !== 0) {
+      signals.push({
+        metricName: "price_return_3m",
+        metricValue: ((latestClose - close3m) / close3m) * 100,
+        metricUnit: "pct",
+        asOf,
+        confidence: 0.8,
+        rawPayload: { latestClose, close3m },
+      });
+    }
+
+    if (typeof latestClose === "number" && typeof close6m === "number" && close6m !== 0) {
+      signals.push({
+        metricName: "price_return_6m",
+        metricValue: ((latestClose - close6m) / close6m) * 100,
+        metricUnit: "pct",
+        asOf,
+        confidence: 0.78,
+        rawPayload: { latestClose, close6m },
+      });
+    }
+
+    signals.push({
+      metricName: "volatility_regime_score",
+      metricValue: volatilityRegimeScore,
+      metricUnit: "score_0_100",
+      asOf,
+      confidence: 0.75,
+      rawPayload: { returns20dCount: returns20d.length },
+    });
+
+    return ok(signals);
+  }
+
+  /**
    * Fetches one symbol metric payload from Finnhub `/stock/metric` and maps transport faults to boundary errors.
    */
   private async fetchBasicMetricPayload(
@@ -468,6 +569,38 @@ export class FinnhubMarketContextProvider implements MarketContextProviderPort {
     return (lessOrEqual / peers.length) * 100;
   }
 
+  private computeDailyReturns(closes: number[]): number[] {
+    const returns: number[] = [];
+    for (let i = 1; i < closes.length; i += 1) {
+      const previous = closes[i - 1];
+      const current = closes[i];
+      if (
+        typeof previous === "number" &&
+        typeof current === "number" &&
+        Number.isFinite(previous) &&
+        Number.isFinite(current) &&
+        previous !== 0
+      ) {
+        returns.push((current - previous) / previous);
+      }
+    }
+    return returns;
+  }
+
+  private computeVolatilityRegimeScore(returns: number[]): number {
+    if (returns.length === 0) {
+      return 0;
+    }
+
+    const mean =
+      returns.reduce((sum, value) => sum + value, 0) / returns.length;
+    const variance =
+      returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+      returns.length;
+    const dailyVolPct = Math.sqrt(Math.max(variance, 0)) * 100;
+    return Math.max(0, Math.min(100, Number((dailyVolPct * 8).toFixed(2))));
+  }
+
   private mapHttpCode(
     httpStatus: number | undefined,
     message: string,
@@ -500,4 +633,3 @@ export class FinnhubMarketContextProvider implements MarketContextProviderPort {
     return "provider_error";
   }
 }
-

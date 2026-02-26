@@ -94,7 +94,10 @@ export type MarketContextMetricName =
   | "earnings_event_days_to_next"
   | "analyst_buy_ratio"
   | "analyst_buy_ratio_delta_30d"
-  | "analyst_consensus_score";
+  | "analyst_consensus_score"
+  | "price_return_3m"
+  | "price_return_6m"
+  | "volatility_regime_score";
 
 type MarketContextSignalBase = {
   metricName: MarketContextMetricName;
@@ -123,6 +126,10 @@ export type AnalystTrendSignal = MarketContextSignalBase & {
     | "analyst_consensus_score";
 };
 
+export type PriceContextSignal = MarketContextSignalBase & {
+  metricName: "price_return_3m" | "price_return_6m" | "volatility_regime_score";
+};
+
 export type MarketContextFetchDiagnostics = {
   provider: string;
   symbol: string;
@@ -141,6 +148,7 @@ export type MarketContextFetchDiagnostics = {
     peerRelativeValuation: number;
     earningsGuidance: number;
     analystTrend: number;
+    priceContext: number;
   };
   reason?: string;
   httpStatus?: number;
@@ -150,6 +158,7 @@ export type MarketContextFetchResult = {
   peerRelativeValuation: PeerRelativeValuationSignal[];
   earningsGuidance: EarningsGuidanceSignal[];
   analystTrend: AnalystTrendSignal[];
+  priceContext: PriceContextSignal[];
   diagnostics: MarketContextFetchDiagnostics;
 };
 

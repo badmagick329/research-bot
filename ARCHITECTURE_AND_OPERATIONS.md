@@ -1,87 +1,103 @@
 # Research Bot: Architecture and Operations
 
 ## Purpose
-Operator and developer reference for current runtime behavior.
+Reference for current runtime behavior, pipeline decisions, and operational controls.
 
-## Runtime
-- Host processes: Bun CLI, Bun API, Bun workers.
-- Web UI: Vite app in `apps/web`.
-- Infra: Postgres + Redis.
+## System Shape
 - Architecture: clean boundaries (`core` -> `application` -> `infra`).
+- Runtime: Bun API, Bun worker(s), Bun CLI, Vite web app.
+- Infra: Postgres (state) + Redis (queue + provider pacing).
 
 ## Pipeline
 - Stages: `ingest -> normalize -> embed -> synthesize`.
-- Run-scoped payload carries `runId`, `taskId`, `symbol`, diagnostics context.
-- Company identity is resolved before ingestion and propagated downstream.
+- Runs are scoped by `runId`/`taskId`; identity is resolved once up front and propagated.
+- Each stage is retryable; degraded stages persist diagnostics instead of silently failing.
 
-## Evidence Ingestion
-- Ingestion persists: news, metrics, filings, market-context enrichments.
-- Market-context enrichments include peer-relative valuation, earnings timing/surprise, analyst trend.
-- SEC filings use bounded content parsing and deterministic extracted facts; metadata-only fallback is allowed.
-- Ingestion hard-fails on Alpha Vantage `rate_limited`.
-- Market-context failures are non-fatal and captured as provider failures.
+## Ingestion Model
+- Persisted evidence: news (`documents`), metrics (`metrics`), filings (`filings`), market-context analysis docs (`documents` type=`analysis`).
+- Alpha Vantage hard-fail rule: ingestion aborts on `rate_limited`.
+- Other provider failures are non-fatal when at least one source succeeds; failures are recorded in snapshot diagnostics.
 
-## Thesis Model (Current)
-- `snapshot` is read-only and never triggers pipeline execution.
-- `refresh-thesis` enqueues `synthesize` only; no provider repull.
-- Thesis markdown is persisted in snapshot.
-- Evidence Map is deterministic and code-owned (`N#`, `M#`, `F#`, `R#`).
-- News evidence is issuer-gated before relevance scoring:
-  - include only if issuer identity matches ticker/company/alias/payload symbols.
-  - unmatched headlines are excluded from synthesis/evidence map.
-- Action Summary has deterministic overlays:
-  - decision seed from policy context (`Buy|Watch|Avoid`)
-  - If/Then trigger set from deterministic action matrix (threshold/action/citations)
-- Validation rejects generic non-actionable trigger language and weak trigger structure.
+## Market Context (Finnhub)
+- Deterministic metric enrichment:
+  - peer-relative: `peer_pe_percentile`, `peer_pe_premium_pct`, `peer_rev_growth_percentile`
+  - earnings/events: `earnings_surprise_pct_last`, `earnings_event_days_to_next`
+  - analyst trend: `analyst_buy_ratio`, `analyst_buy_ratio_delta_30d`, `analyst_consensus_score`
+  - price context: `price_return_3m`, `price_return_6m`, `volatility_regime_score`
+- Price-context (candle endpoint) is optional enrichment:
+  - if unavailable due to plan/endpoint restrictions, market-context still returns `ok`
+  - missing price-context is captured as diagnostics reason; other market-context signals continue
 
-## Diagnostics in Snapshot
-- `metricsDiagnostics`
-- `providerFailures` (sources: `news`, `metrics`, `filings`, `market-context`)
+## Filings Model (SEC EDGAR)
+- Filings are fetched with bounded parsing guards (timeout, bytes, type checks).
+- Deterministic sections:
+  - `mda_signals`, `risk_factor_signals`, `guidance_signals`, `liquidity_signals`, `capital_allocation_signals`, `legal_regulatory_signals`
+- Deterministic fact flags include:
+  - `mentions_guidance_update`, `mentions_demand_strength`, `mentions_margin_pressure`
+  - `mentions_capex_increase`, `mentions_buyback`, `mentions_supply_constraint`
+  - `mentions_regulatory_action`, `contains_quantified_outlook`
+- Parse diagnostics are stored (`parse_mode`, `parse_failure_reason`); metadata-only fallback is non-fatal.
+
+## Thesis Generation (V3)
+- `snapshot` is read-only.
+- `refresh-thesis` re-runs `synthesize` only (no re-ingestion).
+- Evidence Map is deterministic/code-owned (`N#`, `M#`, `F#`, `R#`).
+- News filtering is issuer-gated before relevance scoring:
+  - match sources: title, summary, content, payload symbols, alias/company patterns
+  - unmatched or low-quality items are excluded from synthesis + Evidence Map
+  - exclusion reasons are tracked (`no_issuer_identity_match`, `below_relevance_threshold`, `duplicate_title`, `duplicate_url`)
+- Action Summary is partially deterministic:
+  - decision seed from code policy (`Buy|Watch|Avoid`)
+  - trigger rows from deterministic action matrix (threshold + action + citations)
+- Validation is strict on actionability:
+  - rejects generic trigger language and weak/uncited triggers
+  - requires threshold/action semantics in If/Then triggers
+- Quality control:
+  - thesis quality is scored deterministically
+  - one repair attempt is allowed
+  - if still below floor, deterministic fallback thesis is persisted
+
+## Snapshot Diagnostics
+- `metrics`
+- `providerFailures` (`news|metrics|filings|market-context`)
 - `stageIssues`
 - `identity`
-- `newsQuality` (`total`, `issuerMatched`, `excluded`, `mode`)
-- `decisionReasons` (policy reason tags)
+- `newsQuality`:
+  - `total`, `issuerMatched`, `excluded`, `mode`, `excludedReasonsSample`
+- `decisionReasons`
+- `thesisQuality`:
+  - `score`, `failedChecks`, `fallbackApplied`
 
-## LLM + Embeddings
-- Chat/synthesis provider: `LLM_PROVIDER` (`ollama` or `openai`).
-- Embeddings remain Ollama-based.
-- Cross-run memory retrieval is symbol-scoped and excludes current run.
-- `R#` citations are supporting context; current-run evidence remains primary.
+## LLM and Memory
+- Synthesis provider: `OLLAMA` or `OPENAI`.
+- Embeddings: Ollama embedding model.
+- Cross-run semantic memory is symbol-scoped, current-run excluded, and cited as `R#`.
+- Current-run evidence (`N/M/F`) remains primary for directional decisions.
 
-## Retry, Idempotency, Pacing
-- HTTP retries: 2 retries (3 attempts total).
-- BullMQ retries: 2 retries (3 attempts total), exponential backoff.
-- Redis-backed provider pacing defaults:
+## Queue, Retries, Rate Limits
+- HTTP retries: 2 retries (3 total attempts).
+- BullMQ retries: 2 retries (3 total attempts), exponential backoff.
+- Default provider pacing:
   - Alpha Vantage: 1 req/sec
   - Finnhub: 1 req/sec
   - SEC EDGAR: 1 req/sec
-- Queue idempotency key: `${symbol}-${stage}-${hour}`.
+- Stage idempotency key: `${symbol}-${stage}-${hour}`.
 - `enqueue --force` bypasses hourly dedupe.
 
-## API/Web Behavior
-- Web routing:
-  - if `VITE_API_BASE_URL` set -> direct calls.
-  - else -> relative `/api` via Vite proxy.
+## API and Web
+- Web API routing:
+  - `VITE_API_BASE_URL` set -> direct
+  - unset -> `/api` via Vite proxy
 - Thesis refresh endpoint:
   - `POST /api/snapshots/:symbol/refresh-thesis`
-  - optional body `{ "runId": "..." }`
+  - optional body: `{ "runId": "<id>" }`
 
 ## Key Entrypoints
-- Runtime composition: `src/application/bootstrap/runtimeFactory.ts`
-- CLI: `src/cli/main.ts`
-- API: `src/api/main.ts`
-- Workers: `src/workers/main.ts`
+- Runtime wiring: `src/application/bootstrap/runtimeFactory.ts`
+- Ingestion: `src/application/services/ingestionService.ts`
 - Synthesis: `src/application/services/synthesisService.ts`
-
-## Setup + Run
-1. `if (!(Test-Path .env)) { Copy-Item .env.example .env }`
-2. `bun install`
-3. `docker compose up -d postgres redis`
-4. `bun run db:migrate`
-5. Start services:
-   - `bun run api`
-   - `bun run worker`
-   - `bun run web:dev`
+- Filings provider: `src/infra/providers/sec/secEdgarFilingsProvider.ts`
+- Market-context provider: `src/infra/providers/finnhub/finnhubMarketContextProvider.ts`
 
 ## Core Commands
 - `bun run enqueue --symbol AAPL`
@@ -92,29 +108,13 @@ Operator and developer reference for current runtime behavior.
 - `bun run status`
 
 ## Important Env Knobs
-- `NEWS_RELEVANCE_MODE=high_precision|balanced` (default: `high_precision`)
-- `NEWS_MIN_RELEVANCE_SCORE` (default: `7`)
-- `NEWS_ISSUER_MATCH_MIN_FIELDS` (default: `1`)
-- `THESIS_TRIGGER_MIN_NUMERIC` (default: `3`)
-
-## Troubleshooting
-- No snapshot updates:
-  - confirm API + worker are running.
-  - check worker logs for stage failures.
-  - rerun with `enqueue --force` if idempotency reused stale run.
-- Thesis refresh expected but unchanged:
-  - verify new snapshot `createdAt` is newer than prior snapshot.
-  - use run monitor for synthesize stage completion.
-- Web `/api/*` errors:
-  - align `API_PORT`, `VITE_API_PROXY_TARGET`, `VITE_API_BASE_URL`.
-
-## Migrations
-- Workflow:
-  1. edit `src/infra/db/schema.ts`
-  2. `bunx drizzle-kit generate`
-  3. review SQL under `drizzle/`
-  4. `bun run db:migrate`
-- Use versioned migrations (`migrate`), not `push` (except throwaway local prototyping).
+- `NEWS_RELEVANCE_MODE=high_precision|balanced`
+- `NEWS_MIN_RELEVANCE_SCORE=7`
+- `NEWS_ISSUER_MATCH_MIN_FIELDS=1`
+- `THESIS_TRIGGER_MIN_NUMERIC=3`
+- `THESIS_GENERIC_PHRASE_MAX=0`
+- `THESIS_MIN_CITATION_COVERAGE_PCT=80`
+- `THESIS_QUALITY_MIN_SCORE=75`
 
 ## Current Limits
 - Polling UI only (no SSE/WebSocket).

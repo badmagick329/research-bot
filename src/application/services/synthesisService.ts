@@ -34,15 +34,28 @@ type RelevanceSelection = {
   totalHeadlinesCount: number;
   issuerMatchedHeadlinesCount: number;
   excludedHeadlinesCount: number;
-  excludedHeadlineReasons: string[];
+  excludedHeadlineReasons: ExcludedHeadlineReason[];
+  excludedHeadlineReasonSamples: string[];
 };
 
 type ThesisDecision = "buy" | "watch" | "avoid";
 type RelevanceMode = "high_precision" | "balanced";
 type IssuerIdentityPatterns = {
+  symbolExactTokens: Set<string>;
+  symbolPhraseTokens: Set<string>;
+  aliasExactTokens: Set<string>;
+  aliasPhraseTokens: Set<string>;
+  companyExactTokens: Set<string>;
+  companyPhraseTokens: Set<string>;
   exactTokens: Set<string>;
   phraseTokens: Set<string>;
 };
+type IssuerMatchField = "title" | "summary" | "content" | "payload" | "alias" | "company";
+type ExcludedHeadlineReason =
+  | "no_issuer_identity_match"
+  | "below_relevance_threshold"
+  | "duplicate_title"
+  | "duplicate_url";
 type ActionMatrixRow = {
   signalId: string;
   label: string;
@@ -60,6 +73,10 @@ type DecisionContext = {
   filingRiskFlag: boolean;
   analystSupport: boolean;
 };
+type ThesisQualityScore = {
+  score: number;
+  failedChecks: string[];
+};
 
 /**
  * Consolidates evidence into a durable snapshot so decision outputs remain traceable to stored sources.
@@ -72,6 +89,9 @@ export class SynthesisService {
   private readonly minRelevanceScore: number;
   private readonly issuerMatchMinFields: number;
   private readonly thesisTriggerMinNumeric: number;
+  private readonly thesisGenericPhraseMax: number;
+  private readonly thesisMinCitationCoveragePct: number;
+  private readonly thesisQualityMinScore: number;
 
   constructor(
     private readonly documentRepo: DocumentRepositoryPort,
@@ -88,12 +108,18 @@ export class SynthesisService {
       minRelevanceScore?: number;
       issuerMatchMinFields?: number;
       thesisTriggerMinNumeric?: number;
+      thesisGenericPhraseMax?: number;
+      thesisMinCitationCoveragePct?: number;
+      thesisQualityMinScore?: number;
     },
   ) {
     this.relevanceMode = options?.relevanceMode ?? "high_precision";
     this.minRelevanceScore = options?.minRelevanceScore ?? 7;
     this.issuerMatchMinFields = options?.issuerMatchMinFields ?? 1;
     this.thesisTriggerMinNumeric = options?.thesisTriggerMinNumeric ?? 3;
+    this.thesisGenericPhraseMax = options?.thesisGenericPhraseMax ?? 0;
+    this.thesisMinCitationCoveragePct = options?.thesisMinCitationCoveragePct ?? 80;
+    this.thesisQualityMinScore = options?.thesisQualityMinScore ?? 75;
   }
 
   /**
@@ -478,10 +504,20 @@ export class SynthesisService {
     symbol: string,
     identity: ResolvedCompanyIdentity | undefined,
   ): IssuerIdentityPatterns {
+    const symbolExactTokens = new Set<string>();
+    const symbolPhraseTokens = new Set<string>();
+    const aliasExactTokens = new Set<string>();
+    const aliasPhraseTokens = new Set<string>();
+    const companyExactTokens = new Set<string>();
+    const companyPhraseTokens = new Set<string>();
     const exactTokens = new Set<string>();
     const phraseTokens = new Set<string>();
 
-    const addToken = (raw: string) => {
+    const addToken = (
+      raw: string,
+      exactBucket: Set<string>,
+      phraseBucket: Set<string>,
+    ) => {
       const normalized = raw.trim().toLowerCase();
       if (!normalized) {
         return;
@@ -502,21 +538,42 @@ export class SynthesisService {
         }
         if (/^[a-z0-9]{2,5}$/.test(candidate)) {
           exactTokens.add(candidate);
+          exactBucket.add(candidate);
         } else {
           phraseTokens.add(candidate);
+          phraseBucket.add(candidate);
         }
       });
     };
 
-    addToken(symbol);
+    addToken(symbol, symbolExactTokens, symbolPhraseTokens);
     if (identity) {
-      addToken(identity.canonicalSymbol);
-      addToken(identity.requestedSymbol);
-      identity.aliases.forEach(addToken);
-      addToken(identity.companyName);
+      addToken(
+        identity.canonicalSymbol,
+        symbolExactTokens,
+        symbolPhraseTokens,
+      );
+      addToken(
+        identity.requestedSymbol,
+        symbolExactTokens,
+        symbolPhraseTokens,
+      );
+      identity.aliases.forEach((alias) =>
+        addToken(alias, aliasExactTokens, aliasPhraseTokens),
+      );
+      addToken(identity.companyName, companyExactTokens, companyPhraseTokens);
     }
 
-    return { exactTokens, phraseTokens };
+    return {
+      symbolExactTokens,
+      symbolPhraseTokens,
+      aliasExactTokens,
+      aliasPhraseTokens,
+      companyExactTokens,
+      companyPhraseTokens,
+      exactTokens,
+      phraseTokens,
+    };
   }
 
   /**
@@ -525,7 +582,12 @@ export class SynthesisService {
   private matchesIssuerIdentity(
     doc: DocumentEntity,
     patterns: IssuerIdentityPatterns,
-  ): { matched: boolean; fieldsMatched: number; reason?: string } {
+  ): {
+    matched: boolean;
+    fieldsMatched: number;
+    matchedFields: IssuerMatchField[];
+    reason?: ExcludedHeadlineReason;
+  } {
     const normalize = (value: string) =>
       value
         .toLowerCase()
@@ -533,27 +595,32 @@ export class SynthesisService {
         .replace(/\s+/g, " ")
         .trim();
 
-    const fields = {
+    const fields: Record<IssuerMatchField, string> = {
       title: normalize(doc.title),
       summary: normalize(doc.summary ?? ""),
       content: normalize(doc.content),
       payload: normalize(this.extractPayloadTickerHints(doc.rawPayload).join(" ")),
+      alias: "",
+      company: "",
     };
 
-    const fieldValues = Object.values(fields);
-    const matchesField = (fieldValue: string): boolean => {
+    const matchesTokenGroup = (
+      fieldValue: string,
+      exactGroup: Set<string>,
+      phraseGroup: Set<string>,
+    ): boolean => {
       if (!fieldValue) {
         return false;
       }
 
-      for (const token of patterns.exactTokens) {
+      for (const token of exactGroup) {
         const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         if (new RegExp(`\\b${escaped}\\b`, "i").test(fieldValue)) {
           return true;
         }
       }
 
-      for (const phrase of patterns.phraseTokens) {
+      for (const phrase of phraseGroup) {
         if (fieldValue.includes(phrase)) {
           return true;
         }
@@ -562,15 +629,45 @@ export class SynthesisService {
       return false;
     };
 
-    const fieldsMatched = fieldValues.filter(matchesField).length;
+    const matchedFields = new Set<IssuerMatchField>();
+    (Object.entries(fields) as Array<[IssuerMatchField, string]>)
+      .filter(([field]) => field === "title" || field === "summary" || field === "content" || field === "payload")
+      .forEach(([field, fieldValue]) => {
+        if (
+          matchesTokenGroup(fieldValue, patterns.exactTokens, patterns.phraseTokens)
+        ) {
+          matchedFields.add(field);
+        }
+        if (
+          matchesTokenGroup(
+            fieldValue,
+            patterns.aliasExactTokens,
+            patterns.aliasPhraseTokens,
+          )
+        ) {
+          matchedFields.add("alias");
+        }
+        if (
+          matchesTokenGroup(
+            fieldValue,
+            patterns.companyExactTokens,
+            patterns.companyPhraseTokens,
+          )
+        ) {
+          matchedFields.add("company");
+        }
+      });
+    const matchedFieldsList = Array.from(matchedFields);
+    const fieldsMatched = matchedFieldsList.length;
     if (fieldsMatched >= this.issuerMatchMinFields) {
-      return { matched: true, fieldsMatched };
+      return { matched: true, fieldsMatched, matchedFields: matchedFieldsList };
     }
 
     return {
       matched: false,
       fieldsMatched,
-      reason: `issuer_match_fields=${fieldsMatched}/${this.issuerMatchMinFields}`,
+      matchedFields: matchedFieldsList,
+      reason: "no_issuer_identity_match",
     };
   }
 
@@ -668,6 +765,7 @@ export class SynthesisService {
         issuerMatchedHeadlinesCount: 0,
         excludedHeadlinesCount: 0,
         excludedHeadlineReasons: [],
+        excludedHeadlineReasonSamples: [],
       };
     }
 
@@ -677,19 +775,89 @@ export class SynthesisService {
       ...identityPatterns.phraseTokens.values(),
     ];
 
-    const excludedHeadlineReasons: string[] = [];
+    const excludedHeadlineReasons: ExcludedHeadlineReason[] = [];
+    const excludedHeadlineReasonSamples: string[] = [];
     const issuerMatched = docs.filter((doc) => {
       const match = this.matchesIssuerIdentity(doc, identityPatterns);
       if (!match.matched) {
-        const reason = `${doc.title.slice(0, 96)} (${match.reason ?? "no_issuer_match"})`;
-        if (excludedHeadlineReasons.length < 5) {
-          excludedHeadlineReasons.push(reason);
+        excludedHeadlineReasons.push(match.reason ?? "no_issuer_identity_match");
+        if (excludedHeadlineReasonSamples.length < 8) {
+          excludedHeadlineReasonSamples.push(
+            `${doc.title.slice(0, 96)} (${match.reason ?? "no_issuer_identity_match"}; matchedFields=${match.matchedFields.join(",") || "none"})`,
+          );
         }
       }
       return match.matched;
     });
 
-    const ranked = issuerMatched
+    const canonicalizeUrl = (value: string | undefined): string => {
+      if (!value || !value.trim()) {
+        return "";
+      }
+      try {
+        const parsed = new URL(value.trim());
+        parsed.hash = "";
+        const keptParams = new URLSearchParams();
+        parsed.searchParams.forEach((paramValue, key) => {
+          const lower = key.toLowerCase();
+          if (
+            lower.startsWith("utm_") ||
+            lower === "fbclid" ||
+            lower === "gclid" ||
+            lower === "mc_cid" ||
+            lower === "mc_eid"
+          ) {
+            return;
+          }
+          keptParams.append(key, paramValue);
+        });
+        parsed.search = keptParams.toString();
+        const pathname = parsed.pathname.replace(/\/+$/, "");
+        return `${parsed.hostname.toLowerCase()}${pathname}${parsed.search ? `?${parsed.search}` : ""}`;
+      } catch {
+        return value.trim().toLowerCase();
+      }
+    };
+    const canonicalizeTitle = (value: string): string =>
+      value
+        .toLowerCase()
+        .replace(/[^\w\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const seenTitle = new Set<string>();
+    const seenUrl = new Set<string>();
+    const deduped = issuerMatched.filter((doc) => {
+      const titleKey = canonicalizeTitle(doc.title);
+      const urlKey = canonicalizeUrl(doc.url);
+      if (urlKey && seenUrl.has(urlKey)) {
+        excludedHeadlineReasons.push("duplicate_url");
+        if (excludedHeadlineReasonSamples.length < 8) {
+          excludedHeadlineReasonSamples.push(
+            `${doc.title.slice(0, 96)} (duplicate_url)`,
+          );
+        }
+        return false;
+      }
+      if (titleKey && seenTitle.has(titleKey)) {
+        excludedHeadlineReasons.push("duplicate_title");
+        if (excludedHeadlineReasonSamples.length < 8) {
+          excludedHeadlineReasonSamples.push(
+            `${doc.title.slice(0, 96)} (duplicate_title)`,
+          );
+        }
+        return false;
+      }
+      if (urlKey) {
+        seenUrl.add(urlKey);
+      }
+      if (titleKey) {
+        seenTitle.add(titleKey);
+      }
+      return true;
+    });
+
+    const ranked = deduped
       .map((doc) => this.scoreDocumentRelevance(doc, issuerTokens, true))
       .sort((left, right) => {
         if (right.score !== left.score) {
@@ -700,11 +868,21 @@ export class SynthesisService {
       });
 
     const relevant = ranked.filter((item) => item.isRelevant);
+    ranked
+      .filter((item) => !item.isRelevant)
+      .forEach((item) => {
+        excludedHeadlineReasons.push("below_relevance_threshold");
+        if (excludedHeadlineReasonSamples.length < 8) {
+          excludedHeadlineReasonSamples.push(
+            `${item.doc.title.slice(0, 96)} (below_relevance_threshold score=${item.score})`,
+          );
+        }
+      });
     const selectedRanked =
       relevant.length > 0
         ? relevant.slice(0, 10)
         : this.relevanceMode === "high_precision"
-          ? ranked.slice(0, 3)
+          ? []
           : ranked.slice(0, 5);
     const selectedRelevantCount = selectedRanked.filter(
       (item) => item.isRelevant,
@@ -720,9 +898,10 @@ export class SynthesisService {
       selectedRelevantCount,
       lowRelevance,
       totalHeadlinesCount: docs.length,
-      issuerMatchedHeadlinesCount: issuerMatched.length,
-      excludedHeadlinesCount: docs.length - issuerMatched.length,
+      issuerMatchedHeadlinesCount: deduped.length,
+      excludedHeadlinesCount: docs.length - deduped.length,
       excludedHeadlineReasons,
+      excludedHeadlineReasonSamples,
     };
   }
 
@@ -971,9 +1150,19 @@ export class SynthesisService {
   private buildActionMatrix(
     metrics: MetricPointEntity[],
     filings: FilingEntity[],
+    metricLabelByName: Map<string, string>,
+    filingLabelByFactName: Map<string, string>,
   ): ActionMatrixRow[] {
     const byName = new Map(metrics.map((metric) => [metric.metricName, metric]));
     const rows: ActionMatrixRow[] = [];
+    const metricCitation = (metricName: string): string[] => {
+      const label = metricLabelByName.get(metricName);
+      return label ? [label] : [];
+    };
+    const filingCitation = (factName: string): string[] => {
+      const label = filingLabelByFactName.get(factName);
+      return label ? [label] : [];
+    };
 
     const pe = byName.get("price_to_earnings");
     if (pe) {
@@ -983,7 +1172,7 @@ export class SynthesisService {
         currentValue: `${this.formatMetricValue(pe)}${pe.metricUnit ? ` ${pe.metricUnit}` : ""}`,
         condition: `If P/E falls below 35 or earnings growth re-accelerates above 20%`,
         action: "then upgrade one notch",
-        citations: ["M1"],
+        citations: metricCitation("price_to_earnings"),
         hasNumericThreshold: true,
       });
     }
@@ -996,7 +1185,20 @@ export class SynthesisService {
         currentValue: `${(growth.metricValue * 100).toFixed(1)}%`,
         condition: "If revenue growth stays above 15% for next two quarters",
         action: "then add on strength",
-        citations: ["M2"],
+        citations: metricCitation("revenue_growth_yoy"),
+        hasNumericThreshold: true,
+      });
+    }
+
+    const peerPePremium = byName.get("peer_pe_premium_pct");
+    if (peerPePremium) {
+      rows.push({
+        signalId: "valuation_peer_premium",
+        label: "Peer valuation premium",
+        currentValue: `${peerPePremium.metricValue.toFixed(1)}%`,
+        condition: "If peer P/E premium compresses below 10%",
+        action: "then add selectively",
+        citations: metricCitation("peer_pe_premium_pct"),
         hasNumericThreshold: true,
       });
     }
@@ -1009,7 +1211,7 @@ export class SynthesisService {
         currentValue: `${(analyst.metricValue * 100).toFixed(1)}% buy`,
         condition: "If analyst buy ratio drops below 45%",
         action: "then downgrade one notch",
-        citations: ["M3"],
+        citations: metricCitation("analyst_buy_ratio"),
         hasNumericThreshold: true,
       });
     }
@@ -1022,7 +1224,24 @@ export class SynthesisService {
         currentValue: `${Math.round(nextEarnings.metricValue)} days`,
         condition: "If next earnings are within 10 days and valuation remains above 45x",
         action: "then hold size constant",
-        citations: ["M4"],
+        citations: metricCitation("earnings_event_days_to_next"),
+        hasNumericThreshold: true,
+      });
+    }
+
+    const return3m = byName.get("price_return_3m");
+    const volRegime = byName.get("volatility_regime_score");
+    if (return3m && volRegime) {
+      rows.push({
+        signalId: "price_momentum_volatility",
+        label: "Momentum versus volatility regime",
+        currentValue: `3m return=${return3m.metricValue.toFixed(1)}%, volScore=${volRegime.metricValue.toFixed(1)}`,
+        condition: "If 3m return stays above 15% while volatility regime score stays below 45",
+        action: "then add on pullbacks",
+        citations: [
+          ...metricCitation("price_return_3m"),
+          ...metricCitation("volatility_regime_score"),
+        ],
         hasNumericThreshold: true,
       });
     }
@@ -1038,11 +1257,16 @@ export class SynthesisService {
       currentValue: filingRisk ? "true" : "false",
       condition: "If filing risk signals turn true in next disclosure",
       action: "then reduce risk exposure",
-      citations: ["F1"],
-      hasNumericThreshold: filingRisk,
+      citations: filingCitation("mentions_regulatory_action"),
+      hasNumericThreshold: true,
     });
 
-    const filtered = rows.slice(0, 5);
+    const filtered = rows
+      .map((row) => ({
+        ...row,
+        citations: row.citations.length > 0 ? row.citations : ["M1"],
+      }))
+      .slice(0, 5);
     const numericCount = filtered.filter((row) => row.hasNumericThreshold).length;
     if (numericCount < this.thesisTriggerMinNumeric) {
       filtered.push({
@@ -1138,9 +1362,12 @@ export class SynthesisService {
       `- totalHeadlines=${args.relevanceSelection.totalHeadlinesCount}`,
       `- issuerMatchedHeadlines=${args.relevanceSelection.issuerMatchedHeadlinesCount}`,
       `- excludedHeadlines=${args.relevanceSelection.excludedHeadlinesCount}`,
-      args.relevanceSelection.excludedHeadlineReasons.length > 0
-        ? `- excludedSample=${args.relevanceSelection.excludedHeadlineReasons.join(" | ")}`
+      args.relevanceSelection.excludedHeadlineReasonSamples.length > 0
+        ? `- excludedSample=${args.relevanceSelection.excludedHeadlineReasonSamples.join(" | ")}`
         : "- excludedSample=none",
+      args.relevanceSelection.excludedHeadlineReasons.length > 0
+        ? `- excludedReasons=${args.relevanceSelection.excludedHeadlineReasons.slice(0, 8).join(",")}`
+        : "- excludedReasons=none",
       "",
       "News headlines:",
       args.sourceLines || "- none",
@@ -1174,6 +1401,7 @@ export class SynthesisService {
       "- Under If/Then triggers, add 3-5 sub-bullets in 'If ... then ...' form using numeric thresholds or filing booleans only.",
       "- Under Thesis invalidation, add 2-3 sub-bullets describing clear thesis break conditions.",
       "- Decision and each If/Then trigger must include at least one citation when evidence exists.",
+      "- Do not include uncited claims in any section when evidence labels are available.",
       "- Decision should default to deterministic seed decision unless evidence in this run clearly contradicts it.",
       "- Avoid generic trigger language such as 'watch for', 'monitor', 'could', or 'may'.",
       "- If evidenceWeak=true, default Decision to Watch unless evidence strongly contradicts that default.",
@@ -1185,6 +1413,8 @@ export class SynthesisService {
       "- Use filings to support or challenge narrative when available.",
       "- Keep Overview/Valuation/Regulatory/Missing Evidence/Conclusion consistent with Action Summary.",
       "- In Conclusion, reaffirm Decision or explicitly explain any downgrade caused by evidence gaps.",
+      "- Use only deterministic matrix trigger concepts for If/Then; do not invent new trigger families.",
+      "- When a signal is missing, explicitly say which metric/fact is missing.",
       "- Explicitly state missing evidence if a section is empty.",
       "- If metrics diagnostics indicate missing or degraded metrics, mention that limitation in Missing Evidence.",
       "- If provider failures or pipeline stage issues are present, call them out explicitly in Missing Evidence.",
@@ -1567,6 +1797,161 @@ export class SynthesisService {
   }
 
   /**
+   * Scores final thesis quality deterministically so low-actionability drafts can be replaced with a stable fallback output.
+   */
+  private scoreThesisQuality(
+    thesis: string,
+    validationIssues: string[],
+    hasEvidence: boolean,
+  ): ThesisQualityScore {
+    const failedChecks = [...validationIssues];
+    let score = 100;
+
+    const triggerLines = this.extractActionSubBullets(
+      this.extractHeadingSection(thesis, "Action Summary"),
+      "If/Then triggers:",
+    );
+    if (triggerLines.length < 3) {
+      failedChecks.push("insufficient_trigger_count");
+      score -= 20;
+    }
+
+    const numericOrBooleanTriggerCount = triggerLines.filter((line) =>
+      /\d/.test(line) || /(true|false)/i.test(line),
+    ).length;
+    if (numericOrBooleanTriggerCount < this.thesisTriggerMinNumeric) {
+      failedChecks.push("insufficient_numeric_or_boolean_triggers");
+      score -= 15;
+    }
+
+    const actionableLines = thesis
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => /^-\s+/.test(line) && !/^-\s+(Reasons to|If\/Then triggers:|Thesis invalidation:|Decision:|Timeframe fit:)/i.test(line));
+    const citedActionableCount = actionableLines.filter((line) =>
+      /\b[NMFR]\d+\b/.test(line),
+    ).length;
+    const citationCoveragePct =
+      actionableLines.length === 0
+        ? 100
+        : Math.round((citedActionableCount / actionableLines.length) * 100);
+    if (hasEvidence && citationCoveragePct < this.thesisMinCitationCoveragePct) {
+      failedChecks.push(
+        `low_citation_coverage_${citationCoveragePct}_lt_${this.thesisMinCitationCoveragePct}`,
+      );
+      score -= 15;
+    }
+
+    const genericPattern = /\b(watch for|monitor|stay tuned|could|may)\b/gi;
+    const genericMatches = thesis.match(genericPattern) ?? [];
+    if (genericMatches.length > this.thesisGenericPhraseMax) {
+      failedChecks.push(
+        `generic_phrase_count_${genericMatches.length}_gt_${this.thesisGenericPhraseMax}`,
+      );
+      score -= (genericMatches.length - this.thesisGenericPhraseMax) * 8;
+    }
+
+    const actionSummary = this.extractHeadingSection(thesis, "Action Summary");
+    const decisionLine = actionSummary
+      ?.split("\n")
+      .find((line) => /decision:/i.test(line))
+      ?.toLowerCase();
+    if (
+      !decisionLine ||
+      /\b(watch|buy|avoid)\b/.test(decisionLine) === false ||
+      (hasEvidence && !/\b[NMFR]\d+\b/.test(decisionLine))
+    ) {
+      failedChecks.push("weak_or_uncited_decision_line");
+      score -= 12;
+    }
+
+    score -= Math.min(40, validationIssues.length * 8);
+    return {
+      score: Math.max(0, Math.min(100, Math.round(score))),
+      failedChecks: Array.from(new Set(failedChecks)).slice(0, 20),
+    };
+  }
+
+  /**
+   * Renders a deterministic fallback thesis so runs still produce executable guidance when LLM output remains low quality after repair.
+   */
+  private buildDeterministicFallbackThesis(args: {
+    decision: ThesisDecision;
+    actionMatrix: ActionMatrixRow[];
+    evidenceMapLines: string;
+    selectedDocs: DocumentEntity[];
+    metrics: MetricPointEntity[];
+    filings: FilingEntity[];
+    relevanceSelection: RelevanceSelection;
+  }): string {
+    const decisionLabel =
+      args.decision === "buy"
+        ? "Buy"
+        : args.decision === "avoid"
+          ? "Avoid"
+          : "Watch";
+    const citations = args.actionMatrix.flatMap((row) => row.citations).filter(Boolean);
+    const primaryCitation = citations[0] ?? "M1";
+    const triggerLines = args.actionMatrix
+      .slice(0, 5)
+      .map(
+        (row) =>
+          `  - If ${row.condition.replace(/^If\s+/i, "").replace(/\.$/, "")}, ${row.action} (${row.citations.join(", ")})`,
+      )
+      .join("\n");
+
+    const missingFields: string[] = [];
+    const metricNames = new Set(args.metrics.map((metric) => metric.metricName));
+    if (!metricNames.has("revenue_growth_yoy")) {
+      missingFields.push("revenue_growth_yoy");
+    }
+    if (!metricNames.has("price_to_earnings")) {
+      missingFields.push("price_to_earnings");
+    }
+    if (!metricNames.has("analyst_buy_ratio")) {
+      missingFields.push("analyst_buy_ratio");
+    }
+
+    return [
+      "# Action Summary",
+      `- Decision: ${decisionLabel} [${primaryCitation}]`,
+      `- Timeframe fit: Short-term (0-3m) signal-gated; Long-term (12m+) conviction only with sustained evidence [${primaryCitation}]`,
+      "- Reasons to invest:",
+      `  - Deterministic signal set indicates measurable upside conditions when thresholds are met [${primaryCitation}]`,
+      `  - Evidence coverage includes ${args.metrics.length} metrics, ${args.filings.length} filings, and ${args.selectedDocs.length} issuer-matched headlines [${primaryCitation}]`,
+      "- Reasons to stay away:",
+      `  - Evidence quality remains constrained by excluded/noisy headlines (${args.relevanceSelection.excludedHeadlinesCount}) [${primaryCitation}]`,
+      `  - Missing structured fields can reduce conviction: ${missingFields.length > 0 ? missingFields.join(", ") : "none"} [${primaryCitation}]`,
+      "- If/Then triggers:",
+      triggerLines,
+      "- Thesis invalidation:",
+      `  - If two or more core triggers fail in sequence, then downgrade one notch (${primaryCitation})`,
+      `  - If filing risk facts switch to true (regulatory or risk-factor flags), then reduce risk exposure (${primaryCitation})`,
+      "",
+      "# Evidence Map",
+      args.evidenceMapLines,
+      "",
+      "# Overview",
+      `Deterministic fallback applied because thesis quality score did not meet floor ${this.thesisQualityMinScore}.`,
+      "",
+      "# Shareholder/Institutional Dynamics",
+      "No deterministic shareholder/institutional signal available in fallback mode.",
+      "",
+      "# Valuation and Growth Interpretation",
+      "Valuation and growth interpretation is derived from available metric thresholds in Action Summary.",
+      "",
+      "# Regulatory Filings",
+      "Filing-derived boolean facts are used directly in triggers when available.",
+      "",
+      "# Missing Evidence",
+      `Missing deterministic fields: ${missingFields.length > 0 ? missingFields.join(", ") : "none"}.`,
+      "",
+      "# Conclusion",
+      `Decision remains ${decisionLabel} under deterministic policy gates until missing evidence is filled and trigger thresholds are re-evaluated [${primaryCitation}].`,
+    ].join("\n");
+  }
+
+  /**
    * Extracts markdown section body by heading so validation can apply section-specific quality checks.
    */
   private extractHeadingSection(thesis: string, heading: string): string | null {
@@ -1760,10 +2145,16 @@ export class SynthesisService {
    */
   private formatFilingFactHighlights(filing: FilingEntity): string {
     const priorityFacts = [
+      "parse_mode",
+      "parse_failure_reason",
+      "contains_quantified_outlook",
       "mentions_risk_factor_change",
       "mentions_guidance_update",
       "mentions_margin_pressure",
       "mentions_demand_strength",
+      "mentions_capex_increase",
+      "mentions_buyback",
+      "mentions_supply_constraint",
       "mentions_regulatory_action",
       "content_extraction_status",
     ];
@@ -1846,7 +2237,25 @@ export class SynthesisService {
     );
     const evidenceWeak = decisionContext.evidenceWeak;
     const decisionResult = this.deriveDecisionFromContext(decisionContext);
-    const actionMatrix = this.buildActionMatrix(latestMetrics, filings);
+    const metricLabelByName = new Map<string, string>();
+    latestMetrics.forEach((metric, index) => {
+      metricLabelByName.set(metric.metricName, `M${index + 1}`);
+    });
+    const filingLabelByFactName = new Map<string, string>();
+    filings.slice(0, 6).forEach((filing, index) => {
+      const filingLabel = `F${index + 1}`;
+      filing.extractedFacts.forEach((fact) => {
+        if (!filingLabelByFactName.has(fact.name)) {
+          filingLabelByFactName.set(fact.name, filingLabel);
+        }
+      });
+    });
+    const actionMatrix = this.buildActionMatrix(
+      latestMetrics,
+      filings,
+      metricLabelByName,
+      filingLabelByFactName,
+    );
     const actionMatrixLines = this.formatActionMatrix(actionMatrix);
     const decisionReasonLines =
       decisionResult.reasons.length > 0
@@ -1901,16 +2310,22 @@ export class SynthesisService {
       decisionResult.decision,
       actionMatrix,
     );
-    const validationIssues = this.validateThesis(
+    const hasEvidence = selectedDocs.length + latestMetrics.length + filings.length > 0;
+    const initialValidationIssues = this.validateThesis(
       thesis,
-      selectedDocs.length + latestMetrics.length + filings.length > 0,
+      hasEvidence,
       shouldForceIdentityUncertainty,
       evidenceWeak,
       memoryMatches.length,
     );
+    let finalValidationIssues = initialValidationIssues;
 
-    if (validationIssues.length > 0) {
-      const repairPrompt = this.buildRepairPrompt(prompt, thesis, validationIssues);
+    if (initialValidationIssues.length > 0) {
+      const repairPrompt = this.buildRepairPrompt(
+        prompt,
+        thesis,
+        initialValidationIssues,
+      );
       const repairedResult = await this.llm.synthesize(repairPrompt);
       if (repairedResult.isErr()) {
         throw new Error(
@@ -1925,12 +2340,46 @@ export class SynthesisService {
       );
       const repairedIssues = this.validateThesis(
         repairedThesis,
-        selectedDocs.length + latestMetrics.length + filings.length > 0,
+        hasEvidence,
         shouldForceIdentityUncertainty,
         evidenceWeak,
         memoryMatches.length,
       );
-      thesis = repairedIssues.length <= validationIssues.length ? repairedThesis : thesis;
+      if (repairedIssues.length <= initialValidationIssues.length) {
+        thesis = repairedThesis;
+        finalValidationIssues = repairedIssues;
+      }
+    }
+
+    let thesisQuality = this.scoreThesisQuality(
+      thesis,
+      finalValidationIssues,
+      hasEvidence,
+    );
+    let fallbackApplied = false;
+    if (thesisQuality.score < this.thesisQualityMinScore) {
+      thesis = this.buildDeterministicFallbackThesis({
+        decision: decisionResult.decision,
+        actionMatrix,
+        evidenceMapLines,
+        selectedDocs,
+        metrics: latestMetrics,
+        filings,
+        relevanceSelection,
+      });
+      fallbackApplied = true;
+      finalValidationIssues = this.validateThesis(
+        thesis,
+        hasEvidence,
+        shouldForceIdentityUncertainty,
+        evidenceWeak,
+        memoryMatches.length,
+      );
+      thesisQuality = this.scoreThesisQuality(
+        thesis,
+        finalValidationIssues,
+        hasEvidence,
+      );
     }
 
     const score = this.computeScore(
@@ -1973,8 +2422,15 @@ export class SynthesisService {
           issuerMatched: relevanceSelection.issuerMatchedHeadlinesCount,
           excluded: relevanceSelection.excludedHeadlinesCount,
           mode: this.relevanceMode,
+          excludedReasonsSample:
+            relevanceSelection.excludedHeadlineReasonSamples.slice(0, 8),
         },
         decisionReasons: decisionResult.reasons.slice(0, 8),
+        thesisQuality: {
+          score: thesisQuality.score,
+          failedChecks: thesisQuality.failedChecks,
+          fallbackApplied,
+        },
       },
       createdAt: now,
     });

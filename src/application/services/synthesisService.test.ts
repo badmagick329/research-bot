@@ -36,9 +36,9 @@ const validThesis = `# Action Summary
   - Current evidence still lacks direct holder-flow confirmation [N1]
   - Regulatory detail on event durability is limited [F1]
 - If/Then triggers:
-  - If revenue growth remains above 10% then consider gradual accumulation [M2]
-  - If filing commentary confirms demand durability then increase conviction [F1]
-  - If execution headlines weaken materially then reduce exposure [N1]
+  - If revenue growth remains above 10% then add 10% position size [M2]
+  - If filing commentary confirms demand durability=true then upgrade one notch [F1]
+  - If issuer-relevant headlines fall below 2 then reduce exposure [N1]
 - Thesis invalidation:
   - If growth falls below expectations without margin offset then thesis weakens [M2]
   - If filings contradict operational momentum then thesis breaks [F1]
@@ -948,6 +948,118 @@ describe("SynthesisService", () => {
     await avoidService.run(payload);
     expect(avoidSnapshots[0]?.thesis).toContain("Decision: Avoid");
     expect(avoidSnapshots[0]?.diagnostics?.decisionReasons?.includes("high_valuation_with_filing_risk")).toBeTrue();
+  });
+
+  it("tags duplicate-title and duplicate-url exclusions in news quality diagnostics", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-1",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "d-1",
+        type: "news",
+        title: "TTWO launches expansion title",
+        summary: "TTWO update",
+        content: "TTWO update details",
+        url: "https://example.com/a?utm_source=x",
+        publishedAt: new Date("2026-02-17T10:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "TTWO" },
+        createdAt: new Date("2026-02-17T10:00:00.000Z"),
+      },
+      {
+        id: "doc-2",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "d-2",
+        type: "news",
+        title: "TTWO launches expansion title",
+        summary: "same headline",
+        content: "same headline content",
+        url: "https://example.com/b",
+        publishedAt: new Date("2026-02-17T09:50:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "TTWO" },
+        createdAt: new Date("2026-02-17T09:50:00.000Z"),
+      },
+      {
+        id: "doc-3",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "d-3",
+        type: "news",
+        title: "TTWO demand signals remain solid",
+        summary: "TTWO summary",
+        content: "TTWO summary content",
+        url: "https://example.com/a",
+        publishedAt: new Date("2026-02-17T09:40:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "TTWO" },
+        createdAt: new Date("2026-02-17T09:40:00.000Z"),
+      },
+    ];
+
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok(validThesis),
+    };
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics: [],
+      filings: [],
+      llm,
+    });
+    await service.run(payload);
+    const saved = savedSnapshots[0];
+    expect(saved?.diagnostics?.newsQuality?.excludedReasonsSample?.some((line) => line.includes("duplicate_title"))).toBeTrue();
+    expect(saved?.diagnostics?.newsQuality?.excludedReasonsSample?.some((line) => line.includes("duplicate_url"))).toBeTrue();
+  });
+
+  it("applies deterministic fallback when thesis quality remains below floor after repair", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-1",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "f-1",
+        type: "news",
+        title: "TTWO demand update",
+        summary: "TTWO details",
+        content: "TTWO details",
+        url: "https://example.com/ttwo",
+        publishedAt: new Date("2026-02-17T08:00:00.000Z"),
+        language: "en",
+        topics: ["guidance"],
+        sourceType: "api",
+        rawPayload: { related: "TTWO" },
+        createdAt: new Date("2026-02-17T08:00:00.000Z"),
+      },
+    ];
+
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok("watch and monitor developments"),
+    };
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics: [],
+      filings: [],
+      llm,
+    });
+
+    await service.run(payload);
+    const saved = savedSnapshots[0];
+    expect(saved?.diagnostics?.thesisQuality?.fallbackApplied).toBeTrue();
+    expect(saved?.thesis).toContain("# Action Summary");
+    expect(saved?.thesis).toContain("# Evidence Map");
+    expect(saved?.thesis).toContain("# Missing Evidence");
+    expect(saved?.thesis).toContain("# Conclusion");
   });
 
   it("injects cross-run memory into prompt and excludes current run from retrieval", async () => {

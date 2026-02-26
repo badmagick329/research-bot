@@ -3,6 +3,7 @@ import { err, ok } from "neverthrow";
 import { IngestionService } from "./ingestionService";
 import type {
   FilingsProviderPort,
+  MarketContextProviderPort,
   MarketMetricsProviderPort,
   NewsProviderPort,
   FilingsRequest,
@@ -421,5 +422,198 @@ describe("IngestionService", () => {
     await expect(service.run(payload)).rejects.toThrow(
       "Alpha Vantage rate limit hit",
     );
+  });
+
+  it("persists market-context metrics and documents when available", async () => {
+    const newsProvider: NewsProviderPort = {
+      fetchArticles: async () => ok([]),
+    };
+    const metricsProvider: MarketMetricsProviderPort = {
+      fetchMetrics: async () =>
+        ok({
+          metrics: [],
+          diagnostics: {
+            provider: "alphavantage",
+            symbol: "TTWO",
+            status: "empty",
+            metricCount: 0,
+          },
+        }),
+    };
+    const filingsProvider: FilingsProviderPort = {
+      fetchFilings: async () => ok([]),
+    };
+    const marketContextProvider: MarketContextProviderPort = {
+      fetchMarketContext: async () =>
+        ok({
+          peerRelativeValuation: [
+            {
+              metricName: "peer_pe_percentile",
+              metricValue: 72,
+              metricUnit: "pct",
+              asOf: new Date("2026-02-18T12:00:00.000Z"),
+              rawPayload: {},
+            },
+          ],
+          earningsGuidance: [
+            {
+              metricName: "earnings_event_days_to_next",
+              metricValue: 12,
+              metricUnit: "days",
+              asOf: new Date("2026-02-18T12:00:00.000Z"),
+              rawPayload: {},
+            },
+          ],
+          analystTrend: [],
+          priceContext: [
+            {
+              metricName: "price_return_3m",
+              metricValue: 18,
+              metricUnit: "pct",
+              asOf: new Date("2026-02-18T12:00:00.000Z"),
+              rawPayload: {},
+            },
+          ],
+          diagnostics: {
+            provider: "finnhub-market-context",
+            symbol: "TTWO",
+            status: "ok",
+            itemCounts: {
+              peerRelativeValuation: 1,
+              earningsGuidance: 1,
+              analystTrend: 0,
+              priceContext: 1,
+            },
+          },
+        }),
+    };
+
+    let upsertedDocuments = 0;
+    const documentRepo: DocumentRepositoryPort = {
+      upsertMany: async (documents) => {
+        upsertedDocuments = documents.length;
+      },
+      listBySymbol: async () => [],
+    };
+    let upsertedMetrics = 0;
+    const metricsRepo: MetricsRepositoryPort = {
+      upsertMany: async (metrics) => {
+        upsertedMetrics = metrics.length;
+      },
+      listBySymbol: async () => [],
+    };
+    const filingsRepo: FilingsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+    const queue: QueuePort = {
+      enqueue: async () => {},
+    };
+    const clock: ClockPort = {
+      now: () => new Date("2026-02-18T12:00:00.000Z"),
+    };
+    const ids: IdGeneratorPort = {
+      next: () => "id-1",
+    };
+
+    const service = new IngestionService(
+      newsProvider,
+      metricsProvider,
+      filingsProvider,
+      documentRepo,
+      metricsRepo,
+      filingsRepo,
+      queue,
+      clock,
+      ids,
+      7,
+      90,
+      marketContextProvider,
+    );
+
+    await service.run(payload);
+    expect(upsertedMetrics).toBe(3);
+    expect(upsertedDocuments).toBe(3);
+  });
+
+  it("records market-context provider failures as non-fatal degradation", async () => {
+    const newsProvider: NewsProviderPort = {
+      fetchArticles: async () => ok([]),
+    };
+    const metricsProvider: MarketMetricsProviderPort = {
+      fetchMetrics: async () =>
+        ok({
+          metrics: [],
+          diagnostics: {
+            provider: "alphavantage",
+            symbol: "TTWO",
+            status: "empty",
+            metricCount: 0,
+          },
+        }),
+    };
+    const filingsProvider: FilingsProviderPort = {
+      fetchFilings: async () => ok([]),
+    };
+    const marketContextProvider: MarketContextProviderPort = {
+      fetchMarketContext: async () =>
+        err({
+          source: "metrics",
+          code: "provider_error",
+          provider: "finnhub-market-context",
+          message: "context unavailable",
+          retryable: true,
+        }),
+    };
+
+    const documentRepo: DocumentRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+    const metricsRepo: MetricsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+    const filingsRepo: FilingsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+
+    let queuedPayload: JobPayload | undefined;
+    const queue: QueuePort = {
+      enqueue: async (_stage, nextPayload) => {
+        queuedPayload = nextPayload;
+      },
+    };
+    const clock: ClockPort = {
+      now: () => new Date("2026-02-18T12:00:00.000Z"),
+    };
+    const ids: IdGeneratorPort = {
+      next: () => "id-1",
+    };
+
+    const service = new IngestionService(
+      newsProvider,
+      metricsProvider,
+      filingsProvider,
+      documentRepo,
+      metricsRepo,
+      filingsRepo,
+      queue,
+      clock,
+      ids,
+      7,
+      90,
+      marketContextProvider,
+    );
+
+    await service.run(payload);
+    expect(
+      queuedPayload?.providerFailures?.some(
+        (failure) =>
+          failure.source === "market-context" &&
+          failure.provider === "finnhub-market-context",
+      ),
+    ).toBeTrue();
   });
 });

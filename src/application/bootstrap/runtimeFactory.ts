@@ -161,6 +161,7 @@ const createMarketContextProvider = (
           peerRelativeValuation: [],
           earningsGuidance: [],
           analystTrend: [],
+          priceContext: [],
           diagnostics: {
             provider: "market-context-disabled",
             symbol: request.symbol,
@@ -169,6 +170,7 @@ const createMarketContextProvider = (
               peerRelativeValuation: 0,
               earningsGuidance: 0,
               analystTrend: 0,
+              priceContext: 0,
             },
           },
         }),
@@ -301,6 +303,9 @@ export const createRuntime = async () => {
       minRelevanceScore: env.NEWS_MIN_RELEVANCE_SCORE,
       issuerMatchMinFields: env.NEWS_ISSUER_MATCH_MIN_FIELDS,
       thesisTriggerMinNumeric: env.THESIS_TRIGGER_MIN_NUMERIC,
+      thesisGenericPhraseMax: env.THESIS_GENERIC_PHRASE_MAX,
+      thesisMinCitationCoveragePct: env.THESIS_MIN_CITATION_COVERAGE_PCT,
+      thesisQualityMinScore: env.THESIS_QUALITY_MIN_SCORE,
     },
   );
   const runQueryService = new RunQueryService(

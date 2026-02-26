@@ -77,8 +77,14 @@ export type SnapshotDiagnostics = {
     issuerMatched: number;
     excluded: number;
     mode: string;
+    excludedReasonsSample?: string[];
   };
   decisionReasons?: string[];
+  thesisQuality?: {
+    score: number;
+    failedChecks: string[];
+    fallbackApplied: boolean;
+  };
 };
 
 export type ResearchSnapshotEntity = {
