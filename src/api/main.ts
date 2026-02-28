@@ -33,6 +33,7 @@ const enqueueThesisRefresh = async (
     requestedAt: new Date().toISOString(),
     resolvedIdentity: snapshot.diagnostics?.identity,
     metricsDiagnostics: snapshot.diagnostics?.metrics,
+    metricsCompanyFactsDiagnostics: snapshot.diagnostics?.metricsCompanyFacts,
     providerFailures: snapshot.diagnostics?.providerFailures,
     stageIssues: snapshot.diagnostics?.stageIssues,
     thesisTypeContext: snapshot.investorViewV2

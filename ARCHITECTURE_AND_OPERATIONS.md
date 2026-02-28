@@ -38,6 +38,16 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
   - `mentions_regulatory_action`, `contains_quantified_outlook`
 - Parse diagnostics are stored (`parse_mode`, `parse_failure_reason`); metadata-only fallback is non-fatal.
 
+## Companyfacts Model (SEC XBRL)
+- SEC companyfacts (`/api/xbrl/companyfacts/CIK....json`) is ingested as additive metrics provider `sec-companyfacts`.
+- Deterministic KPI-centric mapping includes:
+  - `revenue_ttm`, `revenue_yoy`, `revenue_growth_yoy`
+  - `gross_margin`, `operating_margin`, `profit_margin`
+  - `eps`, `shares_basic`, `shares_diluted`, `shares_diluted_yoy_change`
+  - `operating_cash_flow_ttm`, `capex_ttm`
+- Mapping uses bounded fact windows, allowed filing forms, and period normalization (`annual|quarter|ttm|point_in_time`).
+- Companyfacts fetch failure is non-fatal when other evidence sources succeed; diagnostics are persisted explicitly.
+
 ## Thesis Generation (V3)
 - `snapshot` is read-only.
 - `refresh-thesis` re-runs `synthesize` only (no re-ingestion).
@@ -69,6 +79,7 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 
 ## Snapshot Diagnostics
 - `metrics`
+- `metricsCompanyFacts`
 - `providerFailures` (`news|metrics|filings|market-context`)
 - `stageIssues`
 - `identity`
@@ -124,6 +135,7 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - KPI tree builder: `src/application/services/buildKpiTreeService.ts`
 - Synthesis: `src/application/services/synthesisService.ts`
 - Filings provider: `src/infra/providers/sec/secEdgarFilingsProvider.ts`
+- Companyfacts provider: `src/infra/providers/sec/secCompanyFactsProvider.ts`
 - Market-context provider: `src/infra/providers/finnhub/finnhubMarketContextProvider.ts`
 
 ## Core Commands
@@ -147,6 +159,9 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - `THESIS_GENERIC_PHRASE_MAX=0`
 - `THESIS_MIN_CITATION_COVERAGE_PCT=80`
 - `THESIS_QUALITY_MIN_SCORE=75`
+- `SEC_COMPANYFACTS_ENABLED=true|false`
+- `SEC_COMPANYFACTS_TIMEOUT_MS=15000`
+- `SEC_COMPANYFACTS_MAX_FACTS_PER_METRIC=16`
 - `QUEUE_CONCURRENCY_CLASSIFY_STOCK=2`
 - `QUEUE_CONCURRENCY_SELECT_HORIZON=2`
 - `QUEUE_CONCURRENCY_BUILD_KPI_TREE=2`

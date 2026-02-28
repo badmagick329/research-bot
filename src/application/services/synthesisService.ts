@@ -2940,6 +2940,7 @@ export class SynthesisService {
       investorViewV2,
       diagnostics: {
         metrics: payload.metricsDiagnostics,
+        metricsCompanyFacts: payload.metricsCompanyFactsDiagnostics,
         providerFailures: payload.providerFailures,
         stageIssues: payloadWithMemoryDiagnostics.stageIssues,
         identity: payload.resolvedIdentity,

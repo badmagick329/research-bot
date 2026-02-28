@@ -59,6 +59,7 @@ const formatSnapshotReport = (snapshot: ResearchSnapshotEntity): string => {
   const providerFailures = snapshot.diagnostics?.providerFailures ?? [];
   const stageIssues = snapshot.diagnostics?.stageIssues ?? [];
   const metricsDiagnostics = snapshot.diagnostics?.metrics;
+  const companyFactsDiagnostics = snapshot.diagnostics?.metricsCompanyFacts;
 
   if (
     providerFailures.length === 0 &&
@@ -70,6 +71,11 @@ const formatSnapshotReport = (snapshot: ResearchSnapshotEntity): string => {
     if (metricsDiagnostics) {
       lines.push(
         `- metrics: provider=${metricsDiagnostics.provider}, status=${metricsDiagnostics.status}, metricCount=${metricsDiagnostics.metricCount}${metricsDiagnostics.reason ? `, reason=${metricsDiagnostics.reason}` : ""}${typeof metricsDiagnostics.httpStatus === "number" ? `, httpStatus=${metricsDiagnostics.httpStatus}` : ""}`,
+      );
+    }
+    if (companyFactsDiagnostics) {
+      lines.push(
+        `- metrics-companyfacts: provider=${companyFactsDiagnostics.provider}, status=${companyFactsDiagnostics.status}, metricCount=${companyFactsDiagnostics.metricCount}${companyFactsDiagnostics.reason ? `, reason=${companyFactsDiagnostics.reason}` : ""}${typeof companyFactsDiagnostics.httpStatus === "number" ? `, httpStatus=${companyFactsDiagnostics.httpStatus}` : ""}`,
       );
     }
 
@@ -203,6 +209,7 @@ export const buildCli = () => {
         requestedAt: new Date().toISOString(),
         resolvedIdentity: snapshot.diagnostics?.identity,
         metricsDiagnostics: snapshot.diagnostics?.metrics,
+        metricsCompanyFactsDiagnostics: snapshot.diagnostics?.metricsCompanyFacts,
         providerFailures: snapshot.diagnostics?.providerFailures,
         stageIssues: snapshot.diagnostics?.stageIssues,
         thesisTypeContext: snapshot.investorViewV2

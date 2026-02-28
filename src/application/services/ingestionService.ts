@@ -11,6 +11,7 @@ import type {
   ClockPort,
 } from "../../core/ports/outboundPorts";
 import type {
+  CompanyFactsProviderPort,
   MetricsFetchResult,
   MarketContextFetchResult,
   MarketContextProviderPort,
@@ -47,6 +48,19 @@ const noopMarketContextProvider: MarketContextProviderPort = {
     }),
 };
 
+const noopCompanyFactsProvider: CompanyFactsProviderPort = {
+  fetchCompanyFacts: async (request) =>
+    ok({
+      metrics: [],
+      diagnostics: {
+        provider: "sec-companyfacts-disabled",
+        symbol: request.symbol,
+        status: "empty",
+        metricCount: 0,
+      },
+    }),
+};
+
 /**
  * Keeps provider IO at the pipeline edge so downstream stages always consume normalized persisted records.
  */
@@ -64,6 +78,7 @@ export class IngestionService {
     private readonly newsLookbackDays: number,
     private readonly filingsLookbackDays: number,
     private readonly marketContextProvider: MarketContextProviderPort = noopMarketContextProvider,
+    private readonly companyFactsProvider: CompanyFactsProviderPort = noopCompanyFactsProvider,
   ) {}
 
   /**
@@ -142,7 +157,13 @@ export class IngestionService {
       now.getTime() - this.filingsLookbackDays * 24 * 60 * 60 * 1000,
     );
 
-    const [newsResult, metricsResult, filingsResult, marketContextResult] =
+    const [
+      newsResult,
+      metricsResult,
+      filingsResult,
+      marketContextResult,
+      companyFactsResult,
+    ] =
       await Promise.all([
       this.newsProvider.fetchArticles({
         symbol: payload.symbol,
@@ -161,6 +182,10 @@ export class IngestionService {
         symbol: payload.symbol,
         asOf: now,
       }),
+      this.companyFactsProvider.fetchCompanyFacts({
+        symbol: payload.symbol,
+        asOf: now,
+      }),
     ]);
 
     const sourceResults: Array<Result<unknown, AppBoundaryError>> = [
@@ -168,6 +193,15 @@ export class IngestionService {
       metricsResult,
       filingsResult,
     ];
+    if (
+      !(
+        companyFactsResult.isOk() &&
+        companyFactsResult.value.diagnostics.provider ===
+          "sec-companyfacts-disabled"
+      )
+    ) {
+      sourceResults.push(companyFactsResult);
+    }
 
     const alphaVantageRateLimitedSources: string[] = [];
     if (
@@ -227,6 +261,28 @@ export class IngestionService {
     if (metricsResult.isErr()) {
       providerFailures.push(
         this.toProviderFailure("metrics", metricsResult.error),
+      );
+    }
+
+    const fallbackCompanyFacts: MetricsFetchResult = {
+      metrics: [],
+      diagnostics: {
+        provider: "sec-companyfacts",
+        symbol: payload.symbol,
+        status: "provider_error",
+        metricCount: 0,
+        reason: companyFactsResult.isErr()
+          ? companyFactsResult.error.message
+          : "Companyfacts provider returned no diagnostics.",
+      },
+    };
+    const companyFactsPayload = companyFactsResult.isOk()
+      ? companyFactsResult.value
+      : fallbackCompanyFacts;
+    const companyFactsMetrics = companyFactsPayload.metrics;
+    if (companyFactsResult.isErr()) {
+      providerFailures.push(
+        this.toProviderFailure("metrics", companyFactsResult.error),
       );
     }
 
@@ -360,7 +416,28 @@ export class IngestionService {
 
     await Promise.all([
       this.documentRepo.upsertMany([...documents, ...marketContextDocuments]),
-      this.metricsRepo.upsertMany([...metricEntities, ...marketContextMetrics]),
+      this.metricsRepo.upsertMany([
+        ...metricEntities,
+        ...companyFactsMetrics.map((item) => ({
+          id: this.ids.next(),
+          runId: payload.runId,
+          taskId: payload.taskId,
+          symbol: payload.symbol,
+          provider: item.provider,
+          metricName: item.metricName,
+          metricValue: item.metricValue,
+          metricUnit: item.metricUnit,
+          currency: item.currency,
+          asOf: item.asOf,
+          periodType: item.periodType,
+          periodStart: item.periodStart,
+          periodEnd: item.periodEnd,
+          confidence: item.confidence,
+          rawPayload: item.rawPayload,
+          createdAt: now,
+        })),
+        ...marketContextMetrics,
+      ]),
       this.filingsRepo.upsertMany(filingEntities),
     ]);
 
@@ -372,6 +449,13 @@ export class IngestionService {
         metricCount: metricsPayload.diagnostics.metricCount,
         reason: metricsPayload.diagnostics.reason,
         httpStatus: metricsPayload.diagnostics.httpStatus,
+      },
+      metricsCompanyFactsDiagnostics: {
+        provider: companyFactsPayload.diagnostics.provider,
+        status: companyFactsPayload.diagnostics.status,
+        metricCount: companyFactsPayload.diagnostics.metricCount,
+        reason: companyFactsPayload.diagnostics.reason,
+        httpStatus: companyFactsPayload.diagnostics.httpStatus,
       },
       providerFailures,
     });

@@ -1056,6 +1056,92 @@ describe("SynthesisService", () => {
     expect(saved?.diagnostics?.newsQualityV2?.excludedByReason.duplicate_url).toBeDefined();
   });
 
+  it("includes SEC companyfacts metrics in persisted source context", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-cf-1",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "cf-1",
+        type: "news",
+        title: "TTWO demand update",
+        summary: "",
+        content: "TTWO demand update details",
+        url: "https://example.com/cf-news",
+        publishedAt: new Date("2026-02-17T08:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "TTWO" },
+        createdAt: new Date("2026-02-17T08:00:00.000Z"),
+      },
+    ];
+
+    const metrics: MetricPointEntity[] = [
+      {
+        id: "metric-cf-1",
+        symbol: "TTWO",
+        provider: "sec-companyfacts",
+        metricName: "revenue_growth_yoy",
+        metricValue: 0.22,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "quarter",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+      {
+        id: "metric-cf-2",
+        symbol: "TTWO",
+        provider: "sec-companyfacts",
+        metricName: "profit_margin",
+        metricValue: 0.18,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "quarter",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+      {
+        id: "metric-cf-3",
+        symbol: "TTWO",
+        provider: "sec-companyfacts",
+        metricName: "gross_margin",
+        metricValue: 0.56,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "quarter",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+    ];
+
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok(validThesis),
+    };
+
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics,
+      filings: [],
+      llm,
+    });
+    await service.run(payload);
+
+    const saved = savedSnapshots.at(0);
+    if (!saved) {
+      throw new Error("expected snapshot to be saved");
+    }
+
+    expect(
+      saved.sources.some((source) => source.provider === "sec-companyfacts"),
+    ).toBeTrue();
+  });
+
   it("enforces issuer-anchor and read-through cap policy with class diagnostics", async () => {
     const docs: DocumentEntity[] = [
       {

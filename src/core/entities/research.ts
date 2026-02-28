@@ -201,6 +201,7 @@ export type SnapshotStageDiagnostics = {
 
 export type SnapshotDiagnostics = {
   metrics?: SnapshotMetricsDiagnostics;
+  metricsCompanyFacts?: SnapshotMetricsDiagnostics;
   providerFailures?: SnapshotProviderFailureDiagnostics[];
   stageIssues?: SnapshotStageDiagnostics[];
   identity?: ResolvedCompanyIdentity;

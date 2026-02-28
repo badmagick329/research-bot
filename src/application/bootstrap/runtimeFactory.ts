@@ -38,6 +38,7 @@ import { MockNewsProvider } from "../../infra/providers/mocks/mockNewsProvider";
 import { MultiNewsProvider } from "../../infra/providers/multiNewsProvider";
 import { CompanyResolver } from "../../infra/providers/company/companyResolver";
 import { SecEdgarFilingsProvider } from "../../infra/providers/sec/secEdgarFilingsProvider";
+import { SecCompanyFactsProvider } from "../../infra/providers/sec/secCompanyFactsProvider";
 import { BullMqQueue } from "../../infra/queue/bullMqQueue";
 import { HttpJsonClient } from "../../infra/http/httpJsonClient";
 import {
@@ -48,6 +49,7 @@ import {
 import { RedisProviderRateLimiter } from "../../infra/system/redisProviderRateLimiter";
 import type {
   FilingsProviderPort,
+  CompanyFactsProviderPort,
   MarketContextProviderPort,
   MarketMetricsProviderPort,
   NewsProviderPort,
@@ -191,6 +193,40 @@ const createMarketContextProvider = (
 };
 
 /**
+ * Resolves SEC companyfacts adapter with an explicit disabled fallback so metrics merge remains deterministic in all environments.
+ */
+const createCompanyFactsProvider = (
+  httpClient: HttpJsonClient,
+  providerRateLimiter: ProviderRateLimiterPort,
+): CompanyFactsProviderPort => {
+  if (!env.SEC_COMPANYFACTS_ENABLED) {
+    return {
+      fetchCompanyFacts: async (request) =>
+        ok({
+          metrics: [],
+          diagnostics: {
+            provider: "sec-companyfacts-disabled",
+            symbol: request.symbol,
+            status: "empty",
+            metricCount: 0,
+            reason: "SEC companyfacts disabled by configuration.",
+          },
+        }),
+    };
+  }
+
+  return new SecCompanyFactsProvider(
+    env.SEC_EDGAR_BASE_URL,
+    env.SEC_EDGAR_TICKERS_URL,
+    env.SEC_EDGAR_USER_AGENT,
+    env.SEC_COMPANYFACTS_TIMEOUT_MS,
+    env.SEC_COMPANYFACTS_MAX_FACTS_PER_METRIC,
+    httpClient,
+    providerRateLimiter,
+  );
+};
+
+/**
  * Resolves the configured LLM adapter so runtime can switch between local and external chat models.
  */
 const createLlm = (httpClient: HttpJsonClient): LlmPort => {
@@ -261,6 +297,10 @@ export const createRuntime = async () => {
     httpClient,
     providerRateLimiter,
   );
+  const companyFactsProvider = createCompanyFactsProvider(
+    httpClient,
+    providerRateLimiter,
+  );
 
   const orchestratorService = new ResearchOrchestratorService(
     queue,
@@ -280,6 +320,7 @@ export const createRuntime = async () => {
     env.APP_NEWS_LOOKBACK_DAYS,
     env.APP_FILINGS_LOOKBACK_DAYS,
     marketContextProvider,
+    companyFactsProvider,
   );
   const normalizationService = new NormalizationService(
     documentRepo,

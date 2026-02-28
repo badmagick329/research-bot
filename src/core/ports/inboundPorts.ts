@@ -70,7 +70,9 @@ export type MetricsFetchStatus =
   | "provider_error"
   | "auth_invalid"
   | "config_invalid"
-  | "malformed_response";
+  | "malformed_response"
+  | "transport_error"
+  | "invalid_json";
 
 export type MetricsFetchDiagnostics = {
   provider: string;
@@ -205,6 +207,12 @@ export interface NewsProviderPort {
 
 export interface MarketMetricsProviderPort {
   fetchMetrics(
+    request: MetricsRequest,
+  ): Promise<Result<MetricsFetchResult, AppBoundaryError>>;
+}
+
+export interface CompanyFactsProviderPort {
+  fetchCompanyFacts(
     request: MetricsRequest,
   ): Promise<Result<MetricsFetchResult, AppBoundaryError>>;
 }

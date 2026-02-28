@@ -31,6 +31,7 @@ export type JobPayload = {
   requestedAt: string;
   resolvedIdentity?: ResolvedCompanyIdentity;
   metricsDiagnostics?: SnapshotMetricsDiagnostics;
+  metricsCompanyFactsDiagnostics?: SnapshotMetricsDiagnostics;
   providerFailures?: SnapshotProviderFailureDiagnostics[];
   stageIssues?: SnapshotStageDiagnostics[];
   thesisTypeContext?: ThesisTypeContext;

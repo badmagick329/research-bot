@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { err, ok } from "neverthrow";
 import { IngestionService } from "./ingestionService";
 import type {
+  CompanyFactsProviderPort,
   FilingsProviderPort,
   MarketContextProviderPort,
   MarketMetricsProviderPort,
@@ -175,6 +176,11 @@ describe("IngestionService", () => {
     expect(queuedPayload?.runId).toBe("run-1");
     expect(queuedPayload?.metricsDiagnostics).toEqual({
       provider: "alphavantage",
+      status: "empty",
+      metricCount: 0,
+    });
+    expect(queuedPayload?.metricsCompanyFactsDiagnostics).toEqual({
+      provider: "sec-companyfacts-disabled",
       status: "empty",
       metricCount: 0,
     });
@@ -615,5 +621,118 @@ describe("IngestionService", () => {
           failure.provider === "finnhub-market-context",
       ),
     ).toBeTrue();
+  });
+
+  it("merges companyfacts metrics and records companyfacts diagnostics", async () => {
+    const newsProvider: NewsProviderPort = {
+      fetchArticles: async () => ok([]),
+    };
+    const metricsProvider: MarketMetricsProviderPort = {
+      fetchMetrics: async (request) =>
+        ok({
+          metrics: [
+            {
+              id: "metric-base",
+              provider: "alphavantage",
+              symbol: request.symbol,
+              metricName: "market_cap",
+              metricValue: 1_000,
+              metricUnit: "usd",
+              asOf: request.asOf ?? new Date("2026-02-18T12:00:00.000Z"),
+              periodType: "point_in_time",
+              rawPayload: {},
+            },
+          ],
+          diagnostics: {
+            provider: "alphavantage",
+            symbol: request.symbol,
+            status: "ok",
+            metricCount: 1,
+          },
+        }),
+    };
+    const filingsProvider: FilingsProviderPort = {
+      fetchFilings: async () => ok([]),
+    };
+    const companyFactsProvider: CompanyFactsProviderPort = {
+      fetchCompanyFacts: async (request) =>
+        ok({
+          metrics: [
+            {
+              id: "metric-cf",
+              provider: "sec-companyfacts",
+              symbol: request.symbol,
+              metricName: "revenue_ttm",
+              metricValue: 2_000,
+              metricUnit: "usd",
+              asOf: request.asOf ?? new Date("2026-02-18T12:00:00.000Z"),
+              periodType: "ttm",
+              rawPayload: {},
+            },
+          ],
+          diagnostics: {
+            provider: "sec-companyfacts",
+            symbol: request.symbol,
+            status: "ok",
+            metricCount: 1,
+          },
+        }),
+    };
+
+    const documentRepo: DocumentRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+    let persistedMetricsCount = 0;
+    const metricsRepo: MetricsRepositoryPort = {
+      upsertMany: async (metrics) => {
+        persistedMetricsCount = metrics.length;
+      },
+      listBySymbol: async () => [],
+    };
+    const filingsRepo: FilingsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+    let queuedPayload: JobPayload | undefined;
+    const queue: QueuePort = {
+      enqueue: async (_stage, nextPayload) => {
+        queuedPayload = nextPayload;
+      },
+    };
+    const clock: ClockPort = {
+      now: () => new Date("2026-02-18T12:00:00.000Z"),
+    };
+    const ids: IdGeneratorPort = {
+      next: () => crypto.randomUUID(),
+    };
+
+    const service = new IngestionService(
+      newsProvider,
+      metricsProvider,
+      filingsProvider,
+      documentRepo,
+      metricsRepo,
+      filingsRepo,
+      queue,
+      clock,
+      ids,
+      7,
+      90,
+      undefined,
+      companyFactsProvider,
+    );
+
+    await service.run(payload);
+
+    expect(persistedMetricsCount).toBe(2);
+    expect(queuedPayload?.metricsDiagnostics?.provider).toBe("alphavantage");
+    expect(queuedPayload?.metricsCompanyFactsDiagnostics).toEqual({
+      provider: "sec-companyfacts",
+      status: "ok",
+      metricCount: 1,
+      reason: undefined,
+      httpStatus: undefined,
+    });
   });
 });
