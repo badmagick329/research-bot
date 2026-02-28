@@ -1,6 +1,9 @@
 import "dotenv/config";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { defaultConfig } from "./defaultConfig";
 
 const supportedNewsProviders = ["mock", "finnhub", "alphavantage"] as const;
 const supportedMetricsProviders = ["mock", "alphavantage"] as const;
@@ -14,87 +17,132 @@ export type MetricsProviderName = (typeof supportedMetricsProviders)[number];
 export type FilingsProviderName = (typeof supportedFilingsProviders)[number];
 export type LlmProviderName = (typeof supportedLlmProviders)[number];
 
-const envSchema = z.object({
+const sensitiveEnvSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
-  APP_SYMBOLS: z.string().default("AAPL,MSFT,NVDA"),
-  APP_RESEARCH_INTERVAL_SECONDS: z.coerce
-    .number()
-    .int()
-    .positive()
-    .default(300),
-  API_PORT: z.coerce.number().int().positive().default(3000),
-  APP_NEWS_LOOKBACK_DAYS: z.coerce.number().int().positive().default(7),
-  APP_FILINGS_LOOKBACK_DAYS: z.coerce.number().int().positive().default(90),
-  NEWS_PROVIDER: z.enum(supportedNewsProviders).default("mock"),
-  NEWS_PROVIDERS: z.string().default(""),
-  FINNHUB_BASE_URL: z.string().default("https://finnhub.io"),
-  FINNHUB_API_KEY: z.string().default(""),
-  FINNHUB_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
-  FINNHUB_MIN_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
-  ALPHA_VANTAGE_BASE_URL: z.string().default("https://www.alphavantage.co"),
-  ALPHA_VANTAGE_API_KEY: z.string().default(""),
-  ALPHA_VANTAGE_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
-  ALPHA_VANTAGE_MIN_INTERVAL_MS: z.coerce
-    .number()
-    .int()
-    .positive()
-    .default(1_000),
-  METRICS_PROVIDER: z.enum(supportedMetricsProviders).default("mock"),
-  FILINGS_PROVIDER: z.enum(supportedFilingsProviders).default("mock"),
-  SEC_EDGAR_BASE_URL: z.string().default("https://data.sec.gov"),
-  SEC_EDGAR_ARCHIVES_BASE_URL: z
-    .string()
-    .default("https://www.sec.gov/Archives/edgar/data"),
-  SEC_EDGAR_TICKERS_URL: z
-    .string()
-    .default("https://www.sec.gov/files/company_tickers.json"),
-  SEC_EDGAR_USER_AGENT: z
-    .string()
-    .default("research-bot/1.0 (contact: devnull@example.com)"),
-  SEC_EDGAR_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
-  SEC_EDGAR_MIN_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
   REDIS_URL: z.string().default("redis://localhost:6379"),
   POSTGRES_URL: z
     .string()
     .default("postgres://postgres:postgres@localhost:5432/research_bot"),
-  LLM_PROVIDER: z.enum(supportedLlmProviders).default("ollama"),
-  OLLAMA_BASE_URL: z.string().default("http://localhost:11434"),
-  OLLAMA_CHAT_MODEL: z.string().default("qwen2.5:7b-instruct"),
-  OLLAMA_EMBED_MODEL: z.string().default("nomic-embed-text"),
-  OLLAMA_CHAT_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
-  OLLAMA_EMBED_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
-  OPENAI_BASE_URL: z.string().default("https://api.openai.com"),
+  FINNHUB_API_KEY: z.string().default(""),
+  ALPHA_VANTAGE_API_KEY: z.string().default(""),
+  SEC_EDGAR_USER_AGENT: z
+    .string()
+    .default("research-bot/1.0 (contact: devnull@example.com)"),
   OPENAI_API_KEY: z.string().default(""),
-  OPENAI_CHAT_MODEL: z.string().default("gpt-4.1"),
-  OPENAI_CHAT_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
-  NEWS_RELEVANCE_MODE: z.enum(supportedNewsRelevanceModes).default("high_precision"),
-  NEWS_MIN_RELEVANCE_SCORE: z.coerce.number().int().min(1).default(7),
-  NEWS_ISSUER_MATCH_MIN_FIELDS: z.coerce.number().int().min(1).default(1),
-  THESIS_TRIGGER_MIN_NUMERIC: z.coerce.number().int().min(1).max(5).default(3),
-  THESIS_GENERIC_PHRASE_MAX: z.coerce.number().int().min(0).default(0),
-  THESIS_MIN_CITATION_COVERAGE_PCT: z.coerce.number().int().min(0).max(100).default(80),
-  THESIS_QUALITY_MIN_SCORE: z.coerce.number().int().min(0).max(100).default(75),
-  NEWS_V2_MIN_COMPOSITE_SCORE: z.coerce.number().int().min(0).max(100).default(65),
-  NEWS_V2_MIN_MATERIALITY_SCORE: z.coerce.number().int().min(0).max(100).default(50),
-  NEWS_V2_MIN_KPI_LINKAGE_SCORE: z.coerce.number().int().min(0).max(100).default(40),
-  NEWS_V2_MAX_ITEMS: z.coerce.number().int().min(1).max(20).default(10),
-  NEWS_V2_SOURCE_QUALITY_MODE: z
-    .enum(supportedNewsV2SourceQualityModes)
-    .default("default"),
-  QUEUE_CONCURRENCY_INGEST: z.coerce.number().int().positive().default(2),
-  QUEUE_CONCURRENCY_NORMALIZE: z.coerce.number().int().positive().default(2),
-  QUEUE_CONCURRENCY_CLASSIFY_STOCK: z.coerce.number().int().positive().default(2),
-  QUEUE_CONCURRENCY_SELECT_HORIZON: z.coerce.number().int().positive().default(2),
-  QUEUE_CONCURRENCY_BUILD_KPI_TREE: z.coerce.number().int().positive().default(2),
-  QUEUE_CONCURRENCY_EMBED: z.coerce.number().int().positive().default(2),
-  QUEUE_CONCURRENCY_SYNTHESIZE: z.coerce.number().int().positive().default(1),
+  APP_CONFIG_PATH: z.string().default("config.yaml"),
 });
 
-export type AppEnv = z.infer<typeof envSchema>;
+const nonSensitiveConfigSchema = z.object({
+  APP_SYMBOLS: z.string(),
+  APP_RESEARCH_INTERVAL_SECONDS: z.coerce.number().int().positive(),
+  API_PORT: z.coerce.number().int().positive(),
+  APP_NEWS_LOOKBACK_DAYS: z.coerce.number().int().positive(),
+  APP_FILINGS_LOOKBACK_DAYS: z.coerce.number().int().positive(),
+  NEWS_PROVIDER: z.enum(supportedNewsProviders),
+  NEWS_PROVIDERS: z.string(),
+  FINNHUB_BASE_URL: z.string(),
+  FINNHUB_TIMEOUT_MS: z.coerce.number().int().positive(),
+  FINNHUB_MIN_INTERVAL_MS: z.coerce.number().int().positive(),
+  ALPHA_VANTAGE_BASE_URL: z.string(),
+  ALPHA_VANTAGE_TIMEOUT_MS: z.coerce.number().int().positive(),
+  ALPHA_VANTAGE_MIN_INTERVAL_MS: z.coerce.number().int().positive(),
+  METRICS_PROVIDER: z.enum(supportedMetricsProviders),
+  FILINGS_PROVIDER: z.enum(supportedFilingsProviders),
+  SEC_EDGAR_BASE_URL: z.string(),
+  SEC_EDGAR_ARCHIVES_BASE_URL: z.string(),
+  SEC_EDGAR_TICKERS_URL: z.string(),
+  SEC_EDGAR_TIMEOUT_MS: z.coerce.number().int().positive(),
+  SEC_EDGAR_MIN_INTERVAL_MS: z.coerce.number().int().positive(),
+  LLM_PROVIDER: z.enum(supportedLlmProviders),
+  OLLAMA_BASE_URL: z.string(),
+  OLLAMA_CHAT_MODEL: z.string(),
+  OLLAMA_EMBED_MODEL: z.string(),
+  OLLAMA_CHAT_TIMEOUT_MS: z.coerce.number().int().positive(),
+  OLLAMA_EMBED_TIMEOUT_MS: z.coerce.number().int().positive(),
+  OPENAI_BASE_URL: z.string(),
+  OPENAI_CHAT_MODEL: z.string(),
+  OPENAI_CHAT_TIMEOUT_MS: z.coerce.number().int().positive(),
+  NEWS_RELEVANCE_MODE: z.enum(supportedNewsRelevanceModes),
+  NEWS_MIN_RELEVANCE_SCORE: z.coerce.number().int().min(1),
+  NEWS_ISSUER_MATCH_MIN_FIELDS: z.coerce.number().int().min(1),
+  THESIS_TRIGGER_MIN_NUMERIC: z.coerce.number().int().min(1).max(5),
+  THESIS_GENERIC_PHRASE_MAX: z.coerce.number().int().min(0),
+  THESIS_MIN_CITATION_COVERAGE_PCT: z.coerce.number().int().min(0).max(100),
+  THESIS_QUALITY_MIN_SCORE: z.coerce.number().int().min(0).max(100),
+  NEWS_V2_MIN_COMPOSITE_SCORE: z.coerce.number().int().min(0).max(100),
+  NEWS_V2_MIN_MATERIALITY_SCORE: z.coerce.number().int().min(0).max(100),
+  NEWS_V2_MIN_KPI_LINKAGE_SCORE: z.coerce.number().int().min(0).max(100),
+  NEWS_V2_MAX_ITEMS: z.coerce.number().int().min(1).max(20),
+  NEWS_V2_SOURCE_QUALITY_MODE: z.enum(supportedNewsV2SourceQualityModes),
+  QUEUE_CONCURRENCY_INGEST: z.coerce.number().int().positive(),
+  QUEUE_CONCURRENCY_NORMALIZE: z.coerce.number().int().positive(),
+  QUEUE_CONCURRENCY_CLASSIFY_STOCK: z.coerce.number().int().positive(),
+  QUEUE_CONCURRENCY_SELECT_HORIZON: z.coerce.number().int().positive(),
+  QUEUE_CONCURRENCY_BUILD_KPI_TREE: z.coerce.number().int().positive(),
+  QUEUE_CONCURRENCY_EMBED: z.coerce.number().int().positive(),
+  QUEUE_CONCURRENCY_SYNTHESIZE: z.coerce.number().int().positive(),
+});
 
-export const env: AppEnv = envSchema.parse(process.env);
+const toRecord = (value: unknown): Record<string, unknown> => {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+};
+
+/**
+ * Loads gitignored YAML config to keep non-sensitive runtime knobs outside `.env`.
+ */
+const loadYamlConfig = (configPath: string): Record<string, unknown> => {
+  const absolutePath = resolve(process.cwd(), configPath);
+  if (!existsSync(absolutePath)) {
+    return {};
+  }
+
+  const raw = readFileSync(absolutePath, "utf8");
+  return toRecord(parseYaml(raw));
+};
+
+/**
+ * Reads legacy env vars for non-sensitive keys so current environments keep working during transition.
+ */
+const loadNonSensitiveEnvOverrides = (): Record<string, unknown> =>
+  nonSensitiveConfigSchema.partial().parse(process.env);
+
+const sensitiveEnv = sensitiveEnvSchema.parse(process.env);
+const yamlOverrides = loadYamlConfig(sensitiveEnv.APP_CONFIG_PATH);
+const envOverrides = loadNonSensitiveEnvOverrides();
+
+const nonSensitiveConfig = nonSensitiveConfigSchema.parse({
+  ...defaultConfig,
+  ...yamlOverrides,
+  ...envOverrides,
+});
+
+const appEnvSchema = nonSensitiveConfigSchema.extend({
+  NODE_ENV: sensitiveEnvSchema.shape.NODE_ENV,
+  REDIS_URL: sensitiveEnvSchema.shape.REDIS_URL,
+  POSTGRES_URL: sensitiveEnvSchema.shape.POSTGRES_URL,
+  FINNHUB_API_KEY: sensitiveEnvSchema.shape.FINNHUB_API_KEY,
+  ALPHA_VANTAGE_API_KEY: sensitiveEnvSchema.shape.ALPHA_VANTAGE_API_KEY,
+  SEC_EDGAR_USER_AGENT: sensitiveEnvSchema.shape.SEC_EDGAR_USER_AGENT,
+  OPENAI_API_KEY: sensitiveEnvSchema.shape.OPENAI_API_KEY,
+});
+
+export type AppEnv = z.infer<typeof appEnvSchema>;
+
+export const env: AppEnv = appEnvSchema.parse({
+  ...nonSensitiveConfig,
+  NODE_ENV: sensitiveEnv.NODE_ENV,
+  REDIS_URL: sensitiveEnv.REDIS_URL,
+  POSTGRES_URL: sensitiveEnv.POSTGRES_URL,
+  FINNHUB_API_KEY: sensitiveEnv.FINNHUB_API_KEY,
+  ALPHA_VANTAGE_API_KEY: sensitiveEnv.ALPHA_VANTAGE_API_KEY,
+  SEC_EDGAR_USER_AGENT: sensitiveEnv.SEC_EDGAR_USER_AGENT,
+  OPENAI_API_KEY: sensitiveEnv.OPENAI_API_KEY,
+});
 
 const isRunningInContainer = (): boolean => existsSync("/.dockerenv");
 
@@ -197,3 +245,4 @@ export const newsRelevanceMode = (): "high_precision" | "balanced" =>
  */
 export const newsV2SourceQualityMode = (): "default" =>
   env.NEWS_V2_SOURCE_QUALITY_MODE;
+
