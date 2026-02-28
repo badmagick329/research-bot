@@ -29,6 +29,10 @@ import type {
   SnapshotProviderFailureDiagnostics,
   SnapshotStageDiagnostics,
 } from "../../core/entities/research";
+import {
+  type NewsScoredItem,
+  scoreNewsCandidate,
+} from "./newsScoringV2";
 
 type RankedDocument = {
   doc: DocumentEntity;
@@ -46,6 +50,22 @@ type RelevanceSelection = {
   excludedHeadlinesCount: number;
   excludedHeadlineReasons: ExcludedHeadlineReason[];
   excludedHeadlineReasonSamples: string[];
+  averageCompositeScore: number;
+  excludedByReason: Record<string, number>;
+  scoreBreakdownSample: Array<{
+    title: string;
+    composite: number;
+    components: {
+      issuerMatchScore: number;
+      economicMaterialityScore: number;
+      noveltyScore: number;
+      horizonRelevanceScore: number;
+      kpiLinkageScore: number;
+      sourceQualityScore: number;
+    };
+    included: boolean;
+    reason?: string;
+  }>;
 };
 
 type ThesisDecision = "buy" | "watch" | "avoid";
@@ -65,7 +85,13 @@ type ExcludedHeadlineReason =
   | "no_issuer_identity_match"
   | "below_relevance_threshold"
   | "duplicate_title"
-  | "duplicate_url";
+  | "duplicate_url"
+  | "below_materiality_threshold"
+  | "below_kpi_linkage_threshold"
+  | "below_composite_threshold"
+  | "low_source_quality"
+  | "stale_for_horizon"
+  | "read_through_without_issuer_anchor";
 type ActionMatrixRow = {
   signalId: string;
   label: string;
@@ -102,6 +128,11 @@ export class SynthesisService {
   private readonly thesisGenericPhraseMax: number;
   private readonly thesisMinCitationCoveragePct: number;
   private readonly thesisQualityMinScore: number;
+  private readonly newsV2MinCompositeScore: number;
+  private readonly newsV2MinMaterialityScore: number;
+  private readonly newsV2MinKpiLinkageScore: number;
+  private readonly newsV2MaxItems: number;
+  private readonly newsV2SourceQualityMode: "default";
 
   constructor(
     private readonly documentRepo: DocumentRepositoryPort,
@@ -121,6 +152,11 @@ export class SynthesisService {
       thesisGenericPhraseMax?: number;
       thesisMinCitationCoveragePct?: number;
       thesisQualityMinScore?: number;
+      newsV2MinCompositeScore?: number;
+      newsV2MinMaterialityScore?: number;
+      newsV2MinKpiLinkageScore?: number;
+      newsV2MaxItems?: number;
+      newsV2SourceQualityMode?: "default";
     },
   ) {
     this.relevanceMode = options?.relevanceMode ?? "high_precision";
@@ -130,6 +166,11 @@ export class SynthesisService {
     this.thesisGenericPhraseMax = options?.thesisGenericPhraseMax ?? 0;
     this.thesisMinCitationCoveragePct = options?.thesisMinCitationCoveragePct ?? 80;
     this.thesisQualityMinScore = options?.thesisQualityMinScore ?? 75;
+    this.newsV2MinCompositeScore = options?.newsV2MinCompositeScore ?? 65;
+    this.newsV2MinMaterialityScore = options?.newsV2MinMaterialityScore ?? 50;
+    this.newsV2MinKpiLinkageScore = options?.newsV2MinKpiLinkageScore ?? 40;
+    this.newsV2MaxItems = options?.newsV2MaxItems ?? 10;
+    this.newsV2SourceQualityMode = options?.newsV2SourceQualityMode ?? "default";
   }
 
   /**
@@ -764,6 +805,8 @@ export class SynthesisService {
     docs: DocumentEntity[],
     symbol: string,
     identity: ResolvedCompanyIdentity | undefined,
+    horizon: HorizonBucket,
+    kpiNames: string[],
   ): RelevanceSelection {
     if (docs.length === 0) {
       return {
@@ -776,131 +819,111 @@ export class SynthesisService {
         excludedHeadlinesCount: 0,
         excludedHeadlineReasons: [],
         excludedHeadlineReasonSamples: [],
+        averageCompositeScore: 0,
+        excludedByReason: {},
+        scoreBreakdownSample: [],
       };
     }
 
     const identityPatterns = this.buildIssuerIdentityPatterns(symbol, identity);
-    const issuerTokens = [
-      ...identityPatterns.exactTokens.values(),
-      ...identityPatterns.phraseTokens.values(),
-    ];
-
     const excludedHeadlineReasons: ExcludedHeadlineReason[] = [];
     const excludedHeadlineReasonSamples: string[] = [];
-    const issuerMatched = docs.filter((doc) => {
-      const match = this.matchesIssuerIdentity(doc, identityPatterns);
-      if (!match.matched) {
-        excludedHeadlineReasons.push(match.reason ?? "no_issuer_identity_match");
-        if (excludedHeadlineReasonSamples.length < 8) {
-          excludedHeadlineReasonSamples.push(
-            `${doc.title.slice(0, 96)} (${match.reason ?? "no_issuer_identity_match"}; matchedFields=${match.matchedFields.join(",") || "none"})`,
-          );
-        }
-      }
-      return match.matched;
-    });
-
-    const canonicalizeUrl = (value: string | undefined): string => {
-      if (!value || !value.trim()) {
-        return "";
-      }
-      try {
-        const parsed = new URL(value.trim());
-        parsed.hash = "";
-        const keptParams = new URLSearchParams();
-        parsed.searchParams.forEach((paramValue, key) => {
-          const lower = key.toLowerCase();
-          if (
-            lower.startsWith("utm_") ||
-            lower === "fbclid" ||
-            lower === "gclid" ||
-            lower === "mc_cid" ||
-            lower === "mc_eid"
-          ) {
-            return;
-          }
-          keptParams.append(key, paramValue);
-        });
-        parsed.search = keptParams.toString();
-        const pathname = parsed.pathname.replace(/\/+$/, "");
-        return `${parsed.hostname.toLowerCase()}${pathname}${parsed.search ? `?${parsed.search}` : ""}`;
-      } catch {
-        return value.trim().toLowerCase();
-      }
-    };
-    const canonicalizeTitle = (value: string): string =>
-      value
-        .toLowerCase()
-        .replace(/[^\w\s]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-
+    const excludedByReason: Record<string, number> = {};
     const seenTitle = new Set<string>();
     const seenUrl = new Set<string>();
-    const deduped = issuerMatched.filter((doc) => {
-      const titleKey = canonicalizeTitle(doc.title);
-      const urlKey = canonicalizeUrl(doc.url);
-      if (urlKey && seenUrl.has(urlKey)) {
-        excludedHeadlineReasons.push("duplicate_url");
-        if (excludedHeadlineReasonSamples.length < 8) {
-          excludedHeadlineReasonSamples.push(
-            `${doc.title.slice(0, 96)} (duplicate_url)`,
-          );
-        }
-        return false;
+    const scored: NewsScoredItem[] = [];
+    docs.forEach((doc) => {
+      const match = this.matchesIssuerIdentity(doc, identityPatterns);
+      const scoredItem = scoreNewsCandidate(
+        {
+          doc,
+          issuerMatched: match.matched,
+          horizon,
+          kpiNames,
+          seenTitleKeys: seenTitle,
+          seenUrlKeys: seenUrl,
+          sourceQualityMode: this.newsV2SourceQualityMode,
+        },
+        {
+          minCompositeScore: this.newsV2MinCompositeScore,
+          minMaterialityScore: this.newsV2MinMaterialityScore,
+          minKpiLinkageScore: this.newsV2MinKpiLinkageScore,
+          sourceQualityMode: this.newsV2SourceQualityMode,
+        },
+      );
+      scored.push(scoredItem);
+      if (scoredItem.urlKey) {
+        seenUrl.add(scoredItem.urlKey);
       }
-      if (titleKey && seenTitle.has(titleKey)) {
-        excludedHeadlineReasons.push("duplicate_title");
-        if (excludedHeadlineReasonSamples.length < 8) {
-          excludedHeadlineReasonSamples.push(
-            `${doc.title.slice(0, 96)} (duplicate_title)`,
-          );
-        }
-        return false;
+      if (scoredItem.titleKey) {
+        seenTitle.add(scoredItem.titleKey);
       }
-      if (urlKey) {
-        seenUrl.add(urlKey);
-      }
-      if (titleKey) {
-        seenTitle.add(titleKey);
-      }
-      return true;
     });
 
-    const ranked = deduped
-      .map((doc) => this.scoreDocumentRelevance(doc, issuerTokens, true))
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
+    const issuerIncludedExists = scored.some(
+      (item) => item.evidenceClass === "issuer" && item.includedByThresholds,
+    );
+    const includedCandidates = scored
+      .map((item) => {
+        if (!item.includedByThresholds) {
+          return { ...item, includedFinal: false };
         }
-
+        if (item.evidenceClass !== "issuer" && !issuerIncludedExists) {
+          return {
+            ...item,
+            includedFinal: false,
+            exclusionReason: "read_through_without_issuer_anchor" as const,
+          };
+        }
+        return { ...item, includedFinal: true };
+      })
+      .sort((left, right) => {
+        if (right.composite !== left.composite) {
+          return right.composite - left.composite;
+        }
         return right.doc.publishedAt.getTime() - left.doc.publishedAt.getTime();
       });
 
-    const relevant = ranked.filter((item) => item.isRelevant);
-    ranked
-      .filter((item) => !item.isRelevant)
+    const selectedRanked = includedCandidates
+      .filter((item) => item.includedFinal)
+      .slice(0, this.newsV2MaxItems);
+
+    includedCandidates
+      .filter((item) => !selectedRanked.some((selected) => selected.doc.id === item.doc.id))
+      .filter((item) => !item.includedFinal || selectedRanked.length >= this.newsV2MaxItems)
       .forEach((item) => {
-        excludedHeadlineReasons.push("below_relevance_threshold");
+        const reason = item.exclusionReason ?? "below_composite_threshold";
+        excludedHeadlineReasons.push(reason);
+        excludedByReason[reason] = (excludedByReason[reason] ?? 0) + 1;
         if (excludedHeadlineReasonSamples.length < 8) {
           excludedHeadlineReasonSamples.push(
-            `${item.doc.title.slice(0, 96)} (below_relevance_threshold score=${item.score})`,
+            `${item.doc.title.slice(0, 96)} (${reason}; composite=${item.composite})`,
           );
         }
       });
-    const selectedRanked =
-      relevant.length > 0
-        ? relevant.slice(0, 10)
-        : this.relevanceMode === "high_precision"
-          ? []
-          : ranked.slice(0, 5);
-    const selectedRelevantCount = selectedRanked.filter(
-      (item) => item.isRelevant,
-    ).length;
+
+    const relevant = selectedRanked;
+    const selectedRelevantCount = selectedRanked.length;
     const lowRelevance =
       selectedRanked.length === 0 ||
       selectedRelevantCount < 3 ||
-      selectedRelevantCount / selectedRanked.length < 0.5;
+      selectedRelevantCount / Math.max(1, selectedRanked.length) < 0.5;
+    const averageCompositeScore =
+      includedCandidates.length === 0
+        ? 0
+        : Number.parseFloat(
+            (
+              includedCandidates.reduce((sum, item) => sum + item.composite, 0) /
+              includedCandidates.length
+            ).toFixed(2),
+          );
+    const scoreBreakdownSample = includedCandidates.slice(0, 8).map((item) => ({
+      title: item.doc.title,
+      composite: item.composite,
+      components: item.components,
+      included: item.includedFinal,
+      reason: item.exclusionReason,
+    }));
 
     return {
       selected: selectedRanked.map((item) => item.doc),
@@ -908,10 +931,15 @@ export class SynthesisService {
       selectedRelevantCount,
       lowRelevance,
       totalHeadlinesCount: docs.length,
-      issuerMatchedHeadlinesCount: deduped.length,
-      excludedHeadlinesCount: docs.length - deduped.length,
+      issuerMatchedHeadlinesCount: scored.filter(
+        (item) => item.evidenceClass === "issuer",
+      ).length,
+      excludedHeadlinesCount: docs.length - selectedRanked.length,
       excludedHeadlineReasons,
       excludedHeadlineReasonSamples,
+      averageCompositeScore,
+      excludedByReason,
+      scoreBreakdownSample,
     };
   }
 
@@ -1372,6 +1400,13 @@ export class SynthesisService {
       `- totalHeadlines=${args.relevanceSelection.totalHeadlinesCount}`,
       `- issuerMatchedHeadlines=${args.relevanceSelection.issuerMatchedHeadlinesCount}`,
       `- excludedHeadlines=${args.relevanceSelection.excludedHeadlinesCount}`,
+      `- includedHeadlines=${args.relevanceSelection.selected.length}`,
+      `- averageCompositeScore=${args.relevanceSelection.averageCompositeScore}`,
+      Object.keys(args.relevanceSelection.excludedByReason).length > 0
+        ? `- excludedByReason=${Object.entries(args.relevanceSelection.excludedByReason)
+            .map(([reason, count]) => `${reason}:${count}`)
+            .join(",")}`
+        : "- excludedByReason=none",
       args.relevanceSelection.excludedHeadlineReasonSamples.length > 0
         ? `- excludedSample=${args.relevanceSelection.excludedHeadlineReasonSamples.join(" | ")}`
         : "- excludedSample=none",
@@ -2391,6 +2426,8 @@ export class SynthesisService {
       docs,
       payload.symbol,
       payload.resolvedIdentity,
+      payload.horizonContext?.horizon ?? "1_2_quarters",
+      payload.kpiContext?.selected ?? payload.kpiContext?.required ?? [],
     );
     const selectedDocs = relevanceSelection.selected;
 
@@ -2735,6 +2772,15 @@ export class SynthesisService {
           mode: this.relevanceMode,
           excludedReasonsSample:
             relevanceSelection.excludedHeadlineReasonSamples.slice(0, 8),
+        },
+        newsQualityV2: {
+          totalConsidered: relevanceSelection.totalHeadlinesCount,
+          included: relevanceSelection.selected.length,
+          excluded: relevanceSelection.excludedHeadlinesCount,
+          averageCompositeScore: relevanceSelection.averageCompositeScore,
+          mode: "enforce",
+          excludedByReason: relevanceSelection.excludedByReason,
+          scoreBreakdownSample: relevanceSelection.scoreBreakdownSample.slice(0, 8),
         },
         decisionReasons: decisionResult.reasons.slice(0, 8),
         thesisQuality: {

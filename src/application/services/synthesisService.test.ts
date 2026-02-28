@@ -736,6 +736,8 @@ describe("SynthesisService", () => {
     expect(saved.diagnostics?.newsQuality?.total).toBe(2);
     expect(saved.diagnostics?.newsQuality?.issuerMatched).toBe(1);
     expect(saved.diagnostics?.newsQuality?.excluded).toBe(1);
+    expect(saved.diagnostics?.newsQualityV2?.mode).toBe("enforce");
+    expect(saved.diagnostics?.newsQualityV2?.excludedByReason).toBeDefined();
   });
 
   it("keeps company-name-only headlines when identity company name matches", async () => {
@@ -1044,6 +1046,8 @@ describe("SynthesisService", () => {
     const saved = savedSnapshots[0];
     expect(saved?.diagnostics?.newsQuality?.excludedReasonsSample?.some((line) => line.includes("duplicate_title"))).toBeTrue();
     expect(saved?.diagnostics?.newsQuality?.excludedReasonsSample?.some((line) => line.includes("duplicate_url"))).toBeTrue();
+    expect(saved?.diagnostics?.newsQualityV2?.excludedByReason.duplicate_title).toBeDefined();
+    expect(saved?.diagnostics?.newsQualityV2?.excludedByReason.duplicate_url).toBeDefined();
   });
 
   it("applies deterministic fallback when thesis quality remains below floor after repair", async () => {

@@ -211,6 +211,28 @@ export type SnapshotDiagnostics = {
     mode: string;
     excludedReasonsSample?: string[];
   };
+  newsQualityV2?: {
+    totalConsidered: number;
+    included: number;
+    excluded: number;
+    averageCompositeScore: number;
+    mode: "enforce";
+    excludedByReason: Record<string, number>;
+    scoreBreakdownSample: Array<{
+      title: string;
+      composite: number;
+      components: {
+        issuerMatchScore: number;
+        economicMaterialityScore: number;
+        noveltyScore: number;
+        horizonRelevanceScore: number;
+        kpiLinkageScore: number;
+        sourceQualityScore: number;
+      };
+      included: boolean;
+      reason?: string;
+    }>;
+  };
   decisionReasons?: string[];
   thesisQuality?: {
     score: number;

@@ -7,6 +7,7 @@ const supportedMetricsProviders = ["mock", "alphavantage"] as const;
 const supportedFilingsProviders = ["mock", "sec-edgar"] as const;
 const supportedLlmProviders = ["ollama", "openai"] as const;
 const supportedNewsRelevanceModes = ["high_precision", "balanced"] as const;
+const supportedNewsV2SourceQualityModes = ["default"] as const;
 
 export type NewsProviderName = (typeof supportedNewsProviders)[number];
 export type MetricsProviderName = (typeof supportedMetricsProviders)[number];
@@ -75,6 +76,13 @@ const envSchema = z.object({
   THESIS_GENERIC_PHRASE_MAX: z.coerce.number().int().min(0).default(0),
   THESIS_MIN_CITATION_COVERAGE_PCT: z.coerce.number().int().min(0).max(100).default(80),
   THESIS_QUALITY_MIN_SCORE: z.coerce.number().int().min(0).max(100).default(75),
+  NEWS_V2_MIN_COMPOSITE_SCORE: z.coerce.number().int().min(0).max(100).default(65),
+  NEWS_V2_MIN_MATERIALITY_SCORE: z.coerce.number().int().min(0).max(100).default(50),
+  NEWS_V2_MIN_KPI_LINKAGE_SCORE: z.coerce.number().int().min(0).max(100).default(40),
+  NEWS_V2_MAX_ITEMS: z.coerce.number().int().min(1).max(20).default(10),
+  NEWS_V2_SOURCE_QUALITY_MODE: z
+    .enum(supportedNewsV2SourceQualityModes)
+    .default("default"),
   QUEUE_CONCURRENCY_INGEST: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_NORMALIZE: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_CLASSIFY_STOCK: z.coerce.number().int().positive().default(2),
@@ -183,3 +191,9 @@ export const llmProvider = (): LlmProviderName => env.LLM_PROVIDER;
  */
 export const newsRelevanceMode = (): "high_precision" | "balanced" =>
   env.NEWS_RELEVANCE_MODE;
+
+/**
+ * Resolves deterministic source-quality mapping profile so scoring behavior can remain versioned and explicit.
+ */
+export const newsV2SourceQualityMode = (): "default" =>
+  env.NEWS_V2_SOURCE_QUALITY_MODE;

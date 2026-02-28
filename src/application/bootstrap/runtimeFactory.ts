@@ -13,6 +13,7 @@ import {
   llmProvider,
   metricsProvider,
   newsRelevanceMode,
+  newsV2SourceQualityMode,
   newsProviders,
 } from "../../shared/config/env";
 import { createDb } from "../../infra/db/client";
@@ -325,6 +326,11 @@ export const createRuntime = async () => {
       thesisGenericPhraseMax: env.THESIS_GENERIC_PHRASE_MAX,
       thesisMinCitationCoveragePct: env.THESIS_MIN_CITATION_COVERAGE_PCT,
       thesisQualityMinScore: env.THESIS_QUALITY_MIN_SCORE,
+      newsV2MinCompositeScore: env.NEWS_V2_MIN_COMPOSITE_SCORE,
+      newsV2MinMaterialityScore: env.NEWS_V2_MIN_MATERIALITY_SCORE,
+      newsV2MinKpiLinkageScore: env.NEWS_V2_MIN_KPI_LINKAGE_SCORE,
+      newsV2MaxItems: env.NEWS_V2_MAX_ITEMS,
+      newsV2SourceQualityMode: newsV2SourceQualityMode(),
     },
   );
   const runQueryService = new RunQueryService(

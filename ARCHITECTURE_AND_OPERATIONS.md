@@ -46,6 +46,11 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
   - match sources: title, summary, content, payload symbols, alias/company patterns
   - unmatched or low-quality items are excluded from synthesis + Evidence Map
   - exclusion reasons are tracked (`no_issuer_identity_match`, `below_relevance_threshold`, `duplicate_title`, `duplicate_url`)
+- News Scoring V2 (immediate enforcement):
+  - deterministic component scores: `issuerMatchScore`, `economicMaterialityScore`, `noveltyScore`, `horizonRelevanceScore`, `kpiLinkageScore`, `sourceQualityScore`
+  - deterministic composite score with hard keep/drop thresholds
+  - read-through classes (`issuer|peer|supply_chain|customer|industry`) scored as secondary context
+  - non-issuer evidence requires high materiality + KPI linkage and an issuer anchor headline in selected set
 - Action Summary is partially deterministic:
   - decision seed from code policy (`Buy|Watch|Avoid`)
   - trigger rows from deterministic action matrix (threshold + action + citations)
@@ -67,6 +72,10 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - `identity`
 - `newsQuality`:
   - `total`, `issuerMatched`, `excluded`, `mode`, `excludedReasonsSample`
+- `newsQualityV2`:
+  - `totalConsidered`, `included`, `excluded`, `averageCompositeScore`, `mode`
+  - `excludedByReason`
+  - `scoreBreakdownSample`
 - `decisionReasons`
 - `thesisQuality`:
   - `score`, `failedChecks`, `fallbackApplied`
@@ -122,6 +131,11 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - `NEWS_RELEVANCE_MODE=high_precision|balanced`
 - `NEWS_MIN_RELEVANCE_SCORE=7`
 - `NEWS_ISSUER_MATCH_MIN_FIELDS=1`
+- `NEWS_V2_MIN_COMPOSITE_SCORE=65`
+- `NEWS_V2_MIN_MATERIALITY_SCORE=50`
+- `NEWS_V2_MIN_KPI_LINKAGE_SCORE=40`
+- `NEWS_V2_MAX_ITEMS=10`
+- `NEWS_V2_SOURCE_QUALITY_MODE=default`
 - `THESIS_TRIGGER_MIN_NUMERIC=3`
 - `THESIS_GENERIC_PHRASE_MAX=0`
 - `THESIS_MIN_CITATION_COVERAGE_PCT=80`
