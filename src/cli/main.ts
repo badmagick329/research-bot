@@ -205,6 +205,35 @@ export const buildCli = () => {
         metricsDiagnostics: snapshot.diagnostics?.metrics,
         providerFailures: snapshot.diagnostics?.providerFailures,
         stageIssues: snapshot.diagnostics?.stageIssues,
+        thesisTypeContext: snapshot.investorViewV2
+          ? {
+              thesisType: snapshot.investorViewV2.thesisType,
+              reasonCodes: ["refresh_from_snapshot"],
+              score: 50,
+            }
+          : undefined,
+        horizonContext:
+          snapshot.horizon === "0_4_weeks" ||
+          snapshot.horizon === "1_2_quarters" ||
+          snapshot.horizon === "1_3_years"
+            ? {
+                horizon: snapshot.horizon,
+                rationale:
+                  "Restored from latest snapshot context during synthesize-only refresh.",
+                score: 50,
+              }
+            : undefined,
+        kpiContext: snapshot.investorViewV2
+          ? {
+              template: "generic",
+              required: [],
+              optional: [],
+              selected: snapshot.investorViewV2.keyKpis.map((kpi) => kpi.name),
+              requiredHitCount: 0,
+              minRequiredForStrongNote: 0,
+            }
+          : undefined,
+        evidenceGate: snapshot.diagnostics?.evidenceGate,
       });
 
       logger.info(

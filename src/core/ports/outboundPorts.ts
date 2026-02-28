@@ -10,12 +10,16 @@ import type {
   RunDetailResponse,
 } from "../entities/opsConsole";
 import type {
+  EvidenceGateDiagnostics,
+  HorizonContext,
   JobStage,
+  KpiTemplateContext,
   ResearchSnapshotEntity,
   ResolvedCompanyIdentity,
   SnapshotMetricsDiagnostics,
   SnapshotProviderFailureDiagnostics,
   SnapshotStageDiagnostics,
+  ThesisTypeContext,
   ResearchTaskEntity,
 } from "../entities/research";
 
@@ -29,6 +33,10 @@ export type JobPayload = {
   metricsDiagnostics?: SnapshotMetricsDiagnostics;
   providerFailures?: SnapshotProviderFailureDiagnostics[];
   stageIssues?: SnapshotStageDiagnostics[];
+  thesisTypeContext?: ThesisTypeContext;
+  horizonContext?: HorizonContext;
+  kpiContext?: KpiTemplateContext;
+  evidenceGate?: EvidenceGateDiagnostics;
 };
 
 export type QueueEnqueueReceipt = {

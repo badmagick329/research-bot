@@ -77,6 +77,9 @@ const envSchema = z.object({
   THESIS_QUALITY_MIN_SCORE: z.coerce.number().int().min(0).max(100).default(75),
   QUEUE_CONCURRENCY_INGEST: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_NORMALIZE: z.coerce.number().int().positive().default(2),
+  QUEUE_CONCURRENCY_CLASSIFY_STOCK: z.coerce.number().int().positive().default(2),
+  QUEUE_CONCURRENCY_SELECT_HORIZON: z.coerce.number().int().positive().default(2),
+  QUEUE_CONCURRENCY_BUILD_KPI_TREE: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_EMBED: z.coerce.number().int().positive().default(2),
   QUEUE_CONCURRENCY_SYNTHESIZE: z.coerce.number().int().positive().default(1),
 });

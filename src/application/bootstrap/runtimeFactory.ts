@@ -3,6 +3,9 @@ import { IngestionService } from "../services/ingestionService";
 import { NormalizationService } from "../services/normalizationService";
 import { EmbeddingService } from "../services/embeddingService";
 import { SynthesisService } from "../services/synthesisService";
+import { ClassifyStockService } from "../services/classifyStockService";
+import { SelectHorizonService } from "../services/selectHorizonService";
+import { BuildKpiTreeService } from "../services/buildKpiTreeService";
 import { RunQueryService } from "../services/runQueryService";
 import {
   env,
@@ -282,6 +285,22 @@ export const createRuntime = async () => {
     llm,
     queue,
   );
+  const classifyStockService = new ClassifyStockService(
+    documentRepo,
+    metricsRepo,
+    filingsRepo,
+    queue,
+  );
+  const selectHorizonService = new SelectHorizonService(
+    metricsRepo,
+    filingsRepo,
+    queue,
+  );
+  const buildKpiTreeService = new BuildKpiTreeService(
+    documentRepo,
+    metricsRepo,
+    queue,
+  );
   const embeddingService = new EmbeddingService(
     documentRepo,
     embedder,
@@ -321,6 +340,9 @@ export const createRuntime = async () => {
     orchestratorService,
     ingestionService,
     normalizationService,
+    classifyStockService,
+    selectHorizonService,
+    buildKpiTreeService,
     embeddingService,
     synthesisService,
   };

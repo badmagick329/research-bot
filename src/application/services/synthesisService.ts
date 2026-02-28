@@ -15,6 +15,16 @@ import type { DocumentEntity } from "../../core/entities/document";
 import type { MetricPointEntity } from "../../core/entities/metric";
 import type { FilingEntity } from "../../core/entities/filing";
 import type {
+  ActionDecision,
+  ConfidenceDecomposition,
+  EvidenceGateDiagnostics,
+  FalsificationCondition,
+  HorizonBucket,
+  InvestorCatalyst,
+  InvestorDriver,
+  InvestorKpi,
+  InvestorViewV2,
+  PositionSizing,
   ResolvedCompanyIdentity,
   SnapshotProviderFailureDiagnostics,
   SnapshotStageDiagnostics,
@@ -2141,6 +2151,196 @@ export class SynthesisService {
   }
 
   /**
+   * Enforces Stage-1 minimum evidence requirements so low-data runs return insufficient-evidence decisions deterministically.
+   */
+  private buildEvidenceGate(args: {
+    filingsCount: number;
+    kpiCount: number;
+    valuationAvailable: boolean;
+    catalystsCount: number;
+    falsifiersCount: number;
+  }): EvidenceGateDiagnostics {
+    const failures: string[] = [];
+    const missingFields: string[] = [];
+
+    if (args.filingsCount < 1) {
+      failures.push("missing_filing_evidence");
+      missingFields.push("filings");
+    }
+    if (args.kpiCount < 3) {
+      failures.push("insufficient_kpi_items");
+      missingFields.push("kpis");
+    }
+    if (!args.valuationAvailable) {
+      failures.push("missing_valuation_context");
+      missingFields.push("valuation_context");
+    }
+    if (args.catalystsCount + args.falsifiersCount < 1) {
+      failures.push("missing_catalyst_or_falsifier");
+      missingFields.push("catalyst_or_falsifier");
+    }
+
+    return {
+      passed: failures.length === 0,
+      failures,
+      missingFields,
+    };
+  }
+
+  /**
+   * Converts deterministic policy decision and evidence gate into a Stage-1 action decision compatible with investor-facing output.
+   */
+  private toActionDecision(
+    decision: ThesisDecision,
+    gate: EvidenceGateDiagnostics,
+  ): ActionDecision {
+    if (!gate.passed) {
+      return "insufficient_evidence";
+    }
+
+    if (decision === "buy") {
+      return "buy";
+    }
+    if (decision === "avoid") {
+      return "avoid";
+    }
+    return "watch";
+  }
+
+  /**
+   * Bounds position sizing to conservative defaults so Stage-1 outputs do not overstate confidence.
+   */
+  private toPositionSizing(decision: ActionDecision): PositionSizing {
+    if (decision === "insufficient_evidence") {
+      return "none";
+    }
+    if (decision === "buy") {
+      return "medium";
+    }
+    return "small";
+  }
+
+  /**
+   * Derives falsification objects from action rows so investor notes use structured, auditable thesis break conditions.
+   */
+  private buildFalsification(actionMatrix: ActionMatrixRow[]): FalsificationCondition[] {
+    return actionMatrix.slice(0, 3).map((row) => ({
+      condition: row.condition,
+      type: row.hasNumericThreshold ? "numeric" : "event",
+      thresholdOrOutcome: row.currentValue,
+      deadline: "next earnings cycle",
+      actionIfHit: row.action,
+      evidenceRefs: row.citations,
+    }));
+  }
+
+  /**
+   * Estimates decomposed confidence dimensions so data, thesis quality, and timing confidence are visible independently.
+   */
+  private buildConfidenceDecomposition(args: {
+    selectedDocs: DocumentEntity[];
+    metrics: MetricPointEntity[];
+    filings: FilingEntity[];
+    now: Date;
+    relevanceCoverage: number;
+    horizonScore: number;
+    evidenceGate: EvidenceGateDiagnostics;
+    fallbackApplied: boolean;
+  }): ConfidenceDecomposition {
+    const dataConfidence = Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round(
+          this.computeConfidence(
+            args.selectedDocs,
+            args.metrics,
+            args.filings,
+            args.now,
+            args.relevanceCoverage,
+          ) * 100,
+        ),
+      ),
+    );
+
+    let thesisConfidence = Math.round(
+      (args.evidenceGate.passed ? 62 : 38) +
+        Math.min(18, args.metrics.length * 2) +
+        Math.min(10, args.filings.length * 3),
+    );
+    if (!args.evidenceGate.passed) {
+      thesisConfidence = Math.min(thesisConfidence, 40);
+    }
+    if (args.fallbackApplied) {
+      thesisConfidence = Math.min(thesisConfidence, 50);
+    }
+
+    const timingConfidence = Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round(args.horizonScore + Math.min(12, args.selectedDocs.length * 2)),
+      ),
+    );
+
+    return {
+      dataConfidence,
+      thesisConfidence: Math.max(0, Math.min(100, thesisConfidence)),
+      timingConfidence,
+    };
+  }
+
+  /**
+   * Projects selected KPI names into investor-facing KPI cards with evidence refs and concise business rationale.
+   */
+  private buildInvestorKpis(
+    selectedKpiNames: string[],
+    metricLabelByName: Map<string, string>,
+    metrics: MetricPointEntity[],
+  ): InvestorKpi[] {
+    const byName = new Map(metrics.map((metric) => [metric.metricName, metric]));
+    return selectedKpiNames.slice(0, 10).map((name) => {
+      const metric = byName.get(name);
+      const label = metricLabelByName.get(name);
+      const value = metric ? this.formatMetricValue(metric) : "n/a";
+      const trend: InvestorKpi["trend"] =
+        name.includes("growth") ? "up" : name.includes("volatility") ? "mixed" : "unknown";
+      return {
+        name,
+        value,
+        trend,
+        whyItMatters: `Tracks ${name.replace(/_/g, " ")} as a core thesis checkpoint.`,
+        evidenceRefs: label ? [label] : [],
+      };
+    });
+  }
+
+  /**
+   * Computes lightweight citation linkage diagnostics so diagnostics can expose citation coverage and unlinked claim count.
+   */
+  private computeCitationDiagnostics(thesis: string): {
+    citationCoveragePct: number;
+    unlinkedClaimsCount: number;
+  } {
+    const claimLines = thesis
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("- ") && line.length > 8);
+    if (claimLines.length === 0) {
+      return {
+        citationCoveragePct: 100,
+        unlinkedClaimsCount: 0,
+      };
+    }
+    const linked = claimLines.filter((line) => /\b[NMFR]\d+\b/.test(line));
+    const citationCoveragePct = Math.round((linked.length / claimLines.length) * 100);
+    return {
+      citationCoveragePct,
+      unlinkedClaimsCount: claimLines.length - linked.length,
+    };
+  }
+
+  /**
    * Renders compact extracted-fact highlights so filing evidence contributes concrete signals instead of metadata-only labels.
    */
   private formatFilingFactHighlights(filing: FilingEntity): string {
@@ -2257,6 +2457,7 @@ export class SynthesisService {
       filingLabelByFactName,
     );
     const actionMatrixLines = this.formatActionMatrix(actionMatrix);
+    const falsification = this.buildFalsification(actionMatrix);
     const decisionReasonLines =
       decisionResult.reasons.length > 0
         ? decisionResult.reasons.map((reason) => `- ${reason}`).join("\n")
@@ -2398,20 +2599,130 @@ export class SynthesisService {
       now,
       relevanceCoverage,
     );
+    const valuationView = this.deriveValuationView(latestMetrics);
+    const evidenceGate = this.buildEvidenceGate({
+      filingsCount: filings.length,
+      kpiCount: payload.kpiContext?.selected.length ?? latestMetrics.length,
+      valuationAvailable: !valuationView.toLowerCase().includes("unavailable"),
+      catalystsCount: this.deriveCatalysts(selectedDocs, latestMetrics, filings).length,
+      falsifiersCount: falsification.length,
+    });
+    const actionDecision = this.toActionDecision(decisionResult.decision, evidenceGate);
+    const confidenceV2 = this.buildConfidenceDecomposition({
+      selectedDocs,
+      metrics: latestMetrics,
+      filings,
+      now,
+      relevanceCoverage,
+      horizonScore: payload.horizonContext?.score ?? 55,
+      evidenceGate,
+      fallbackApplied,
+    });
+    const citationDiagnostics = this.computeCitationDiagnostics(thesis);
+    const selectedKpiNames =
+      payload.kpiContext?.selected.length && payload.kpiContext.selected.length > 0
+        ? payload.kpiContext.selected
+        : latestMetrics.slice(0, 8).map((metric) => metric.metricName);
+    const investorKpis = this.buildInvestorKpis(
+      selectedKpiNames,
+      metricLabelByName,
+      latestMetrics,
+    );
+    const investorCatalysts: InvestorCatalyst[] = this.deriveCatalysts(
+      selectedDocs,
+      latestMetrics,
+      filings,
+    ).map((catalyst, index) => ({
+      event: catalyst,
+      window:
+        (payload.horizonContext?.horizon ?? "1_2_quarters") === "0_4_weeks"
+          ? "next 0-4 weeks"
+          : (payload.horizonContext?.horizon ?? "1_2_quarters") === "1_3_years"
+            ? "next 1-3 years"
+            : "next 1-2 quarters",
+      expectedDirection: "supports or weakens thesis depending on observed KPI trajectory",
+      whyItMatters: "Catalyst determines whether current expectations need to be revised.",
+      evidenceRefs: [`N${Math.min(index + 1, Math.max(1, selectedDocs.length || 1))}`],
+    }));
+    const investorDrivers: InvestorDriver[] = [
+      {
+        driver: "Revenue and demand durability",
+        kpis: investorKpis.slice(0, 3).map((kpi) => kpi.name),
+        evidenceRefs: ["M1", "F1"],
+      },
+      {
+        driver: "Margin and valuation support",
+        kpis: investorKpis.slice(2, 5).map((kpi) => kpi.name),
+        evidenceRefs: ["M2", "M3"],
+      },
+    ].filter((driver) => driver.kpis.length > 0);
+
+    const investorViewV2: InvestorViewV2 = {
+      thesisType: payload.thesisTypeContext?.thesisType ?? "unclear",
+      action: {
+        decision: actionDecision,
+        positionSizing: this.toPositionSizing(actionDecision),
+      },
+      horizon: {
+        bucket: (payload.horizonContext?.horizon ?? "1_2_quarters") as HorizonBucket,
+        rationale:
+          payload.horizonContext?.rationale ??
+          "Intermediate horizon selected because evidence strength is mixed.",
+      },
+      summary: {
+        oneLineThesis:
+          actionDecision === "insufficient_evidence"
+            ? "Evidence is currently insufficient for a high-conviction directional call."
+            : `Current evidence supports a ${actionDecision} stance with explicit KPI and catalyst checkpoints.`,
+      },
+      variantView: {
+        pricedInNarrative: "Market is pricing continuation of current operating trajectory.",
+        ourVariant:
+          actionDecision === "insufficient_evidence"
+            ? "Evidence quality is not yet strong enough to support a differentiated variant view."
+            : "Upside/downside asymmetry depends on KPI durability through upcoming checkpoints.",
+        whyMispriced:
+          actionDecision === "insufficient_evidence"
+            ? "Signal set is incomplete."
+            : "Current narrative may over/underweight near-term KPI durability versus valuation.",
+      },
+      drivers: investorDrivers.slice(0, 4),
+      keyKpis: investorKpis.slice(0, 10),
+      catalysts: investorCatalysts.slice(0, 5),
+      falsification: falsification.slice(0, 3),
+      valuation: {
+        valuationFramework: "multiples + growth durability + filing context",
+        keyMultiples: latestMetrics
+          .filter((metric) => /price_to_earnings|price_to_book|ev_to_sales|ev_to_ebit/.test(metric.metricName))
+          .slice(0, 3)
+          .map((metric) => `${metric.metricName}=${this.formatMetricValue(metric)}`),
+        historyContext: "Interpreted against latest available run history only.",
+        peerContext: "Peer-relative context inferred from available market-context metrics.",
+        valuationView: valuationView.toLowerCase().includes("constructive")
+          ? "cheap"
+          : valuationView.toLowerCase().includes("cautious")
+            ? "expensive"
+            : valuationView.toLowerCase().includes("unavailable")
+              ? "uncertain"
+              : "fair",
+      },
+      confidence: confidenceV2,
+    };
 
     await this.snapshotRepo.save({
       id: this.ids.next(),
       runId: payload.runId,
       taskId: payload.taskId,
       symbol: payload.symbol,
-      horizon: "12m",
+      horizon: payload.horizonContext?.horizon ?? "1_2_quarters",
       score,
       thesis,
       risks: this.deriveRisks(selectedDocs, latestMetrics, filings),
       catalysts: this.deriveCatalysts(selectedDocs, latestMetrics, filings),
-      valuationView: this.deriveValuationView(latestMetrics),
+      valuationView,
       confidence,
       sources: this.uniqueSources(selectedDocs, latestMetrics, filings),
+      investorViewV2,
       diagnostics: {
         metrics: payload.metricsDiagnostics,
         providerFailures: payload.providerFailures,
@@ -2431,6 +2742,10 @@ export class SynthesisService {
           failedChecks: thesisQuality.failedChecks,
           fallbackApplied,
         },
+        evidenceGate,
+        missingFields: evidenceGate.missingFields,
+        citationCoveragePct: citationDiagnostics.citationCoveragePct,
+        unlinkedClaimsCount: citationDiagnostics.unlinkedClaimsCount,
       },
       createdAt: now,
     });

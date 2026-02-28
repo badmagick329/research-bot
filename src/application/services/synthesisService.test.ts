@@ -343,6 +343,31 @@ describe("SynthesisService", () => {
     expect(saved.confidence).toBe(0.1);
   });
 
+  it("forces insufficient_evidence decision when evidence minimum gate fails", async () => {
+    const llm: LlmPort = {
+      summarize: async () => ok("unused"),
+      synthesize: async () => ok(noEvidenceThesis),
+    };
+
+    const { service, savedSnapshots } = createService({
+      docs: [],
+      metrics: [],
+      filings: [],
+      llm,
+    });
+
+    await service.run(payload);
+
+    const saved = savedSnapshots[0];
+    if (!saved) {
+      throw new Error("expected snapshot to be saved");
+    }
+
+    expect(saved.investorViewV2?.action.decision).toBe("insufficient_evidence");
+    expect(saved.investorViewV2?.action.positionSizing).toBe("none");
+    expect(saved.diagnostics?.evidenceGate?.passed).toBeFalse();
+  });
+
   it("filters mock evidence when real provider evidence exists", async () => {
     const docs: DocumentEntity[] = [
       {

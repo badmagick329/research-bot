@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import type {
+  InvestorViewV2,
   ResearchSnapshotEntity,
   SnapshotDiagnostics,
 } from "@contracts/research";
@@ -294,6 +295,7 @@ type SnapshotContentProps = {
  */
 function SnapshotContent({ snapshot, qualityAlerts }: SnapshotContentProps) {
   const identity = snapshot.diagnostics?.identity;
+  const investorView = snapshot.investorViewV2;
 
   return (
     <article className="space-y-6 rounded-xl border border-slate-800 bg-slate-950 p-5">
@@ -342,6 +344,8 @@ function SnapshotContent({ snapshot, qualityAlerts }: SnapshotContentProps) {
         </h4>
         <DiagnosticChips items={qualityAlerts} />
       </section>
+
+      {investorView ? <InvestorViewSection investorView={investorView} /> : null}
 
       <section className="space-y-2">
         <h4 className="text-sm font-semibold text-slate-100">Thesis</h4>
@@ -406,6 +410,69 @@ function SnapshotContent({ snapshot, qualityAlerts }: SnapshotContentProps) {
         )}
       </section>
     </article>
+  );
+}
+
+type InvestorViewSectionProps = {
+  investorView: InvestorViewV2;
+};
+
+/**
+ * Renders investor-facing structured output first so users can evaluate thesis quality without parsing diagnostics internals.
+ */
+function InvestorViewSection({ investorView }: InvestorViewSectionProps) {
+  return (
+    <section className="space-y-3 rounded-lg border border-slate-800 bg-slate-900 p-4">
+      <h4 className="text-sm font-semibold text-slate-100">Investor View (v2)</h4>
+      <dl className="grid gap-2 text-sm text-slate-200 sm:grid-cols-2">
+        <div>
+          <dt className="text-slate-400">Thesis type</dt>
+          <dd>{investorView.thesisType}</dd>
+        </div>
+        <div>
+          <dt className="text-slate-400">Decision</dt>
+          <dd>
+            {investorView.action.decision} ({investorView.action.positionSizing})
+          </dd>
+        </div>
+        <div>
+          <dt className="text-slate-400">Horizon</dt>
+          <dd>{investorView.horizon.bucket}</dd>
+        </div>
+        <div>
+          <dt className="text-slate-400">Confidence</dt>
+          <dd>
+            D:{investorView.confidence.dataConfidence} T:{investorView.confidence.thesisConfidence} Ti:
+            {investorView.confidence.timingConfidence}
+          </dd>
+        </div>
+      </dl>
+      <p className="text-sm text-slate-200">{investorView.summary.oneLineThesis}</p>
+      {investorView.keyKpis.length > 0 ? (
+        <div>
+          <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Key KPIs</h5>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-200">
+            {investorView.keyKpis.slice(0, 6).map((kpi) => (
+              <li key={kpi.name}>
+                {kpi.name}: {kpi.value}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {investorView.falsification.length > 0 ? (
+        <div>
+          <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Falsification</h5>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-200">
+            {investorView.falsification.map((item, index) => (
+              <li key={`${item.condition}-${index}`}>
+                {item.condition} {"->"} {item.actionIfHit}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

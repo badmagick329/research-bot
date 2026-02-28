@@ -1,4 +1,136 @@
-export type JobStage = "ingest" | "normalize" | "embed" | "synthesize";
+export type JobStage =
+  | "ingest"
+  | "normalize"
+  | "classify_stock"
+  | "select_horizon"
+  | "build_kpi_tree"
+  | "embed"
+  | "synthesize";
+
+export type ThesisType =
+  | "compounder"
+  | "cyclical"
+  | "turnaround"
+  | "event_driven"
+  | "asset_play"
+  | "capital_return"
+  | "special_situation"
+  | "value_trap_risk"
+  | "unclear";
+
+export type HorizonBucket = "0_4_weeks" | "1_2_quarters" | "1_3_years";
+
+export type ActionDecision =
+  | "buy"
+  | "watch"
+  | "avoid"
+  | "insufficient_evidence";
+
+export type PositionSizing = "none" | "small" | "medium";
+
+export type ConfidenceDecomposition = {
+  dataConfidence: number;
+  thesisConfidence: number;
+  timingConfidence: number;
+};
+
+export type FalsificationCondition = {
+  condition: string;
+  type: "numeric" | "event" | "timing";
+  thresholdOrOutcome: string;
+  deadline: string;
+  actionIfHit: string;
+  evidenceRefs: string[];
+};
+
+export type InvestorKpi = {
+  name: string;
+  value: string;
+  trend: "up" | "down" | "flat" | "mixed" | "unknown";
+  whyItMatters: string;
+  evidenceRefs: string[];
+};
+
+export type InvestorCatalyst = {
+  event: string;
+  window: string;
+  expectedDirection: string;
+  whyItMatters: string;
+  evidenceRefs: string[];
+};
+
+export type InvestorDriver = {
+  driver: string;
+  kpis: string[];
+  evidenceRefs: string[];
+};
+
+export type InvestorViewV2 = {
+  thesisType: ThesisType;
+  action: {
+    decision: ActionDecision;
+    positionSizing: PositionSizing;
+  };
+  horizon: {
+    bucket: HorizonBucket;
+    rationale: string;
+  };
+  summary: {
+    oneLineThesis: string;
+  };
+  variantView: {
+    pricedInNarrative: string;
+    ourVariant: string;
+    whyMispriced: string;
+  };
+  drivers: InvestorDriver[];
+  keyKpis: InvestorKpi[];
+  catalysts: InvestorCatalyst[];
+  falsification: FalsificationCondition[];
+  valuation: {
+    valuationFramework: string;
+    keyMultiples: string[];
+    historyContext: string;
+    peerContext: string;
+    valuationView: "cheap" | "fair" | "expensive" | "uncertain";
+  };
+  confidence: ConfidenceDecomposition;
+};
+
+export type ThesisTypeContext = {
+  thesisType: ThesisType;
+  reasonCodes: string[];
+  score: number;
+};
+
+export type HorizonContext = {
+  horizon: HorizonBucket;
+  rationale: string;
+  score: number;
+};
+
+export type KpiTemplateName =
+  | "software_saas"
+  | "semis"
+  | "retail_consumer"
+  | "banks"
+  | "energy_materials"
+  | "generic";
+
+export type KpiTemplateContext = {
+  template: KpiTemplateName;
+  required: string[];
+  optional: string[];
+  selected: string[];
+  requiredHitCount: number;
+  minRequiredForStrongNote: number;
+};
+
+export type EvidenceGateDiagnostics = {
+  passed: boolean;
+  failures: string[];
+  missingFields: string[];
+};
 
 export type ResearchTaskEntity = {
   id: string;
@@ -85,6 +217,10 @@ export type SnapshotDiagnostics = {
     failedChecks: string[];
     fallbackApplied: boolean;
   };
+  evidenceGate?: EvidenceGateDiagnostics;
+  missingFields?: string[];
+  citationCoveragePct?: number;
+  unlinkedClaimsCount?: number;
 };
 
 export type ResearchSnapshotEntity = {
@@ -100,6 +236,7 @@ export type ResearchSnapshotEntity = {
   valuationView: string;
   confidence: number;
   sources: Array<{ provider: string; url?: string; title?: string }>;
+  investorViewV2?: InvestorViewV2;
   diagnostics?: SnapshotDiagnostics;
   createdAt: Date;
 };

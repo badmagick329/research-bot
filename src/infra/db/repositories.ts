@@ -140,6 +140,9 @@ const deriveRunStages = (
       stage: "normalize",
       status: normalizeIssue ? "degraded" : "success",
     },
+    { stage: "classify_stock", status: "success" },
+    { stage: "select_horizon", status: "success" },
+    { stage: "build_kpi_tree", status: "success" },
     {
       stage: "embed",
       status: embedIssue ? "degraded" : "success",
@@ -152,6 +155,10 @@ const mapSnapshotToEntity = (row: SnapshotRunRow): ResearchSnapshotEntity => ({
   ...row,
   runId: row.runId ?? undefined,
   taskId: row.taskId ?? undefined,
+  investorViewV2:
+    row.investorViewV2 && Object.keys(row.investorViewV2).length > 0
+      ? row.investorViewV2
+      : undefined,
   diagnostics: toOptionalDiagnostics(row.diagnostics),
 });
 
@@ -407,7 +414,20 @@ export class PostgresSnapshotRepositoryService implements SnapshotRepositoryPort
    */
   async save(snapshot: ResearchSnapshotEntity): Promise<void> {
     await this.db.insert(snapshotsTable).values({
-      ...snapshot,
+      id: snapshot.id,
+      runId: snapshot.runId,
+      taskId: snapshot.taskId,
+      symbol: snapshot.symbol,
+      horizon: snapshot.horizon,
+      score: snapshot.score,
+      thesis: snapshot.thesis,
+      risks: snapshot.risks,
+      catalysts: snapshot.catalysts,
+      valuationView: snapshot.valuationView,
+      confidence: snapshot.confidence,
+      sources: snapshot.sources,
+      createdAt: snapshot.createdAt,
+      investorViewV2: snapshot.investorViewV2,
       diagnostics: snapshot.diagnostics ?? {},
     });
   }
@@ -441,6 +461,10 @@ export class PostgresSnapshotRepositoryService implements SnapshotRepositoryPort
       ...row,
       runId: row.runId ?? undefined,
       taskId: row.taskId ?? undefined,
+      investorViewV2:
+        row.investorViewV2 && Object.keys(row.investorViewV2).length > 0
+          ? row.investorViewV2
+          : undefined,
       diagnostics:
         row.diagnostics && Object.keys(row.diagnostics).length > 0
           ? row.diagnostics

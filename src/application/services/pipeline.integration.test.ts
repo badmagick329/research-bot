@@ -30,7 +30,7 @@ const payload: JobPayload = {
  * Validates stage handoff behavior across ingestion and normalization using in-memory adapters.
  */
 describe("Pipeline integration", () => {
-  it("continues with one successful source and routes normalize -> synthesize when docs are absent", async () => {
+  it("continues with one successful source and routes normalize -> classify_stock when docs are absent", async () => {
     const newsProvider: NewsProviderPort = {
       fetchArticles: async () =>
         err({
@@ -139,6 +139,6 @@ describe("Pipeline integration", () => {
 
     await normalization.run(normalizePayload);
 
-    expect(enqueued.at(1)?.stage).toBe("synthesize");
+    expect(enqueued.at(1)?.stage).toBe("classify_stock");
   });
 });

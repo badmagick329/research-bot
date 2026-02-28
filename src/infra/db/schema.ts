@@ -9,7 +9,7 @@ import {
   vector,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { SnapshotDiagnostics } from "../../core/entities/research";
+import type { InvestorViewV2, SnapshotDiagnostics } from "../../core/entities/research";
 
 export const documentsTable = pgTable(
   "documents",
@@ -138,6 +138,10 @@ export const snapshotsTable = pgTable("snapshots", {
   sources: jsonb("sources")
     .$type<Array<{ provider: string; url?: string; title?: string }>>()
     .notNull(),
+  investorViewV2: jsonb("investor_view_v2")
+    .$type<InvestorViewV2>()
+    .notNull()
+    .default(sql`'{}'::jsonb`),
   diagnostics: jsonb("diagnostics")
     .$type<SnapshotDiagnostics>()
     .notNull()

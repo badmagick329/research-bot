@@ -6,6 +6,9 @@ import type { JobStage } from "../../core/entities/research";
 export const queueNames: Record<JobStage, string> = {
   ingest: "research-ingest",
   normalize: "research-normalize",
+  classify_stock: "research-classify-stock",
+  select_horizon: "research-select-horizon",
+  build_kpi_tree: "research-build-kpi-tree",
   embed: "research-embed",
   synthesize: "research-synthesize",
 };

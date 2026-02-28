@@ -9,7 +9,7 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - Infra: Postgres (state) + Redis (queue + provider pacing).
 
 ## Pipeline
-- Stages: `ingest -> normalize -> embed -> synthesize`.
+- Stages: `ingest -> normalize -> classify_stock -> select_horizon -> build_kpi_tree -> embed -> synthesize`.
 - Runs are scoped by `runId`/`taskId`; identity is resolved once up front and propagated.
 - Each stage is retryable; degraded stages persist diagnostics instead of silently failing.
 
@@ -56,6 +56,9 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
   - thesis quality is scored deterministically
   - one repair attempt is allowed
   - if still below floor, deterministic fallback thesis is persisted
+- Stage-1 structured output:
+  - investor-facing contract is persisted as `investorViewV2`
+  - diagnostics include explicit evidence-gate and citation-linkage fields
 
 ## Snapshot Diagnostics
 - `metrics`
@@ -67,6 +70,11 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - `decisionReasons`
 - `thesisQuality`:
   - `score`, `failedChecks`, `fallbackApplied`
+- `evidenceGate`:
+  - `passed`, `failures`, `missingFields`
+- `missingFields`
+- `citationCoveragePct`
+- `unlinkedClaimsCount`
 
 ## LLM and Memory
 - Synthesis provider: `OLLAMA` or `OPENAI`.
@@ -95,6 +103,9 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 ## Key Entrypoints
 - Runtime wiring: `src/application/bootstrap/runtimeFactory.ts`
 - Ingestion: `src/application/services/ingestionService.ts`
+- Thesis-type classification: `src/application/services/classifyStockService.ts`
+- Horizon selection: `src/application/services/selectHorizonService.ts`
+- KPI tree builder: `src/application/services/buildKpiTreeService.ts`
 - Synthesis: `src/application/services/synthesisService.ts`
 - Filings provider: `src/infra/providers/sec/secEdgarFilingsProvider.ts`
 - Market-context provider: `src/infra/providers/finnhub/finnhubMarketContextProvider.ts`
@@ -115,6 +126,9 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - `THESIS_GENERIC_PHRASE_MAX=0`
 - `THESIS_MIN_CITATION_COVERAGE_PCT=80`
 - `THESIS_QUALITY_MIN_SCORE=75`
+- `QUEUE_CONCURRENCY_CLASSIFY_STOCK=2`
+- `QUEUE_CONCURRENCY_SELECT_HORIZON=2`
+- `QUEUE_CONCURRENCY_BUILD_KPI_TREE=2`
 
 ## Current Limits
 - Polling UI only (no SSE/WebSocket).

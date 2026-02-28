@@ -72,6 +72,24 @@ const run = async (): Promise<void> => {
     env.QUEUE_CONCURRENCY_EMBED,
     (payload) => runtime.embeddingService.run(payload),
   );
+  const classifyStockWorker = createStageWorker(
+    "classify_stock",
+    redis,
+    env.QUEUE_CONCURRENCY_CLASSIFY_STOCK,
+    (payload) => runtime.classifyStockService.run(payload),
+  );
+  const selectHorizonWorker = createStageWorker(
+    "select_horizon",
+    redis,
+    env.QUEUE_CONCURRENCY_SELECT_HORIZON,
+    (payload) => runtime.selectHorizonService.run(payload),
+  );
+  const buildKpiTreeWorker = createStageWorker(
+    "build_kpi_tree",
+    redis,
+    env.QUEUE_CONCURRENCY_BUILD_KPI_TREE,
+    (payload) => runtime.buildKpiTreeService.run(payload),
+  );
   const synthesizeWorker = createStageWorker(
     "synthesize",
     redis,
@@ -79,7 +97,15 @@ const run = async (): Promise<void> => {
     (payload) => runtime.synthesisService.run(payload),
   );
 
-  [ingestWorker, normalizeWorker, embedWorker, synthesizeWorker].forEach(
+  [
+    ingestWorker,
+    normalizeWorker,
+    classifyStockWorker,
+    selectHorizonWorker,
+    buildKpiTreeWorker,
+    embedWorker,
+    synthesizeWorker,
+  ].forEach(
     (worker) => {
       worker.on("active", (job) => {
         if (!job?.id) {

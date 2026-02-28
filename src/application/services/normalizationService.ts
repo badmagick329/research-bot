@@ -54,7 +54,7 @@ export class NormalizationService {
       payload.runId,
     );
     if (docs.length === 0) {
-      await this.queue.enqueue("synthesize", payload);
+      await this.queue.enqueue("classify_stock", payload);
       return;
     }
 
@@ -67,13 +67,10 @@ export class NormalizationService {
     );
 
     if (summaryResult.isErr()) {
-      await this.queue.enqueue(
-        "embed",
-        this.withStageIssue(payload, this.toStageIssue(summaryResult.error)),
-      );
+      await this.queue.enqueue("classify_stock", this.withStageIssue(payload, this.toStageIssue(summaryResult.error)));
       return;
     }
 
-    await this.queue.enqueue("embed", payload);
+    await this.queue.enqueue("classify_stock", payload);
   }
 }

@@ -66,7 +66,7 @@ describe("NormalizationService", () => {
     await service.run(payload);
 
     expect(enqueues).toHaveLength(1);
-    expect(enqueues[0]?.stage).toBe("embed");
+    expect(enqueues[0]?.stage).toBe("classify_stock");
     expect(enqueues[0]?.payload.stageIssues).toEqual([
       {
         stage: "normalize",
