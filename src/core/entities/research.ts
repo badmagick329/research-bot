@@ -181,13 +181,31 @@ export type SnapshotProviderFailureStatus =
   | "invalid_json";
 
 export type SnapshotProviderFailureDiagnostics = {
-  source: "news" | "metrics" | "filings" | "market-context";
+  source: "news" | "metrics" | "filings" | "market-context" | "macro-context";
   provider: string;
   status: SnapshotProviderFailureStatus;
   itemCount: number;
   reason: string;
   httpStatus?: number;
   retryable?: boolean;
+};
+
+export type MacroContextProviderDiagnostics = {
+  provider: "fred" | "bls";
+  status:
+    | "ok"
+    | "empty"
+    | "rate_limited"
+    | "timeout"
+    | "provider_error"
+    | "auth_invalid"
+    | "config_invalid"
+    | "malformed_response"
+    | "transport_error"
+    | "invalid_json";
+  metricCount: number;
+  reason?: string;
+  httpStatus?: number;
 };
 
 export type SnapshotStageDiagnostics = {
@@ -243,6 +261,11 @@ export type SnapshotDiagnostics = {
     issuerAnchorPresent: boolean;
     excludedByClass: Record<string, number>;
     excludedByClassAndReason: Record<string, Record<string, number>>;
+  };
+  macroContext?: {
+    totalMetricCount: number;
+    providers: MacroContextProviderDiagnostics[];
+    selectedForTemplate?: string[];
   };
   decisionReasons?: string[];
   thesisQuality?: {

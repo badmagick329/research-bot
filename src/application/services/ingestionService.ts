@@ -12,6 +12,8 @@ import type {
 } from "../../core/ports/outboundPorts";
 import type {
   CompanyFactsProviderPort,
+  MacroContextProviderPort,
+  MacroContextFetchDiagnostics,
   MetricsFetchResult,
   MarketContextFetchResult,
   MarketContextProviderPort,
@@ -61,6 +63,14 @@ const noopCompanyFactsProvider: CompanyFactsProviderPort = {
     }),
 };
 
+const noopMacroContextProvider: MacroContextProviderPort = {
+  fetchMacroContext: async () =>
+    ok({
+      metrics: [],
+      diagnostics: [],
+    }),
+};
+
 /**
  * Keeps provider IO at the pipeline edge so downstream stages always consume normalized persisted records.
  */
@@ -79,6 +89,7 @@ export class IngestionService {
     private readonly filingsLookbackDays: number,
     private readonly marketContextProvider: MarketContextProviderPort = noopMarketContextProvider,
     private readonly companyFactsProvider: CompanyFactsProviderPort = noopCompanyFactsProvider,
+    private readonly macroContextProvider: MacroContextProviderPort = noopMacroContextProvider,
   ) {}
 
   /**
@@ -101,7 +112,12 @@ export class IngestionService {
    * Converts boundary provider failures into snapshot diagnostics so degraded runs remain explicit downstream.
    */
   private toProviderFailure(
-    source: "news" | "metrics" | "filings" | "market-context",
+    source:
+      | "news"
+      | "metrics"
+      | "filings"
+      | "market-context"
+      | "macro-context",
     error: AppBoundaryError,
   ): SnapshotProviderFailureDiagnostics {
     return {
@@ -139,6 +155,28 @@ export class IngestionService {
   }
 
   /**
+   * Converts macro diagnostics failures into provider-failure records so degraded macro fetches remain visible.
+   */
+  private toMacroProviderFailure(
+    diagnostics: MacroContextFetchDiagnostics,
+  ): SnapshotProviderFailureDiagnostics | null {
+    if (diagnostics.status === "ok" || diagnostics.status === "empty") {
+      return null;
+    }
+
+    return {
+      source: "macro-context",
+      provider: diagnostics.provider,
+      status: diagnostics.status,
+      itemCount: diagnostics.metricCount,
+      reason:
+        diagnostics.reason ??
+        "Macro context provider returned no detailed failure reason.",
+      httpStatus: diagnostics.httpStatus,
+    };
+  }
+
+  /**
    * Enforces explicit hard-failure semantics when Alpha Vantage quota/rate limits are encountered.
    */
   private isAlphaVantageRateLimited(error: AppBoundaryError): boolean {
@@ -163,6 +201,7 @@ export class IngestionService {
       filingsResult,
       marketContextResult,
       companyFactsResult,
+      macroContextResult,
     ] =
       await Promise.all([
       this.newsProvider.fetchArticles({
@@ -183,6 +222,10 @@ export class IngestionService {
         asOf: now,
       }),
       this.companyFactsProvider.fetchCompanyFacts({
+        symbol: payload.symbol,
+        asOf: now,
+      }),
+      this.macroContextProvider.fetchMacroContext({
         symbol: payload.symbol,
         asOf: now,
       }),
@@ -299,6 +342,25 @@ export class IngestionService {
       providerFailures.push(
         this.toProviderFailure("market-context", marketContextResult.error),
       );
+    }
+
+    const macroContextPayload = macroContextResult.isOk()
+      ? macroContextResult.value
+      : {
+          metrics: [],
+          diagnostics: [],
+        };
+    if (macroContextResult.isErr()) {
+      providerFailures.push(
+        this.toProviderFailure("macro-context", macroContextResult.error),
+      );
+    } else {
+      macroContextPayload.diagnostics.forEach((diagnostics) => {
+        const failure = this.toMacroProviderFailure(diagnostics);
+        if (failure) {
+          providerFailures.push(failure);
+        }
+      });
     }
 
     const documents: DocumentEntity[] = news.map((item) => ({
@@ -437,6 +499,24 @@ export class IngestionService {
           createdAt: now,
         })),
         ...marketContextMetrics,
+        ...macroContextPayload.metrics.map((item) => ({
+          id: this.ids.next(),
+          runId: payload.runId,
+          taskId: payload.taskId,
+          symbol: payload.symbol,
+          provider: item.provider,
+          metricName: item.metricName,
+          metricValue: item.metricValue,
+          metricUnit: item.metricUnit,
+          currency: item.currency,
+          asOf: item.asOf,
+          periodType: item.periodType,
+          periodStart: item.periodStart,
+          periodEnd: item.periodEnd,
+          confidence: item.confidence,
+          rawPayload: item.rawPayload,
+          createdAt: now,
+        })),
       ]),
       this.filingsRepo.upsertMany(filingEntities),
     ]);
@@ -456,6 +536,10 @@ export class IngestionService {
         metricCount: companyFactsPayload.diagnostics.metricCount,
         reason: companyFactsPayload.diagnostics.reason,
         httpStatus: companyFactsPayload.diagnostics.httpStatus,
+      },
+      macroContextDiagnostics: {
+        totalMetricCount: macroContextPayload.metrics.length,
+        providers: macroContextPayload.diagnostics,
       },
       providerFailures,
     });

@@ -32,9 +32,12 @@ import { AlphaVantageMetricsProvider } from "../../infra/providers/alphavantage/
 import { AlphaVantageNewsProvider } from "../../infra/providers/alphavantage/alphaVantageNewsProvider";
 import { FinnhubNewsProvider } from "../../infra/providers/finnhub/finnhubNewsProvider";
 import { FinnhubMarketContextProvider } from "../../infra/providers/finnhub/finnhubMarketContextProvider";
+import { FredMacroProvider } from "../../infra/providers/fred/fredMacroProvider";
+import { BlsMacroProvider } from "../../infra/providers/bls/blsMacroProvider";
 import { MockFilingsProvider } from "../../infra/providers/mocks/mockFilingsProvider";
 import { MockMarketMetricsProvider } from "../../infra/providers/mocks/mockMarketMetricsProvider";
 import { MockNewsProvider } from "../../infra/providers/mocks/mockNewsProvider";
+import { MultiMacroProvider } from "../../infra/providers/macro/multiMacroProvider";
 import { MultiNewsProvider } from "../../infra/providers/multiNewsProvider";
 import { CompanyResolver } from "../../infra/providers/company/companyResolver";
 import { SecEdgarFilingsProvider } from "../../infra/providers/sec/secEdgarFilingsProvider";
@@ -50,6 +53,7 @@ import { RedisProviderRateLimiter } from "../../infra/system/redisProviderRateLi
 import type {
   FilingsProviderPort,
   CompanyFactsProviderPort,
+  MacroContextProviderPort,
   MarketContextProviderPort,
   MarketMetricsProviderPort,
   NewsProviderPort,
@@ -227,6 +231,79 @@ const createCompanyFactsProvider = (
 };
 
 /**
+ * Resolves sector-agnostic macro enrichment adapter and degrades to empty diagnostics when disabled by config.
+ */
+const createMacroContextProvider = (
+  httpClient: HttpJsonClient,
+  providerRateLimiter: ProviderRateLimiterPort,
+): MacroContextProviderPort => {
+  if (!env.MACRO_OVERLAY_ENABLED) {
+    return {
+      fetchMacroContext: async () =>
+        ok({
+          metrics: [],
+          diagnostics: [],
+        }),
+    };
+  }
+
+  const providers: MacroContextProviderPort[] = [];
+  if (env.MACRO_FRED_ENABLED) {
+    if (env.FRED_API_KEY.trim()) {
+      providers.push(
+        new FredMacroProvider(
+          env.FRED_BASE_URL,
+          env.FRED_API_KEY,
+          env.FRED_TIMEOUT_MS,
+          env.MACRO_LOOKBACK_MONTHS,
+          httpClient,
+          providerRateLimiter,
+        ),
+      );
+    } else {
+      providers.push({
+        fetchMacroContext: async () =>
+          ok({
+            metrics: [],
+            diagnostics: [
+              {
+                provider: "fred",
+                status: "config_invalid",
+                metricCount: 0,
+                reason: "FRED_API_KEY is missing.",
+              },
+            ],
+          }),
+      });
+    }
+  }
+  if (env.MACRO_BLS_ENABLED) {
+    providers.push(
+      new BlsMacroProvider(
+        env.BLS_BASE_URL,
+        env.BLS_API_KEY,
+        env.BLS_TIMEOUT_MS,
+        env.MACRO_LOOKBACK_MONTHS,
+        httpClient,
+        providerRateLimiter,
+      ),
+    );
+  }
+
+  if (providers.length === 0) {
+    return {
+      fetchMacroContext: async () =>
+        ok({
+          metrics: [],
+          diagnostics: [],
+        }),
+    };
+  }
+
+  return new MultiMacroProvider(providers);
+};
+
+/**
  * Resolves the configured LLM adapter so runtime can switch between local and external chat models.
  */
 const createLlm = (httpClient: HttpJsonClient): LlmPort => {
@@ -266,6 +343,8 @@ export const createRuntime = async () => {
     alphavantage: env.ALPHA_VANTAGE_MIN_INTERVAL_MS,
     finnhub: env.FINNHUB_MIN_INTERVAL_MS,
     "sec-edgar": env.SEC_EDGAR_MIN_INTERVAL_MS,
+    fred: env.FRED_MIN_INTERVAL_MS,
+    bls: env.BLS_MIN_INTERVAL_MS,
   });
 
   const documentRepo = new PostgresDocumentRepositoryService(db);
@@ -301,6 +380,10 @@ export const createRuntime = async () => {
     httpClient,
     providerRateLimiter,
   );
+  const macroContextProvider = createMacroContextProvider(
+    httpClient,
+    providerRateLimiter,
+  );
 
   const orchestratorService = new ResearchOrchestratorService(
     queue,
@@ -321,6 +404,7 @@ export const createRuntime = async () => {
     env.APP_FILINGS_LOOKBACK_DAYS,
     marketContextProvider,
     companyFactsProvider,
+    macroContextProvider,
   );
   const normalizationService = new NormalizationService(
     documentRepo,

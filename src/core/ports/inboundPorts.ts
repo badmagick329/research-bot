@@ -46,6 +46,11 @@ export type MarketContextRequest = {
   asOf?: Date;
 };
 
+export type MacroContextRequest = {
+  symbol: string;
+  asOf?: Date;
+};
+
 export type NormalizedMarketMetricPoint = {
   id: string;
   provider: string;
@@ -164,6 +169,29 @@ export type MarketContextFetchResult = {
   diagnostics: MarketContextFetchDiagnostics;
 };
 
+export type MacroContextFetchDiagnostics = {
+  provider: "fred" | "bls";
+  status:
+    | "ok"
+    | "empty"
+    | "rate_limited"
+    | "timeout"
+    | "provider_error"
+    | "auth_invalid"
+    | "config_invalid"
+    | "malformed_response"
+    | "transport_error"
+    | "invalid_json";
+  metricCount: number;
+  reason?: string;
+  httpStatus?: number;
+};
+
+export type MacroContextFetchResult = {
+  metrics: NormalizedMarketMetricPoint[];
+  diagnostics: MacroContextFetchDiagnostics[];
+};
+
 export type FilingsRequest = {
   symbol: string;
   from: Date;
@@ -227,6 +255,12 @@ export interface MarketContextProviderPort {
   fetchMarketContext(
     request: MarketContextRequest,
   ): Promise<Result<MarketContextFetchResult, AppBoundaryError>>;
+}
+
+export interface MacroContextProviderPort {
+  fetchMacroContext(
+    request: MacroContextRequest,
+  ): Promise<Result<MacroContextFetchResult, AppBoundaryError>>;
 }
 
 export interface CompanyResolverPort {

@@ -31,6 +31,16 @@ type DefaultConfig = {
   SEC_COMPANYFACTS_ENABLED: boolean;
   SEC_COMPANYFACTS_TIMEOUT_MS: number;
   SEC_COMPANYFACTS_MAX_FACTS_PER_METRIC: number;
+  MACRO_OVERLAY_ENABLED: boolean;
+  MACRO_FRED_ENABLED: boolean;
+  MACRO_BLS_ENABLED: boolean;
+  MACRO_LOOKBACK_MONTHS: number;
+  FRED_BASE_URL: string;
+  FRED_TIMEOUT_MS: number;
+  FRED_MIN_INTERVAL_MS: number;
+  BLS_BASE_URL: string;
+  BLS_TIMEOUT_MS: number;
+  BLS_MIN_INTERVAL_MS: number;
   LLM_PROVIDER: LlmProviderName;
   OLLAMA_BASE_URL: string;
   OLLAMA_CHAT_MODEL: string;
@@ -89,6 +99,16 @@ export const defaultConfig: DefaultConfig = {
   SEC_COMPANYFACTS_ENABLED: true,
   SEC_COMPANYFACTS_TIMEOUT_MS: 15_000,
   SEC_COMPANYFACTS_MAX_FACTS_PER_METRIC: 16,
+  MACRO_OVERLAY_ENABLED: true,
+  MACRO_FRED_ENABLED: true,
+  MACRO_BLS_ENABLED: true,
+  MACRO_LOOKBACK_MONTHS: 24,
+  FRED_BASE_URL: "https://api.stlouisfed.org",
+  FRED_TIMEOUT_MS: 15_000,
+  FRED_MIN_INTERVAL_MS: 1_000,
+  BLS_BASE_URL: "https://api.bls.gov",
+  BLS_TIMEOUT_MS: 15_000,
+  BLS_MIN_INTERVAL_MS: 1_000,
   LLM_PROVIDER: "openai",
   OLLAMA_BASE_URL: "http://localhost:11434",
   OLLAMA_CHAT_MODEL: "qwen2.5:7b-instruct",

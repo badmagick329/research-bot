@@ -1396,4 +1396,152 @@ describe("SynthesisService", () => {
     expect(capturedExcludeRunId).toBe("run-1");
     expect(capturedFrom?.toISOString()).toBe("2025-11-19T12:00:00.000Z");
   });
+
+  it("selects template-relevant macro metrics and persists macro diagnostics", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-macro-1",
+        symbol: "NVDA",
+        provider: "finnhub",
+        providerItemId: "macro-1",
+        type: "news",
+        title: "NVDA demand update",
+        summary: "Issuer update",
+        content: "NVDA demand remained strong.",
+        url: "https://example.com/nvda-demand",
+        publishedAt: new Date("2026-02-17T08:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "NVDA" },
+        createdAt: new Date("2026-02-17T08:00:00.000Z"),
+      },
+    ];
+
+    const metrics: MetricPointEntity[] = [
+      {
+        id: "metric-1",
+        symbol: "NVDA",
+        provider: "alphavantage",
+        metricName: "revenue_growth_yoy",
+        metricValue: 0.22,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "quarter",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+      {
+        id: "macro-1",
+        symbol: "NVDA",
+        provider: "fred",
+        metricName: "macro_industrial_production_yoy",
+        metricValue: 2.5,
+        metricUnit: "pct",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "point_in_time",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+      {
+        id: "macro-2",
+        symbol: "NVDA",
+        provider: "fred",
+        metricName: "macro_us10y_yield",
+        metricValue: 4.2,
+        metricUnit: "pct",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "point_in_time",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+      {
+        id: "macro-3",
+        symbol: "NVDA",
+        provider: "fred",
+        metricName: "macro_cpi_yoy",
+        metricValue: 3.1,
+        metricUnit: "pct",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "point_in_time",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+      {
+        id: "macro-4",
+        symbol: "NVDA",
+        provider: "fred",
+        metricName: "macro_fed_funds_rate",
+        metricValue: 4.5,
+        metricUnit: "pct",
+        currency: "USD",
+        asOf: new Date("2026-02-16T00:00:00.000Z"),
+        periodType: "point_in_time",
+        rawPayload: {},
+        createdAt: new Date("2026-02-16T00:00:00.000Z"),
+      },
+    ];
+
+    const prompts: string[] = [];
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async (prompt) => {
+        prompts.push(prompt);
+        return ok(validThesis);
+      },
+    };
+
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics,
+      filings: [],
+      llm,
+    });
+
+    await service.run({
+      ...payload,
+      symbol: "NVDA",
+      kpiContext: {
+        template: "semis",
+        required: ["revenue_growth_yoy"],
+        optional: [],
+        selected: ["revenue_growth_yoy"],
+        requiredHitCount: 1,
+        minRequiredForStrongNote: 1,
+      },
+      macroContextDiagnostics: {
+        totalMetricCount: 4,
+        providers: [
+          {
+            provider: "fred",
+            status: "ok",
+            metricCount: 4,
+          },
+          {
+            provider: "bls",
+            status: "empty",
+            metricCount: 0,
+          },
+        ],
+      },
+    });
+
+    expect(prompts[0]).toContain("Macro context (sector-sensitive):");
+    expect(prompts[0]).toContain("macro_industrial_production_yoy");
+    expect(prompts[0]).toContain("macro_us10y_yield");
+    expect(prompts[0]).toContain("macro_cpi_yoy");
+    expect(prompts[0]).not.toContain("macro_fed_funds_rate");
+
+    const saved = savedSnapshots.at(0);
+    expect(saved?.diagnostics?.macroContext?.totalMetricCount).toBe(4);
+    expect(saved?.diagnostics?.macroContext?.selectedForTemplate).toEqual([
+      "macro_industrial_production_yoy",
+      "macro_us10y_yield",
+      "macro_cpi_yoy",
+    ]);
+  });
 });

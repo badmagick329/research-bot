@@ -4,6 +4,7 @@ import { IngestionService } from "./ingestionService";
 import type {
   CompanyFactsProviderPort,
   FilingsProviderPort,
+  MacroContextProviderPort,
   MarketContextProviderPort,
   MarketMetricsProviderPort,
   NewsProviderPort,
@@ -734,5 +735,210 @@ describe("IngestionService", () => {
       reason: undefined,
       httpStatus: undefined,
     });
+  });
+
+  it("merges macro metrics and forwards macro diagnostics", async () => {
+    const newsProvider: NewsProviderPort = {
+      fetchArticles: async () => ok([]),
+    };
+    const metricsProvider: MarketMetricsProviderPort = {
+      fetchMetrics: async (request) =>
+        ok({
+          metrics: [],
+          diagnostics: {
+            provider: "alphavantage",
+            symbol: request.symbol,
+            status: "empty",
+            metricCount: 0,
+          },
+        }),
+    };
+    const filingsProvider: FilingsProviderPort = {
+      fetchFilings: async () => ok([]),
+    };
+    const macroContextProvider: MacroContextProviderPort = {
+      fetchMacroContext: async (request) =>
+        ok({
+          metrics: [
+            {
+              id: "macro-1",
+              provider: "fred",
+              symbol: request.symbol,
+              metricName: "macro_fed_funds_rate",
+              metricValue: 4.5,
+              metricUnit: "pct",
+              currency: "USD",
+              asOf: request.asOf ?? new Date("2026-02-18T12:00:00.000Z"),
+              periodType: "point_in_time",
+              rawPayload: {},
+            },
+          ],
+          diagnostics: [
+            {
+              provider: "fred",
+              status: "ok",
+              metricCount: 1,
+            },
+            {
+              provider: "bls",
+              status: "empty",
+              metricCount: 0,
+            },
+          ],
+        }),
+    };
+
+    const documentRepo: DocumentRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+    let persistedMetricsCount = 0;
+    const metricsRepo: MetricsRepositoryPort = {
+      upsertMany: async (metrics) => {
+        persistedMetricsCount = metrics.length;
+      },
+      listBySymbol: async () => [],
+    };
+    const filingsRepo: FilingsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+    let queuedPayload: JobPayload | undefined;
+    const queue: QueuePort = {
+      enqueue: async (_stage, nextPayload) => {
+        queuedPayload = nextPayload;
+      },
+    };
+    const clock: ClockPort = {
+      now: () => new Date("2026-02-18T12:00:00.000Z"),
+    };
+    const ids: IdGeneratorPort = {
+      next: () => crypto.randomUUID(),
+    };
+
+    const service = new IngestionService(
+      newsProvider,
+      metricsProvider,
+      filingsProvider,
+      documentRepo,
+      metricsRepo,
+      filingsRepo,
+      queue,
+      clock,
+      ids,
+      7,
+      90,
+      undefined,
+      undefined,
+      macroContextProvider,
+    );
+
+    await service.run(payload);
+
+    expect(persistedMetricsCount).toBe(1);
+    expect(queuedPayload?.macroContextDiagnostics).toEqual({
+      totalMetricCount: 1,
+      providers: [
+        {
+          provider: "fred",
+          status: "ok",
+          metricCount: 1,
+        },
+        {
+          provider: "bls",
+          status: "empty",
+          metricCount: 0,
+        },
+      ],
+    });
+  });
+
+  it("records macro provider failure diagnostics as non-fatal degradation", async () => {
+    const newsProvider: NewsProviderPort = {
+      fetchArticles: async () => ok([]),
+    };
+    const metricsProvider: MarketMetricsProviderPort = {
+      fetchMetrics: async (request) =>
+        ok({
+          metrics: [],
+          diagnostics: {
+            provider: "alphavantage",
+            symbol: request.symbol,
+            status: "empty",
+            metricCount: 0,
+          },
+        }),
+    };
+    const filingsProvider: FilingsProviderPort = {
+      fetchFilings: async () => ok([]),
+    };
+    const macroContextProvider: MacroContextProviderPort = {
+      fetchMacroContext: async () =>
+        ok({
+          metrics: [],
+          diagnostics: [
+            {
+              provider: "fred",
+              status: "rate_limited",
+              metricCount: 0,
+              reason: "FRED limit hit",
+              httpStatus: 429,
+            },
+          ],
+        }),
+    };
+
+    const documentRepo: DocumentRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+    const metricsRepo: MetricsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+    const filingsRepo: FilingsRepositoryPort = {
+      upsertMany: async () => {},
+      listBySymbol: async () => [],
+    };
+    let queuedPayload: JobPayload | undefined;
+    const queue: QueuePort = {
+      enqueue: async (_stage, nextPayload) => {
+        queuedPayload = nextPayload;
+      },
+    };
+    const clock: ClockPort = {
+      now: () => new Date("2026-02-18T12:00:00.000Z"),
+    };
+    const ids: IdGeneratorPort = {
+      next: () => crypto.randomUUID(),
+    };
+
+    const service = new IngestionService(
+      newsProvider,
+      metricsProvider,
+      filingsProvider,
+      documentRepo,
+      metricsRepo,
+      filingsRepo,
+      queue,
+      clock,
+      ids,
+      7,
+      90,
+      undefined,
+      undefined,
+      macroContextProvider,
+    );
+
+    await service.run(payload);
+
+    expect(
+      queuedPayload?.providerFailures?.some(
+        (failure) =>
+          failure.source === "macro-context" &&
+          failure.provider === "fred" &&
+          failure.status === "rate_limited",
+      ),
+    ).toBeTrue();
   });
 });

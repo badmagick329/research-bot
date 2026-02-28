@@ -17,6 +17,7 @@ import type {
   ResearchSnapshotEntity,
   ResolvedCompanyIdentity,
   SnapshotMetricsDiagnostics,
+  MacroContextProviderDiagnostics,
   SnapshotProviderFailureDiagnostics,
   SnapshotStageDiagnostics,
   ThesisTypeContext,
@@ -32,6 +33,10 @@ export type JobPayload = {
   resolvedIdentity?: ResolvedCompanyIdentity;
   metricsDiagnostics?: SnapshotMetricsDiagnostics;
   metricsCompanyFactsDiagnostics?: SnapshotMetricsDiagnostics;
+  macroContextDiagnostics?: {
+    totalMetricCount: number;
+    providers: MacroContextProviderDiagnostics[];
+  };
   providerFailures?: SnapshotProviderFailureDiagnostics[];
   stageIssues?: SnapshotStageDiagnostics[];
   thesisTypeContext?: ThesisTypeContext;
@@ -187,7 +192,12 @@ export interface TaskFactoryPort {
   create(symbol: string, stage: JobStage): ResearchTaskEntity;
 }
 
-export type ProviderRateLimitKey = "alphavantage" | "finnhub" | "sec-edgar";
+export type ProviderRateLimitKey =
+  | "alphavantage"
+  | "finnhub"
+  | "sec-edgar"
+  | "fred"
+  | "bls";
 
 export interface ProviderRateLimiterPort {
   /**

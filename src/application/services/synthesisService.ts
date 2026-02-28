@@ -27,6 +27,7 @@ import type {
   InvestorDriver,
   InvestorKpi,
   InvestorViewV2,
+  KpiTemplateName,
   PositionSizing,
   ResolvedCompanyIdentity,
   SnapshotProviderFailureDiagnostics,
@@ -373,6 +374,68 @@ export class SynthesisService {
     }
 
     return value.toFixed(4);
+  }
+
+  /**
+   * Identifies normalized macro metrics so synthesis can apply sector-sensitive inclusion without polluting core KPI ranking.
+   */
+  private isMacroMetricName(metricName: string): boolean {
+    return metricName.startsWith("macro_");
+  }
+
+  /**
+   * Selects a bounded macro subset by KPI template so investor-facing narrative uses relevant macro context only.
+   */
+  private selectMacroMetrics(
+    metrics: MetricPointEntity[],
+    template: KpiTemplateName | undefined,
+  ): MetricPointEntity[] {
+    const byName = new Map(metrics.map((metric) => [metric.metricName, metric]));
+    const selectedNamesByTemplate: Record<KpiTemplateName, string[]> = {
+      banks: [
+        "macro_fed_funds_rate",
+        "macro_us10y_yield",
+        "macro_yield_curve_10y_2y",
+        "macro_unemployment_rate",
+      ],
+      retail_consumer: [
+        "macro_cpi_yoy",
+        "macro_bls_cpi_yoy",
+        "macro_unemployment_rate",
+        "macro_retail_sales_yoy",
+      ],
+      semis: [
+        "macro_industrial_production_yoy",
+        "macro_us10y_yield",
+        "macro_cpi_yoy",
+      ],
+      software_saas: [
+        "macro_us10y_yield",
+        "macro_fed_funds_rate",
+        "macro_unemployment_rate",
+      ],
+      energy_materials: [
+        "macro_wti_oil_price",
+        "macro_industrial_production_yoy",
+        "macro_cpi_yoy",
+      ],
+      generic: [
+        "macro_fed_funds_rate",
+        "macro_cpi_yoy",
+        "macro_unemployment_rate",
+      ],
+    };
+
+    const resolvedTemplate = template ?? "generic";
+    const selected: MetricPointEntity[] = [];
+    selectedNamesByTemplate[resolvedTemplate].forEach((name) => {
+      const metric = byName.get(name);
+      if (metric) {
+        selected.push(metric);
+      }
+    });
+
+    return selected.slice(0, 4);
   }
 
   /**
@@ -1505,6 +1568,7 @@ export class SynthesisService {
     stageIssueLines: string;
     sourceLines: string;
     metricLines: string;
+    macroLines: string;
     filingLines: string;
     memoryLines: string;
     actionMatrixLines: string;
@@ -1567,6 +1631,9 @@ export class SynthesisService {
       "",
       "Market metrics:",
       args.metricLines || "- none",
+      "",
+      "Macro context (sector-sensitive):",
+      args.macroLines || "- none",
       "",
       "Regulatory filings:",
       args.filingLines || "- none",
@@ -1636,7 +1703,7 @@ export class SynthesisService {
       const label = newsLabelByDocumentId.get(doc.id) ?? "N_issuer1";
       lines.push(`- ${label}: news "${doc.title}"`);
     });
-    metrics.slice(0, 8).forEach((metric, index) => {
+    metrics.slice(0, 12).forEach((metric, index) => {
       lines.push(
         `- M${index + 1}: metric ${metric.metricName}=${this.formatMetricValue(metric)}${metric.metricUnit ? ` ${metric.metricUnit}` : ""}`,
       );
@@ -2597,7 +2664,17 @@ export class SynthesisService {
     const selectedDocs = relevanceSelection.selected;
     await this.documentRepo.upsertMany(relevanceSelection.classifiedDocuments);
 
-    const latestMetrics = this.latestMetricByName(metrics).slice(0, 8);
+    const latestByMetricName = this.latestMetricByName(metrics);
+    const latestMetrics = latestByMetricName
+      .filter((metric) => !this.isMacroMetricName(metric.metricName))
+      .slice(0, 8);
+    const selectedMacroMetrics = this.selectMacroMetrics(
+      latestByMetricName.filter((metric) =>
+        this.isMacroMetricName(metric.metricName),
+      ),
+      payload.kpiContext?.template,
+    );
+    const promptMetrics = [...latestMetrics, ...selectedMacroMetrics];
     const sourceLines = selectedDocs
       .slice(0, 10)
       .map((doc) => {
@@ -2611,6 +2688,12 @@ export class SynthesisService {
       .map(
         (metric, index) =>
           `- M${index + 1} ${metric.provider}: ${metric.metricName}=${this.formatMetricValue(metric)}${metric.metricUnit ? ` ${metric.metricUnit}` : ""} (${metric.periodType}, as of ${metric.asOf.toISOString().slice(0, 10)})`,
+      )
+      .join("\n");
+    const macroLines = selectedMacroMetrics
+      .map(
+        (metric, index) =>
+          `- M${latestMetrics.length + index + 1} ${metric.provider}: ${metric.metricName}=${this.formatMetricValue(metric)}${metric.metricUnit ? ` ${metric.metricUnit}` : ""} (${metric.periodType}, as of ${metric.asOf.toISOString().slice(0, 10)})`,
       )
       .join("\n");
 
@@ -2648,6 +2731,12 @@ export class SynthesisService {
     latestMetrics.forEach((metric, index) => {
       metricLabelByName.set(metric.metricName, `M${index + 1}`);
     });
+    selectedMacroMetrics.forEach((metric, index) => {
+      metricLabelByName.set(
+        metric.metricName,
+        `M${latestMetrics.length + index + 1}`,
+      );
+    });
     const filingLabelByFactName = new Map<string, string>();
     filings.slice(0, 6).forEach((filing, index) => {
       const filingLabel = `F${index + 1}`;
@@ -2673,7 +2762,7 @@ export class SynthesisService {
     const memoryResult = await this.fetchCrossRunMemory(
       payload,
       selectedDocs,
-      latestMetrics,
+      promptMetrics,
       filings,
       now,
     );
@@ -2683,7 +2772,7 @@ export class SynthesisService {
     const evidenceMapLines = this.buildEvidenceMapLines(
       selectedDocs,
       relevanceSelection.newsLabelByDocumentId,
-      latestMetrics,
+      promptMetrics,
       filings,
       memoryMatches,
     );
@@ -2696,6 +2785,7 @@ export class SynthesisService {
       stageIssueLines,
       sourceLines,
       metricLines,
+      macroLines,
       filingLines,
       memoryLines,
       actionMatrixLines,
@@ -2719,7 +2809,7 @@ export class SynthesisService {
       decisionResult.decision,
       actionMatrix,
     );
-    const hasEvidence = selectedDocs.length + latestMetrics.length + filings.length > 0;
+    const hasEvidence = selectedDocs.length + promptMetrics.length + filings.length > 0;
     const initialValidationIssues = this.validateThesis(
       thesis,
       hasEvidence,
@@ -2772,7 +2862,7 @@ export class SynthesisService {
         actionMatrix,
         evidenceMapLines,
         selectedDocs,
-        metrics: latestMetrics,
+        metrics: promptMetrics,
         filings,
         relevanceSelection,
       });
@@ -2936,7 +3026,7 @@ export class SynthesisService {
       catalysts: this.deriveCatalysts(selectedDocs, latestMetrics, filings),
       valuationView,
       confidence,
-      sources: this.uniqueSources(selectedDocs, latestMetrics, filings),
+      sources: this.uniqueSources(selectedDocs, promptMetrics, filings),
       investorViewV2,
       diagnostics: {
         metrics: payload.metricsDiagnostics,
@@ -2971,6 +3061,15 @@ export class SynthesisService {
           excludedByClass: relevanceSelection.excludedByClass,
           excludedByClassAndReason: relevanceSelection.excludedByClassAndReason,
         },
+        macroContext: payload.macroContextDiagnostics
+          ? {
+              totalMetricCount: payload.macroContextDiagnostics.totalMetricCount,
+              providers: payload.macroContextDiagnostics.providers,
+              selectedForTemplate: selectedMacroMetrics.map(
+                (metric) => metric.metricName,
+              ),
+            }
+          : undefined,
         decisionReasons: decisionResult.reasons.slice(0, 8),
         thesisQuality: {
           score: thesisQuality.score,

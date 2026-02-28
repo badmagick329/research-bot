@@ -27,6 +27,8 @@ const sensitiveEnvSchema = z.object({
     .default("postgres://postgres:postgres@localhost:5432/research_bot"),
   FINNHUB_API_KEY: z.string().default(""),
   ALPHA_VANTAGE_API_KEY: z.string().default(""),
+  FRED_API_KEY: z.string().default(""),
+  BLS_API_KEY: z.string().default(""),
   SEC_EDGAR_USER_AGENT: z
     .string()
     .default("research-bot/1.0 (contact: devnull@example.com)"),
@@ -58,6 +60,16 @@ const nonSensitiveConfigSchema = z.object({
   SEC_COMPANYFACTS_ENABLED: z.coerce.boolean(),
   SEC_COMPANYFACTS_TIMEOUT_MS: z.coerce.number().int().positive(),
   SEC_COMPANYFACTS_MAX_FACTS_PER_METRIC: z.coerce.number().int().min(1).max(128),
+  MACRO_OVERLAY_ENABLED: z.coerce.boolean(),
+  MACRO_FRED_ENABLED: z.coerce.boolean(),
+  MACRO_BLS_ENABLED: z.coerce.boolean(),
+  MACRO_LOOKBACK_MONTHS: z.coerce.number().int().min(12).max(120),
+  FRED_BASE_URL: z.string(),
+  FRED_TIMEOUT_MS: z.coerce.number().int().positive(),
+  FRED_MIN_INTERVAL_MS: z.coerce.number().int().positive(),
+  BLS_BASE_URL: z.string(),
+  BLS_TIMEOUT_MS: z.coerce.number().int().positive(),
+  BLS_MIN_INTERVAL_MS: z.coerce.number().int().positive(),
   LLM_PROVIDER: z.enum(supportedLlmProviders),
   OLLAMA_BASE_URL: z.string(),
   OLLAMA_CHAT_MODEL: z.string(),
@@ -130,6 +142,8 @@ const appEnvSchema = nonSensitiveConfigSchema.extend({
   POSTGRES_URL: sensitiveEnvSchema.shape.POSTGRES_URL,
   FINNHUB_API_KEY: sensitiveEnvSchema.shape.FINNHUB_API_KEY,
   ALPHA_VANTAGE_API_KEY: sensitiveEnvSchema.shape.ALPHA_VANTAGE_API_KEY,
+  FRED_API_KEY: sensitiveEnvSchema.shape.FRED_API_KEY,
+  BLS_API_KEY: sensitiveEnvSchema.shape.BLS_API_KEY,
   SEC_EDGAR_USER_AGENT: sensitiveEnvSchema.shape.SEC_EDGAR_USER_AGENT,
   OPENAI_API_KEY: sensitiveEnvSchema.shape.OPENAI_API_KEY,
 });
@@ -143,6 +157,8 @@ export const env: AppEnv = appEnvSchema.parse({
   POSTGRES_URL: sensitiveEnv.POSTGRES_URL,
   FINNHUB_API_KEY: sensitiveEnv.FINNHUB_API_KEY,
   ALPHA_VANTAGE_API_KEY: sensitiveEnv.ALPHA_VANTAGE_API_KEY,
+  FRED_API_KEY: sensitiveEnv.FRED_API_KEY,
+  BLS_API_KEY: sensitiveEnv.BLS_API_KEY,
   SEC_EDGAR_USER_AGENT: sensitiveEnv.SEC_EDGAR_USER_AGENT,
   OPENAI_API_KEY: sensitiveEnv.OPENAI_API_KEY,
 });

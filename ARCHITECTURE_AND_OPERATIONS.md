@@ -48,6 +48,21 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - Mapping uses bounded fact windows, allowed filing forms, and period normalization (`annual|quarter|ttm|point_in_time`).
 - Companyfacts fetch failure is non-fatal when other evidence sources succeed; diagnostics are persisted explicitly.
 
+## Macro Overlay Model (FRED + BLS)
+- Macro overlay is additive and deterministic; no hard decision gate depends on macro availability.
+- Ingestion fetches FRED and BLS macro context in parallel and persists normalized points in `metrics` with `provider=fred|bls`.
+- Normalized macro metrics include:
+  - FRED: `macro_fed_funds_rate`, `macro_us10y_yield`, `macro_us2y_yield`, `macro_yield_curve_10y_2y`, `macro_cpi_yoy`, `macro_unemployment_rate`, `macro_industrial_production_yoy`, `macro_retail_sales_yoy`, `macro_wti_oil_price`
+  - BLS: `macro_bls_cpi_yoy`, `macro_bls_unemployment_rate`
+- Synthesis selects up to 4 macro metrics by KPI template to avoid generic macro dumps:
+  - banks: fed funds, 10y, curve, unemployment
+  - retail_consumer: cpi, bls_cpi, unemployment, retail_sales
+  - semis: industrial_production, 10y, cpi
+  - software_saas: 10y, fed funds, unemployment
+  - energy_materials: wti, industrial_production, cpi
+  - generic: fed funds, cpi, unemployment
+- Macro provider failures are non-fatal and emitted in diagnostics/provider failures as `source=macro-context`.
+
 ## Thesis Generation (V3)
 - `snapshot` is read-only.
 - `refresh-thesis` re-runs `synthesize` only (no re-ingestion).
@@ -80,7 +95,11 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 ## Snapshot Diagnostics
 - `metrics`
 - `metricsCompanyFacts`
-- `providerFailures` (`news|metrics|filings|market-context`)
+- `macroContext`:
+  - `totalMetricCount`
+  - `providers[]` (`fred|bls` status/count/reason/httpStatus)
+  - `selectedForTemplate[]`
+- `providerFailures` (`news|metrics|filings|market-context|macro-context`)
 - `stageIssues`
 - `identity`
 - `newsQuality`:
@@ -162,6 +181,16 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - `SEC_COMPANYFACTS_ENABLED=true|false`
 - `SEC_COMPANYFACTS_TIMEOUT_MS=15000`
 - `SEC_COMPANYFACTS_MAX_FACTS_PER_METRIC=16`
+- `MACRO_OVERLAY_ENABLED=true|false`
+- `MACRO_FRED_ENABLED=true|false`
+- `MACRO_BLS_ENABLED=true|false`
+- `MACRO_LOOKBACK_MONTHS=24`
+- `FRED_BASE_URL=https://api.stlouisfed.org`
+- `FRED_TIMEOUT_MS=15000`
+- `FRED_MIN_INTERVAL_MS=1000`
+- `BLS_BASE_URL=https://api.bls.gov`
+- `BLS_TIMEOUT_MS=15000`
+- `BLS_MIN_INTERVAL_MS=1000`
 - `QUEUE_CONCURRENCY_CLASSIFY_STOCK=2`
 - `QUEUE_CONCURRENCY_SELECT_HORIZON=2`
 - `QUEUE_CONCURRENCY_BUILD_KPI_TREE=2`

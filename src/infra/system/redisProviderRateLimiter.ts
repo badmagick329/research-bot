@@ -26,9 +26,8 @@ export class RedisProviderRateLimiter implements ProviderRateLimiterPort {
 
   constructor(
     connection: RedisOptions,
-    private readonly minIntervalByProvider: Record<
-      ProviderRateLimitKey,
-      number
+    private readonly minIntervalByProvider: Partial<
+      Record<ProviderRateLimitKey, number>
     >,
     private readonly keyPrefix = "research-bot:provider-rate-limit",
   ) {
@@ -39,7 +38,7 @@ export class RedisProviderRateLimiter implements ProviderRateLimiterPort {
    * Waits until the provider's next slot is available to prevent burst traffic from parallel workers.
    */
   async waitForSlot(provider: ProviderRateLimitKey): Promise<void> {
-    const minIntervalMs = this.minIntervalByProvider[provider];
+    const minIntervalMs = this.minIntervalByProvider[provider] ?? 0;
     if (minIntervalMs <= 0) {
       return;
     }
