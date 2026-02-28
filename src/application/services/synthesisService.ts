@@ -11,7 +11,10 @@ import type {
   ClockPort,
   IdGeneratorPort,
 } from "../../core/ports/outboundPorts";
-import type { DocumentEntity } from "../../core/entities/document";
+import type {
+  DocumentEntity,
+  NewsEvidenceClass,
+} from "../../core/entities/document";
 import type { MetricPointEntity } from "../../core/entities/metric";
 import type { FilingEntity } from "../../core/entities/filing";
 import type {
@@ -42,6 +45,13 @@ type RankedDocument = {
 
 type RelevanceSelection = {
   selected: DocumentEntity[];
+  classifiedDocuments: DocumentEntity[];
+  selectedNewsLabels: string[];
+  newsLabelByDocumentId: Map<string, string>;
+  issuerAnchorPresent: boolean;
+  includedByClass: Record<NewsEvidenceClass, number>;
+  excludedByClass: Record<NewsEvidenceClass, number>;
+  excludedByClassAndReason: Record<string, Record<string, number>>;
   relevantHeadlinesCount: number;
   selectedRelevantCount: number;
   lowRelevance: boolean;
@@ -91,7 +101,8 @@ type ExcludedHeadlineReason =
   | "below_composite_threshold"
   | "low_source_quality"
   | "stale_for_horizon"
-  | "read_through_without_issuer_anchor";
+  | "read_through_without_issuer_anchor"
+  | "read_through_capped";
 type ActionMatrixRow = {
   signalId: string;
   label: string;
@@ -112,6 +123,14 @@ type DecisionContext = {
 type ThesisQualityScore = {
   score: number;
   failedChecks: string[];
+};
+
+const evidenceClassSortOrder: Record<NewsEvidenceClass, number> = {
+  issuer: 0,
+  peer: 1,
+  supply_chain: 2,
+  customer: 3,
+  industry: 4,
 };
 
 /**
@@ -811,6 +830,25 @@ export class SynthesisService {
     if (docs.length === 0) {
       return {
         selected: [],
+        classifiedDocuments: [],
+        selectedNewsLabels: [],
+        newsLabelByDocumentId: new Map<string, string>(),
+        issuerAnchorPresent: false,
+        includedByClass: {
+          issuer: 0,
+          peer: 0,
+          supply_chain: 0,
+          customer: 0,
+          industry: 0,
+        },
+        excludedByClass: {
+          issuer: 0,
+          peer: 0,
+          supply_chain: 0,
+          customer: 0,
+          industry: 0,
+        },
+        excludedByClassAndReason: {},
         relevantHeadlinesCount: 0,
         selectedRelevantCount: 0,
         lowRelevance: true,
@@ -829,6 +867,21 @@ export class SynthesisService {
     const excludedHeadlineReasons: ExcludedHeadlineReason[] = [];
     const excludedHeadlineReasonSamples: string[] = [];
     const excludedByReason: Record<string, number> = {};
+    const excludedByClass: Record<NewsEvidenceClass, number> = {
+      issuer: 0,
+      peer: 0,
+      supply_chain: 0,
+      customer: 0,
+      industry: 0,
+    };
+    const includedByClass: Record<NewsEvidenceClass, number> = {
+      issuer: 0,
+      peer: 0,
+      supply_chain: 0,
+      customer: 0,
+      industry: 0,
+    };
+    const excludedByClassAndReason: Record<string, Record<string, number>> = {};
     const seenTitle = new Set<string>();
     const seenUrl = new Set<string>();
     const scored: NewsScoredItem[] = [];
@@ -863,41 +916,121 @@ export class SynthesisService {
     const issuerIncludedExists = scored.some(
       (item) => item.evidenceClass === "issuer" && item.includedByThresholds,
     );
-    const includedCandidates = scored
-      .map((item) => {
-        if (!item.includedByThresholds) {
-          return { ...item, includedFinal: false };
-        }
-        if (item.evidenceClass !== "issuer" && !issuerIncludedExists) {
-          return {
-            ...item,
-            includedFinal: false,
-            exclusionReason: "read_through_without_issuer_anchor" as const,
-          };
-        }
-        return { ...item, includedFinal: true };
-      })
-      .sort((left, right) => {
-        if (right.composite !== left.composite) {
-          return right.composite - left.composite;
-        }
-        return right.doc.publishedAt.getTime() - left.doc.publishedAt.getTime();
-      });
+    const maxNonIssuerItems = Math.floor(this.newsV2MaxItems * 0.4);
+    let selectedNonIssuerCount = 0;
+    const sortedCandidates = [...scored].sort((left, right) => {
+      if (right.composite !== left.composite) {
+        return right.composite - left.composite;
+      }
+      const classOrderDelta =
+        evidenceClassSortOrder[left.evidenceClass] -
+        evidenceClassSortOrder[right.evidenceClass];
+      if (classOrderDelta !== 0) {
+        return classOrderDelta;
+      }
+      return right.doc.publishedAt.getTime() - left.doc.publishedAt.getTime();
+    });
 
-    const selectedRanked = includedCandidates
-      .filter((item) => item.includedFinal)
-      .slice(0, this.newsV2MaxItems);
+    const evaluatedCandidates = sortedCandidates.map((item) => {
+      let includedFinal = false;
+      let exclusionReason: ExcludedHeadlineReason | undefined = item.exclusionReason;
 
-    includedCandidates
-      .filter((item) => !selectedRanked.some((selected) => selected.doc.id === item.doc.id))
-      .filter((item) => !item.includedFinal || selectedRanked.length >= this.newsV2MaxItems)
+      const isReadThrough = item.evidenceClass !== "issuer";
+      if (!item.includedByThresholds) {
+        includedFinal = false;
+        exclusionReason = exclusionReason ?? "below_composite_threshold";
+      } else if (
+        isReadThrough &&
+        item.components.economicMaterialityScore <
+          this.newsV2MinMaterialityScore + 10
+      ) {
+        includedFinal = false;
+        exclusionReason = "below_materiality_threshold";
+      } else if (
+        isReadThrough &&
+        item.components.kpiLinkageScore < this.newsV2MinKpiLinkageScore + 10
+      ) {
+        includedFinal = false;
+        exclusionReason = "below_kpi_linkage_threshold";
+      } else if (isReadThrough && !issuerIncludedExists) {
+        includedFinal = false;
+        exclusionReason = "read_through_without_issuer_anchor";
+      } else if (isReadThrough && selectedNonIssuerCount >= maxNonIssuerItems) {
+        includedFinal = false;
+        exclusionReason = "read_through_capped";
+      } else if (
+        !isReadThrough &&
+        includedByClass.issuer >= this.newsV2MaxItems
+      ) {
+        includedFinal = false;
+        exclusionReason = "below_composite_threshold";
+      } else if (
+        includedByClass.issuer +
+          includedByClass.peer +
+          includedByClass.supply_chain +
+          includedByClass.customer +
+          includedByClass.industry >=
+        this.newsV2MaxItems
+      ) {
+        includedFinal = false;
+        exclusionReason = isReadThrough
+          ? "read_through_capped"
+          : "below_composite_threshold";
+      } else {
+        includedFinal = true;
+        includedByClass[item.evidenceClass] += 1;
+        if (isReadThrough) {
+          selectedNonIssuerCount += 1;
+        }
+      }
+
+      return {
+        ...item,
+        includedFinal,
+        exclusionReason,
+      };
+    });
+
+    const selectedRanked = evaluatedCandidates.filter((item) => item.includedFinal);
+    selectedRanked.forEach((item) => {
+      const nextDoc = item.doc;
+      nextDoc.evidenceClass = item.evidenceClass;
+    });
+
+    const classCounters: Record<NewsEvidenceClass, number> = {
+      issuer: 0,
+      peer: 0,
+      supply_chain: 0,
+      customer: 0,
+      industry: 0,
+    };
+    const newsLabelByDocumentId = new Map<string, string>();
+    selectedRanked.forEach((item) => {
+      classCounters[item.evidenceClass] += 1;
+      newsLabelByDocumentId.set(
+        item.doc.id,
+        `N_${item.evidenceClass}${classCounters[item.evidenceClass]}`,
+      );
+    });
+
+    evaluatedCandidates
+      .filter((item) => !item.includedFinal)
       .forEach((item) => {
         const reason = item.exclusionReason ?? "below_composite_threshold";
         excludedHeadlineReasons.push(reason);
         excludedByReason[reason] = (excludedByReason[reason] ?? 0) + 1;
+        excludedByClass[item.evidenceClass] += 1;
+        if (!excludedByClassAndReason[item.evidenceClass]) {
+          excludedByClassAndReason[item.evidenceClass] = {};
+        }
+        const classReasonCounts = excludedByClassAndReason[item.evidenceClass];
+        if (!classReasonCounts) {
+          return;
+        }
+        classReasonCounts[reason] = (classReasonCounts[reason] ?? 0) + 1;
         if (excludedHeadlineReasonSamples.length < 8) {
           excludedHeadlineReasonSamples.push(
-            `${item.doc.title.slice(0, 96)} (${reason}; composite=${item.composite})`,
+            `${item.doc.title.slice(0, 96)} (${item.evidenceClass}; ${reason}; composite=${item.composite})`,
           );
         }
       });
@@ -909,24 +1042,39 @@ export class SynthesisService {
       selectedRelevantCount < 3 ||
       selectedRelevantCount / Math.max(1, selectedRanked.length) < 0.5;
     const averageCompositeScore =
-      includedCandidates.length === 0
+      evaluatedCandidates.length === 0
         ? 0
         : Number.parseFloat(
             (
-              includedCandidates.reduce((sum, item) => sum + item.composite, 0) /
-              includedCandidates.length
+              evaluatedCandidates.reduce((sum, item) => sum + item.composite, 0) /
+              evaluatedCandidates.length
             ).toFixed(2),
           );
-    const scoreBreakdownSample = includedCandidates.slice(0, 8).map((item) => ({
+    const scoreBreakdownSample = evaluatedCandidates.slice(0, 8).map((item) => ({
       title: item.doc.title,
       composite: item.composite,
       components: item.components,
       included: item.includedFinal,
-      reason: item.exclusionReason,
+      reason: item.includedFinal ? undefined : item.exclusionReason,
     }));
 
     return {
-      selected: selectedRanked.map((item) => item.doc),
+      selected: selectedRanked.map((item) => ({
+        ...item.doc,
+        evidenceClass: item.evidenceClass,
+      })),
+      classifiedDocuments: evaluatedCandidates.map((item) => ({
+        ...item.doc,
+        evidenceClass: item.evidenceClass,
+      })),
+      selectedNewsLabels: selectedRanked
+        .map((item) => newsLabelByDocumentId.get(item.doc.id))
+        .filter((label): label is string => Boolean(label)),
+      newsLabelByDocumentId,
+      issuerAnchorPresent: issuerIncludedExists,
+      includedByClass,
+      excludedByClass,
+      excludedByClassAndReason,
       relevantHeadlinesCount: relevant.length,
       selectedRelevantCount,
       lowRelevance,
@@ -1376,7 +1524,7 @@ export class SynthesisService {
       "Use only the evidence below.",
       "Do not invent facts, numbers, shareholders, or events not present in evidence.",
       "When evidence is missing or weak, explicitly state uncertainty and data gaps.",
-      "Cite each major claim with one or more evidence labels (N#, M#, F#).",
+      "Cite each major claim with one or more evidence labels (N_<class>#, M#, F#).",
       "Do not leave Conclusion uncited.",
       "Avoid repeating the same uncertainty sentence across sections.",
       "",
@@ -1452,7 +1600,7 @@ export class SynthesisService {
       "- If evidenceWeak=true, default Decision to Watch unless evidence strongly contradicts that default.",
       "- Use R# memory references only as supporting context, not as sole support for directional decisions when current-run evidence exists.",
       "- If memory conflicts with current-run evidence, explicitly call out the conflict in Missing Evidence.",
-      "- For each section, tie claims to one or more evidence items (N#, M#, F# labels).",
+      "- For each section, tie claims to one or more evidence items (N_<class>#, M#, F# labels).",
       "- Explain what changed in shareholder/institutional dynamics.",
       "- Connect valuation or growth interpretation to provided metrics when available.",
       "- Use filings to support or challenge narrative when available.",
@@ -1477,14 +1625,16 @@ export class SynthesisService {
    */
   private buildEvidenceMapLines(
     docs: DocumentEntity[],
+    newsLabelByDocumentId: Map<string, string>,
     metrics: MetricPointEntity[],
     filings: FilingEntity[],
     memoryMatches: EmbeddingMemoryMatch[],
   ): string {
     const lines: string[] = [];
 
-    docs.slice(0, 10).forEach((doc, index) => {
-      lines.push(`- N${index + 1}: news "${doc.title}"`);
+    docs.slice(0, 10).forEach((doc) => {
+      const label = newsLabelByDocumentId.get(doc.id) ?? "N_issuer1";
+      lines.push(`- ${label}: news "${doc.title}"`);
     });
     metrics.slice(0, 8).forEach((metric, index) => {
       lines.push(
@@ -1699,7 +1849,10 @@ export class SynthesisService {
     if (!evidenceMapSection) {
       issues.push("Evidence Map section content is missing.");
     } else {
-      const labelMentions = evidenceMapSection.match(/\b[NMFR]\d+\b/g) ?? [];
+      const labelMentions =
+        evidenceMapSection.match(
+          /\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+|R\d+)\b/g,
+        ) ?? [];
       if (hasEvidence && labelMentions.length < 3) {
         issues.push("Evidence Map must include traceable citation labels.");
       }
@@ -1708,14 +1861,15 @@ export class SynthesisService {
       }
     }
 
-    const citationMatches = thesis.match(/\b[NMF]\d+\b/g) ?? [];
+    const citationMatches =
+      thesis.match(/\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+)\b/g) ?? [];
     if (hasEvidence && citationMatches.length < 4) {
       issues.push("Citation density is too low for available evidence.");
     }
 
     if (actionSummarySection && hasEvidence) {
       const actionSummaryCitations =
-        actionSummarySection.match(/\b[NMF]\d+\b/g) ?? [];
+        actionSummarySection.match(/\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+)\b/g) ?? [];
       if (actionSummaryCitations.length < 4) {
         issues.push("Action Summary citation density is too low.");
       }
@@ -1724,7 +1878,11 @@ export class SynthesisService {
     const decisionLine = actionSummarySection
       ?.split("\n")
       .find((line) => /decision:/i.test(line));
-    if (hasEvidence && decisionLine && !/\b[NMF]\d+\b/.test(decisionLine)) {
+    if (
+      hasEvidence &&
+      decisionLine &&
+      !/\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+)\b/.test(decisionLine)
+    ) {
       issues.push("Action Summary Decision line must include evidence citation.");
     }
     if (
@@ -1745,7 +1903,11 @@ export class SynthesisService {
       );
     }
 
-    if (hasEvidence && memoryCount > 0 && !/\b[NMF]\d+\b/.test(thesis)) {
+    if (
+      hasEvidence &&
+      memoryCount > 0 &&
+      !/\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+)\b/.test(thesis)
+    ) {
       issues.push(
         "Directional narrative must anchor to current-run evidence when memory is present.",
       );
@@ -1780,7 +1942,7 @@ export class SynthesisService {
       ) {
         issues.push(`Trigger is too generic: ${line}`);
       }
-      if (hasEvidence && !/\b[NMF]\d+\b/.test(line)) {
+      if (hasEvidence && !/\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+)\b/.test(line)) {
         issues.push(`Trigger missing citation: ${line}`);
       }
     });
@@ -1791,7 +1953,7 @@ export class SynthesisService {
         .map((block) => block.trim())
         .filter(Boolean);
       sections.forEach((section) => {
-        if (!/\b[NMF]\d+\b/.test(section)) {
+        if (!/\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+)\b/.test(section)) {
           issues.push(`Section missing citation: ${section.split("\n")[0]}`);
         }
       });
@@ -1874,7 +2036,7 @@ export class SynthesisService {
       .map((line) => line.trim())
       .filter((line) => /^-\s+/.test(line) && !/^-\s+(Reasons to|If\/Then triggers:|Thesis invalidation:|Decision:|Timeframe fit:)/i.test(line));
     const citedActionableCount = actionableLines.filter((line) =>
-      /\b[NMFR]\d+\b/.test(line),
+      /\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+|R\d+)\b/.test(line),
     ).length;
     const citationCoveragePct =
       actionableLines.length === 0
@@ -1904,7 +2066,8 @@ export class SynthesisService {
     if (
       !decisionLine ||
       /\b(watch|buy|avoid)\b/.test(decisionLine) === false ||
-      (hasEvidence && !/\b[NMFR]\d+\b/.test(decisionLine))
+      (hasEvidence &&
+        !/\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+|R\d+)\b/.test(decisionLine))
     ) {
       failedChecks.push("weak_or_uncited_decision_line");
       score -= 12;
@@ -2367,7 +2530,9 @@ export class SynthesisService {
         unlinkedClaimsCount: 0,
       };
     }
-    const linked = claimLines.filter((line) => /\b[NMFR]\d+\b/.test(line));
+    const linked = claimLines.filter((line) =>
+      /\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+|R\d+)\b/.test(line),
+    );
     const citationCoveragePct = Math.round((linked.length / claimLines.length) * 100);
     return {
       citationCoveragePct,
@@ -2430,11 +2595,16 @@ export class SynthesisService {
       payload.kpiContext?.selected ?? payload.kpiContext?.required ?? [],
     );
     const selectedDocs = relevanceSelection.selected;
+    await this.documentRepo.upsertMany(relevanceSelection.classifiedDocuments);
 
     const latestMetrics = this.latestMetricByName(metrics).slice(0, 8);
     const sourceLines = selectedDocs
       .slice(0, 10)
-      .map((doc, index) => `- N${index + 1} ${doc.provider}: ${doc.title}`)
+      .map((doc) => {
+        const label =
+          relevanceSelection.newsLabelByDocumentId.get(doc.id) ?? "N_issuer1";
+        return `- ${label} ${doc.provider}: ${doc.title}`;
+      })
       .join("\n");
 
     const metricLines = latestMetrics
@@ -2512,6 +2682,7 @@ export class SynthesisService {
     const memoryLines = this.formatMemoryLines(memoryMatches);
     const evidenceMapLines = this.buildEvidenceMapLines(
       selectedDocs,
+      relevanceSelection.newsLabelByDocumentId,
       latestMetrics,
       filings,
       memoryMatches,
@@ -2679,7 +2850,14 @@ export class SynthesisService {
             : "next 1-2 quarters",
       expectedDirection: "supports or weakens thesis depending on observed KPI trajectory",
       whyItMatters: "Catalyst determines whether current expectations need to be revised.",
-      evidenceRefs: [`N${Math.min(index + 1, Math.max(1, selectedDocs.length || 1))}`],
+      evidenceRefs: [
+        relevanceSelection.selectedNewsLabels[
+          Math.min(
+            index,
+            Math.max(0, relevanceSelection.selectedNewsLabels.length - 1),
+          )
+        ] ?? "N_issuer1",
+      ],
     }));
     const investorDrivers: InvestorDriver[] = [
       {
@@ -2781,6 +2959,16 @@ export class SynthesisService {
           mode: "enforce",
           excludedByReason: relevanceSelection.excludedByReason,
           scoreBreakdownSample: relevanceSelection.scoreBreakdownSample.slice(0, 8),
+        },
+        readThroughQualityV2: {
+          issuerIncluded: relevanceSelection.includedByClass.issuer,
+          peerIncluded: relevanceSelection.includedByClass.peer,
+          supplyChainIncluded: relevanceSelection.includedByClass.supply_chain,
+          customerIncluded: relevanceSelection.includedByClass.customer,
+          industryIncluded: relevanceSelection.includedByClass.industry,
+          issuerAnchorPresent: relevanceSelection.issuerAnchorPresent,
+          excludedByClass: relevanceSelection.excludedByClass,
+          excludedByClassAndReason: relevanceSelection.excludedByClassAndReason,
         },
         decisionReasons: decisionResult.reasons.slice(0, 8),
         thesisQuality: {

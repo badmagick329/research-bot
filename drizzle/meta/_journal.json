@@ -29,6 +29,13 @@
       "when": 1772280000000,
       "tag": "0003_snapshot_investor_view_v2",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1772296800000,
+      "tag": "0004_documents_evidence_class",
+      "breakpoints": true
     }
   ]
 }

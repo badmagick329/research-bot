@@ -294,7 +294,9 @@ describe("SynthesisService", () => {
     expect(prompts[0]).toContain(
       "If evidenceWeak=true, default Decision to Watch",
     );
-    expect(prompts[0]).toContain("N1 finnhub: TTWO issues updated game launch guidance");
+    expect(prompts[0]).toContain(
+      "N_issuer1 finnhub: TTWO issues updated game launch guidance",
+    );
     expect(prompts[0]).toContain("excludedHeadlines=1");
     expect(prompts[0]).toContain("excludedSample=Stocks to buy this week across Wall Street");
 
@@ -304,7 +306,9 @@ describe("SynthesisService", () => {
     }
 
     expect(saved.thesis).toContain("# Evidence Map");
-    expect(saved.thesis).toContain('- N1: news "TTWO issues updated game launch guidance"');
+    expect(saved.thesis).toContain(
+      '- N_issuer1: news "TTWO issues updated game launch guidance"',
+    );
     expect(saved.thesis).toContain("- M1: metric market_cap=33.00B usd");
     expect(saved.thesis).toContain("- M2: metric revenue_growth_yoy=0.0800 ratio");
     expect(saved.thesis).toContain("- F1: filing 8-K 2026-02-15");
@@ -595,7 +599,7 @@ describe("SynthesisService", () => {
     }
 
     expect(saved.thesis).toContain("# Evidence Map");
-    expect(saved.thesis).toContain('- N1: news "TTWO demand update"');
+    expect(saved.thesis).toContain('- N_issuer1: news "TTWO demand update"');
     expect(saved.thesis).toContain("- M1: metric market_cap=33.00B usd");
     expect(saved.thesis).toContain("- F1: filing 8-K 2026-02-15");
   });
@@ -788,7 +792,9 @@ describe("SynthesisService", () => {
       },
     });
 
-    expect(prompts[0]).toContain("N1 finnhub: NVIDIA Corporation expands AI capacity");
+    expect(prompts[0]).toContain(
+      "N_issuer1 finnhub: NVIDIA Corporation expands AI capacity",
+    );
   });
 
   it("produces non-watch decisions when deterministic policy gates are met", async () => {
@@ -1048,6 +1054,154 @@ describe("SynthesisService", () => {
     expect(saved?.diagnostics?.newsQuality?.excludedReasonsSample?.some((line) => line.includes("duplicate_url"))).toBeTrue();
     expect(saved?.diagnostics?.newsQualityV2?.excludedByReason.duplicate_title).toBeDefined();
     expect(saved?.diagnostics?.newsQualityV2?.excludedByReason.duplicate_url).toBeDefined();
+  });
+
+  it("enforces issuer-anchor and read-through cap policy with class diagnostics", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-issuer",
+        symbol: "NVDA",
+        provider: "finnhub",
+        providerItemId: "issuer-1",
+        type: "news",
+        title: "NVDA guidance and revenue growth update",
+        summary: "NVIDIA demand and margin outlook",
+        content:
+          "NVIDIA next earnings guidance update revenue_growth_yoy profit_margin demand margin contract launch capacity expansion remains strong.",
+        url: "https://example.com/nvda-anchor",
+        publishedAt: new Date("2026-02-17T11:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "NVDA" },
+        createdAt: new Date("2026-02-17T11:00:00.000Z"),
+      },
+      ...[1, 2, 3, 4, 5].map((index) => ({
+        id: `doc-peer-${index}`,
+        symbol: "NVDA",
+        provider: "finnhub",
+        providerItemId: `peer-${index}`,
+        type: "news" as const,
+        title: `Peer competitor guidance revenue growth signal ${index}`,
+        summary: "peer and competitor margin signal",
+        content:
+          "peer competitor next earnings guidance update revenue_growth_yoy profit_margin demand margin litigation regulation contract launch capacity expansion trend remains notable.",
+        url: `https://example.com/peer-${index}`,
+        publishedAt: new Date(`2026-02-17T0${index}:00:00.000Z`),
+        language: "en",
+        topics: ["industry-news"],
+        sourceType: "api" as const,
+        rawPayload: { related: "AMD" },
+        createdAt: new Date(`2026-02-17T0${index}:00:00.000Z`),
+      })),
+    ];
+
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok(validThesis),
+    };
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics: [],
+      filings: [],
+      llm,
+    });
+
+    await service.run({
+      ...payload,
+      symbol: "NVDA",
+      resolvedIdentity: {
+        requestedSymbol: "NVDA",
+        canonicalSymbol: "NVDA",
+        companyName: "NVIDIA Corporation",
+        aliases: ["NVDA"],
+        confidence: 0.99,
+        resolutionSource: "manual_map",
+      },
+      kpiContext: {
+        template: "semis",
+        required: ["revenue_growth_yoy"],
+        optional: [],
+        selected: ["revenue_growth_yoy", "profit_margin"],
+        requiredHitCount: 1,
+        minRequiredForStrongNote: 1,
+      },
+    });
+
+    const saved = savedSnapshots[0];
+    expect(saved?.diagnostics?.readThroughQualityV2?.issuerAnchorPresent).toBeTrue();
+    const nonIssuerIncluded =
+      (saved?.diagnostics?.readThroughQualityV2?.peerIncluded ?? 0) +
+      (saved?.diagnostics?.readThroughQualityV2?.supplyChainIncluded ?? 0) +
+      (saved?.diagnostics?.readThroughQualityV2?.customerIncluded ?? 0) +
+      (saved?.diagnostics?.readThroughQualityV2?.industryIncluded ?? 0);
+    expect(nonIssuerIncluded).toBeLessThanOrEqual(4);
+    expect(
+      saved?.diagnostics?.newsQualityV2?.excludedByReason.read_through_capped ??
+        0,
+    ).toBeGreaterThan(0);
+  });
+
+  it("drops non-issuer read-through when no issuer anchor survives thresholds", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-peer-1",
+        symbol: "NVDA",
+        provider: "finnhub",
+        providerItemId: "peer-1",
+        type: "news",
+        title: "Peer competitor guidance and revenue growth signal",
+        summary: "peer demand and margin context",
+        content:
+          "peer competitor next earnings guidance update revenue_growth_yoy profit_margin demand margin litigation regulation contract launch capacity expansion remains strong.",
+        url: "https://example.com/non-issuer-only",
+        publishedAt: new Date("2026-02-17T09:00:00.000Z"),
+        language: "en",
+        topics: ["industry-news"],
+        sourceType: "api",
+        rawPayload: { related: "AMD" },
+        createdAt: new Date("2026-02-17T09:00:00.000Z"),
+      },
+    ];
+
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok(noEvidenceThesis),
+    };
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics: [],
+      filings: [],
+      llm,
+    });
+
+    await service.run({
+      ...payload,
+      symbol: "NVDA",
+      resolvedIdentity: {
+        requestedSymbol: "NVDA",
+        canonicalSymbol: "NVDA",
+        companyName: "NVIDIA Corporation",
+        aliases: ["NVDA"],
+        confidence: 0.99,
+        resolutionSource: "manual_map",
+      },
+      kpiContext: {
+        template: "semis",
+        required: ["revenue_growth_yoy"],
+        optional: [],
+        selected: ["revenue_growth_yoy", "profit_margin"],
+        requiredHitCount: 1,
+        minRequiredForStrongNote: 1,
+      },
+    });
+
+    const saved = savedSnapshots[0];
+    expect(saved?.diagnostics?.readThroughQualityV2?.issuerAnchorPresent).toBeFalse();
+    expect(
+      saved?.diagnostics?.newsQualityV2?.excludedByReason
+        .read_through_without_issuer_anchor ?? 0,
+    ).toBeGreaterThan(0);
   });
 
   it("applies deterministic fallback when thesis quality remains below floor after repair", async () => {

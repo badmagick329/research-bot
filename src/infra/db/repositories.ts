@@ -230,6 +230,7 @@ export class PostgresDocumentRepositoryService implements DocumentRepositoryPort
           summary: sql`excluded.summary`,
           content: sql`excluded.content`,
           topics: sql`excluded.topics`,
+          evidenceClass: sql`excluded.evidence_class`,
           rawPayload: sql`excluded.raw_payload`,
         },
       });
@@ -266,6 +267,7 @@ export class PostgresDocumentRepositoryService implements DocumentRepositoryPort
       language: row.language ?? undefined,
       type: row.type as DocumentEntity["type"],
       sourceType: row.sourceType as DocumentEntity["sourceType"],
+      evidenceClass: row.evidenceClass ?? undefined,
     }));
   }
 }

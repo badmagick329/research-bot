@@ -233,6 +233,16 @@ export type SnapshotDiagnostics = {
       reason?: string;
     }>;
   };
+  readThroughQualityV2?: {
+    issuerIncluded: number;
+    peerIncluded: number;
+    supplyChainIncluded: number;
+    customerIncluded: number;
+    industryIncluded: number;
+    issuerAnchorPresent: boolean;
+    excludedByClass: Record<string, number>;
+    excludedByClassAndReason: Record<string, Record<string, number>>;
+  };
   decisionReasons?: string[];
   thesisQuality?: {
     score: number;

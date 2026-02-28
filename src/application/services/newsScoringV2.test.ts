@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { DocumentEntity } from "../../core/entities/document";
-import { scoreNewsCandidate } from "./newsScoringV2";
+import { classifyEvidenceClass, scoreNewsCandidate } from "./newsScoringV2";
 
 const baseDoc = (overrides?: Partial<DocumentEntity>): DocumentEntity => ({
   id: "doc-1",
@@ -22,6 +22,22 @@ const baseDoc = (overrides?: Partial<DocumentEntity>): DocumentEntity => ({
 });
 
 describe("newsScoringV2", () => {
+  it("classifies read-through evidence classes deterministically", () => {
+    expect(classifyEvidenceClass("nvidia guidance update", true)).toBe("issuer");
+    expect(classifyEvidenceClass("peer competitor margin pressure", false)).toBe(
+      "peer",
+    );
+    expect(
+      classifyEvidenceClass("supplier shipment channel inventory signal", false),
+    ).toBe("supply_chain");
+    expect(
+      classifyEvidenceClass("customer contract win and enterprise order book", false),
+    ).toBe("customer");
+    expect(classifyEvidenceClass("industry demand backdrop", false)).toBe(
+      "industry",
+    );
+  });
+
   it("scores issuer-matched materially higher than unrelated market-wrap headline", () => {
     const issuer = scoreNewsCandidate(
       {

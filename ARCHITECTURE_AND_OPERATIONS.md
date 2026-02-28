@@ -49,8 +49,10 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - News Scoring V2 (immediate enforcement):
   - deterministic component scores: `issuerMatchScore`, `economicMaterialityScore`, `noveltyScore`, `horizonRelevanceScore`, `kpiLinkageScore`, `sourceQualityScore`
   - deterministic composite score with hard keep/drop thresholds
-  - read-through classes (`issuer|peer|supply_chain|customer|industry`) scored as secondary context
-  - non-issuer evidence requires high materiality + KPI linkage and an issuer anchor headline in selected set
+  - read-through classes (`issuer|peer|supply_chain|customer|industry`) are now first-class evidence metadata
+  - non-issuer evidence requires stronger thresholds (`materiality` and `kpiLinkage` above baseline gates) and an issuer anchor headline in selected set
+  - read-through inclusion is capped to 40% of selected news set
+  - evidence labels are class-prefixed (`N_issuer#`, `N_peer#`, `N_supply_chain#`, `N_customer#`, `N_industry#`)
 - Action Summary is partially deterministic:
   - decision seed from code policy (`Buy|Watch|Avoid`)
   - trigger rows from deterministic action matrix (threshold + action + citations)
@@ -76,6 +78,11 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
   - `totalConsidered`, `included`, `excluded`, `averageCompositeScore`, `mode`
   - `excludedByReason`
   - `scoreBreakdownSample`
+- `readThroughQualityV2`:
+  - `issuerIncluded`, `peerIncluded`, `supplyChainIncluded`, `customerIncluded`, `industryIncluded`
+  - `issuerAnchorPresent`
+  - `excludedByClass`
+  - `excludedByClassAndReason`
 - `decisionReasons`
 - `thesisQuality`:
   - `score`, `failedChecks`, `fallbackApplied`

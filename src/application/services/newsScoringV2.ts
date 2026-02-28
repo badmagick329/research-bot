@@ -1,12 +1,8 @@
-import type { DocumentEntity } from "../../core/entities/document";
+import type {
+  DocumentEntity,
+  NewsEvidenceClass,
+} from "../../core/entities/document";
 import type { HorizonBucket } from "../../core/entities/research";
-
-export type NewsEvidenceClass =
-  | "issuer"
-  | "peer"
-  | "supply_chain"
-  | "customer"
-  | "industry";
 
 export type NewsV2ExclusionReason =
   | "no_issuer_identity_match"
@@ -16,7 +12,8 @@ export type NewsV2ExclusionReason =
   | "below_kpi_linkage_threshold"
   | "below_composite_threshold"
   | "low_source_quality"
-  | "stale_for_horizon";
+  | "stale_for_horizon"
+  | "read_through_without_issuer_anchor";
 
 export type NewsScoreComponents = {
   issuerMatchScore: number;
@@ -94,7 +91,10 @@ const canonicalizeUrl = (value: string | undefined): string => {
   }
 };
 
-const classifyEvidenceClass = (
+/**
+ * Classifies headline evidence class deterministically so downstream policy can enforce issuer-anchored read-through handling.
+ */
+export const classifyEvidenceClass = (
   text: string,
   issuerMatched: boolean,
 ): NewsEvidenceClass => {

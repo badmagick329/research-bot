@@ -10,6 +10,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { InvestorViewV2, SnapshotDiagnostics } from "../../core/entities/research";
+import type { NewsEvidenceClass } from "../../core/entities/document";
 
 export const documentsTable = pgTable(
   "documents",
@@ -29,6 +30,7 @@ export const documentsTable = pgTable(
     language: text("language"),
     topics: jsonb("topics").$type<string[]>().notNull(),
     sourceType: text("source_type").notNull(),
+    evidenceClass: text("evidence_class").$type<NewsEvidenceClass>(),
     rawPayload: jsonb("raw_payload").$type<unknown>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
