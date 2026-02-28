@@ -4,18 +4,18 @@ import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { defaultConfig } from "./defaultConfig";
-
-const supportedNewsProviders = ["mock", "finnhub", "alphavantage"] as const;
-const supportedMetricsProviders = ["mock", "alphavantage"] as const;
-const supportedFilingsProviders = ["mock", "sec-edgar"] as const;
-const supportedLlmProviders = ["ollama", "openai"] as const;
-const supportedNewsRelevanceModes = ["high_precision", "balanced"] as const;
-const supportedNewsV2SourceQualityModes = ["default"] as const;
-
-export type NewsProviderName = (typeof supportedNewsProviders)[number];
-export type MetricsProviderName = (typeof supportedMetricsProviders)[number];
-export type FilingsProviderName = (typeof supportedFilingsProviders)[number];
-export type LlmProviderName = (typeof supportedLlmProviders)[number];
+import {
+  supportedFilingsProviders,
+  supportedLlmProviders,
+  supportedMetricsProviders,
+  supportedNewsProviders,
+  supportedNewsRelevanceModes,
+  supportedNewsV2SourceQualityModes,
+  type FilingsProviderName,
+  type LlmProviderName,
+  type MetricsProviderName,
+  type NewsProviderName,
+} from "./options";
 
 const sensitiveEnvSchema = z.object({
   NODE_ENV: z

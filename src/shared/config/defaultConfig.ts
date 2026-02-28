@@ -1,8 +1,71 @@
+import type {
+  FilingsProviderName,
+  LlmProviderName,
+  MetricsProviderName,
+  NewsProviderName,
+  NewsRelevanceModeName,
+  NewsV2SourceQualityModeName,
+} from "./options";
+
+type DefaultConfig = {
+  APP_SYMBOLS: string;
+  APP_RESEARCH_INTERVAL_SECONDS: number;
+  API_PORT: number;
+  APP_NEWS_LOOKBACK_DAYS: number;
+  APP_FILINGS_LOOKBACK_DAYS: number;
+  NEWS_PROVIDER: NewsProviderName;
+  NEWS_PROVIDERS: string;
+  FINNHUB_BASE_URL: string;
+  FINNHUB_TIMEOUT_MS: number;
+  FINNHUB_MIN_INTERVAL_MS: number;
+  ALPHA_VANTAGE_BASE_URL: string;
+  ALPHA_VANTAGE_TIMEOUT_MS: number;
+  ALPHA_VANTAGE_MIN_INTERVAL_MS: number;
+  METRICS_PROVIDER: MetricsProviderName;
+  FILINGS_PROVIDER: FilingsProviderName;
+  SEC_EDGAR_BASE_URL: string;
+  SEC_EDGAR_ARCHIVES_BASE_URL: string;
+  SEC_EDGAR_TICKERS_URL: string;
+  SEC_EDGAR_TIMEOUT_MS: number;
+  SEC_EDGAR_MIN_INTERVAL_MS: number;
+  SEC_COMPANYFACTS_ENABLED: boolean;
+  SEC_COMPANYFACTS_TIMEOUT_MS: number;
+  SEC_COMPANYFACTS_MAX_FACTS_PER_METRIC: number;
+  LLM_PROVIDER: LlmProviderName;
+  OLLAMA_BASE_URL: string;
+  OLLAMA_CHAT_MODEL: string;
+  OLLAMA_EMBED_MODEL: string;
+  OLLAMA_CHAT_TIMEOUT_MS: number;
+  OLLAMA_EMBED_TIMEOUT_MS: number;
+  OPENAI_BASE_URL: string;
+  OPENAI_CHAT_MODEL: string;
+  OPENAI_CHAT_TIMEOUT_MS: number;
+  NEWS_RELEVANCE_MODE: NewsRelevanceModeName;
+  NEWS_MIN_RELEVANCE_SCORE: number;
+  NEWS_ISSUER_MATCH_MIN_FIELDS: number;
+  THESIS_TRIGGER_MIN_NUMERIC: number;
+  THESIS_GENERIC_PHRASE_MAX: number;
+  THESIS_MIN_CITATION_COVERAGE_PCT: number;
+  THESIS_QUALITY_MIN_SCORE: number;
+  NEWS_V2_MIN_COMPOSITE_SCORE: number;
+  NEWS_V2_MIN_MATERIALITY_SCORE: number;
+  NEWS_V2_MIN_KPI_LINKAGE_SCORE: number;
+  NEWS_V2_MAX_ITEMS: number;
+  NEWS_V2_SOURCE_QUALITY_MODE: NewsV2SourceQualityModeName;
+  QUEUE_CONCURRENCY_INGEST: number;
+  QUEUE_CONCURRENCY_NORMALIZE: number;
+  QUEUE_CONCURRENCY_CLASSIFY_STOCK: number;
+  QUEUE_CONCURRENCY_SELECT_HORIZON: number;
+  QUEUE_CONCURRENCY_BUILD_KPI_TREE: number;
+  QUEUE_CONCURRENCY_EMBED: number;
+  QUEUE_CONCURRENCY_SYNTHESIZE: number;
+};
+
 /**
  * Central default values for non-sensitive runtime configuration.
  * Keeping these in source control makes behavior explicit and reviewable.
  */
-export const defaultConfig = {
+export const defaultConfig: DefaultConfig = {
   APP_SYMBOLS: "",
   APP_RESEARCH_INTERVAL_SECONDS: 300,
   API_PORT: 3000,
@@ -54,4 +117,4 @@ export const defaultConfig = {
   QUEUE_CONCURRENCY_BUILD_KPI_TREE: 2,
   QUEUE_CONCURRENCY_EMBED: 2,
   QUEUE_CONCURRENCY_SYNTHESIZE: 1,
-} as const;
+};
