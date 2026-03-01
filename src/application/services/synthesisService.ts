@@ -27,6 +27,7 @@ import type {
   InvestorDriver,
   InvestorKpi,
   InvestorViewV2,
+  KpiCoverageDiagnostics,
   KpiTemplateName,
   PositionSizing,
   ResolvedCompanyIdentity,
@@ -97,6 +98,7 @@ type ExcludedHeadlineReason =
   | "below_relevance_threshold"
   | "duplicate_title"
   | "duplicate_url"
+  | "issuer_noise_or_adjacent_context"
   | "below_materiality_threshold"
   | "below_kpi_linkage_threshold"
   | "below_composite_threshold"
@@ -126,6 +128,11 @@ type ThesisQualityScore = {
   failedChecks: string[];
 };
 
+type KpiCoverageComputation = {
+  selectedCurrentKpiNames: string[];
+  diagnostics: KpiCoverageDiagnostics;
+};
+
 const evidenceClassSortOrder: Record<NewsEvidenceClass, number> = {
   issuer: 0,
   peer: 1,
@@ -148,6 +155,9 @@ export class SynthesisService {
   private readonly thesisGenericPhraseMax: number;
   private readonly thesisMinCitationCoveragePct: number;
   private readonly thesisQualityMinScore: number;
+  private readonly kpiCarryForwardMaxAgeDays: number;
+  private readonly coreKpiMinRequired: number;
+  private readonly graceAllowOnSectorWeakness: boolean;
   private readonly newsV2MinCompositeScore: number;
   private readonly newsV2MinMaterialityScore: number;
   private readonly newsV2MinKpiLinkageScore: number;
@@ -172,6 +182,9 @@ export class SynthesisService {
       thesisGenericPhraseMax?: number;
       thesisMinCitationCoveragePct?: number;
       thesisQualityMinScore?: number;
+      kpiCarryForwardMaxAgeDays?: number;
+      coreKpiMinRequired?: number;
+      graceAllowOnSectorWeakness?: boolean;
       newsV2MinCompositeScore?: number;
       newsV2MinMaterialityScore?: number;
       newsV2MinKpiLinkageScore?: number;
@@ -186,6 +199,10 @@ export class SynthesisService {
     this.thesisGenericPhraseMax = options?.thesisGenericPhraseMax ?? 0;
     this.thesisMinCitationCoveragePct = options?.thesisMinCitationCoveragePct ?? 80;
     this.thesisQualityMinScore = options?.thesisQualityMinScore ?? 75;
+    this.kpiCarryForwardMaxAgeDays = options?.kpiCarryForwardMaxAgeDays ?? 90;
+    this.coreKpiMinRequired = options?.coreKpiMinRequired ?? 2;
+    this.graceAllowOnSectorWeakness =
+      options?.graceAllowOnSectorWeakness ?? true;
     this.newsV2MinCompositeScore = options?.newsV2MinCompositeScore ?? 65;
     this.newsV2MinMaterialityScore = options?.newsV2MinMaterialityScore ?? 50;
     this.newsV2MinKpiLinkageScore = options?.newsV2MinKpiLinkageScore ?? 40;
@@ -1651,7 +1668,7 @@ export class SynthesisService {
       "Output requirements:",
       "- Return Markdown with headings in this order: Action Summary, Overview, Shareholder/Institutional Dynamics, Valuation and Growth Interpretation, Regulatory Filings, Missing Evidence, Conclusion.",
       "- Under # Action Summary, include exactly these labeled bullets:",
-      "  - Decision: Buy|Watch|Avoid",
+      "  - Decision: Buy|Watch|Avoid|Watch (Low Quality)|Insufficient Evidence",
       "  - Timeframe fit: Short-term (0-3m) ... ; Long-term (12m+) ...",
       "  - Reasons to invest:",
       "  - Reasons to stay away:",
@@ -1848,6 +1865,54 @@ export class SynthesisService {
   }
 
   /**
+   * Aligns thesis markdown decision wording with final investor-facing action so UI/CLI narrative cannot drift from policy output.
+   */
+  private upsertFinalDecisionPresentation(
+    thesis: string,
+    decision: ActionDecision,
+    actionMatrix: ActionMatrixRow[],
+  ): string {
+    const firstCitation = actionMatrix.flatMap((row) => row.citations).at(0) ?? "M1";
+    const decisionLabel =
+      decision === "buy"
+        ? "Buy"
+        : decision === "avoid"
+          ? "Avoid"
+          : decision === "watch_low_quality"
+            ? "Watch (Low Quality)"
+            : decision === "insufficient_evidence"
+              ? "Insufficient Evidence"
+              : "Watch";
+    const decisionLine = `- Decision: ${decisionLabel} [${firstCitation}]`;
+
+    const section = this.extractHeadingSection(thesis, "Action Summary");
+    if (!section) {
+      return thesis;
+    }
+
+    const updatedSection = section
+      .split("\n")
+      .map((line) =>
+        /^-?\s*\*{0,2}decision\*{0,2}:/i.test(line.trim()) ? decisionLine : line,
+      )
+      .join("\n");
+
+    let rewritten = thesis.replace(
+      /# Action Summary\n[\s\S]*?(?=\n# |\s*$)/i,
+      `# Action Summary\n${updatedSection}\n`,
+    );
+
+    if (/^# Conclusion[\s\S]*$/im.test(rewritten)) {
+      rewritten = rewritten.replace(
+        /(Decision remains )(Buy|Watch|Avoid|Watch \(Low Quality\)|Insufficient Evidence)(\b)/i,
+        `$1${decisionLabel}$3`,
+      );
+    }
+
+    return rewritten;
+  }
+
+  /**
    * Validates synthesis output structure and citation density so weak drafts can be repaired before persistence.
    */
   private validateThesis(
@@ -1894,9 +1959,12 @@ export class SynthesisService {
       issues.push("Action Summary section content is missing.");
     }
 
-    const decision = this.extractDecision(actionSummarySection);
+    const parsedDecisionLine = this.parseDecisionLine(actionSummarySection);
+    const decision = parsedDecisionLine.decision;
     if (!decision) {
-      issues.push("Action Summary Decision must be Buy, Watch, or Avoid.");
+      issues.push(
+        "Action Summary Decision must be Buy, Watch, Avoid, Watch (Low Quality), or Insufficient Evidence.",
+      );
     } else if (evidenceWeak && decision !== "watch") {
       issues.push("Weak evidence must default Decision to Watch.");
     }
@@ -1942,19 +2010,16 @@ export class SynthesisService {
       }
     }
 
-    const decisionLine = actionSummarySection
-      ?.split("\n")
-      .find((line) => /decision:/i.test(line));
     if (
       hasEvidence &&
-      decisionLine &&
-      !/\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+)\b/.test(decisionLine)
+      parsedDecisionLine.raw &&
+      !parsedDecisionLine.hasCitation
     ) {
       issues.push("Action Summary Decision line must include evidence citation.");
     }
     if (
-      decisionLine &&
-      /(watch for|monitor|stay tuned|could\b|may\b)/i.test(decisionLine.toLowerCase())
+      parsedDecisionLine.raw &&
+      parsedDecisionLine.hasGenericLanguage
     ) {
       issues.push("Action Summary Decision line uses generic placeholder language.");
     }
@@ -2117,7 +2182,12 @@ export class SynthesisService {
     }
 
     const genericPattern = /\b(watch for|monitor|stay tuned|could|may)\b/gi;
-    const genericMatches = thesis.match(genericPattern) ?? [];
+    // Ignore Evidence Map text so provider headline wording does not falsely penalize thesis phrasing quality.
+    const thesisWithoutEvidenceMap = thesis.replace(
+      /# Evidence Map\n[\s\S]*?(?=\n# |\s*$)/i,
+      "# Evidence Map\n",
+    );
+    const genericMatches = thesisWithoutEvidenceMap.match(genericPattern) ?? [];
     if (genericMatches.length > this.thesisGenericPhraseMax) {
       failedChecks.push(
         `generic_phrase_count_${genericMatches.length}_gt_${this.thesisGenericPhraseMax}`,
@@ -2125,16 +2195,13 @@ export class SynthesisService {
       score -= (genericMatches.length - this.thesisGenericPhraseMax) * 8;
     }
 
-    const actionSummary = this.extractHeadingSection(thesis, "Action Summary");
-    const decisionLine = actionSummary
-      ?.split("\n")
-      .find((line) => /decision:/i.test(line))
-      ?.toLowerCase();
+    const parsedDecisionLine = this.parseDecisionLine(
+      this.extractHeadingSection(thesis, "Action Summary"),
+    );
     if (
-      !decisionLine ||
-      /\b(watch|buy|avoid)\b/.test(decisionLine) === false ||
-      (hasEvidence &&
-        !/\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+|R\d+)\b/.test(decisionLine))
+      !parsedDecisionLine.raw ||
+      !parsedDecisionLine.decision ||
+      (hasEvidence && !parsedDecisionLine.hasCitation)
     ) {
       failedChecks.push("weak_or_uncited_decision_line");
       score -= 12;
@@ -2151,7 +2218,7 @@ export class SynthesisService {
    * Renders a deterministic fallback thesis so runs still produce executable guidance when LLM output remains low quality after repair.
    */
   private buildDeterministicFallbackThesis(args: {
-    decision: ThesisDecision;
+    actionDecision: ActionDecision;
     actionMatrix: ActionMatrixRow[];
     evidenceMapLines: string;
     selectedDocs: DocumentEntity[];
@@ -2160,14 +2227,18 @@ export class SynthesisService {
     relevanceSelection: RelevanceSelection;
   }): string {
     const decisionLabel =
-      args.decision === "buy"
+      args.actionDecision === "buy"
         ? "Buy"
-        : args.decision === "avoid"
+        : args.actionDecision === "avoid"
           ? "Avoid"
-          : "Watch";
+          : args.actionDecision === "watch_low_quality"
+            ? "Watch (Low Quality)"
+            : args.actionDecision === "insufficient_evidence"
+              ? "Insufficient Evidence"
+              : "Watch";
     const citations = args.actionMatrix.flatMap((row) => row.citations).filter(Boolean);
     const primaryCitation = citations[0] ?? "M1";
-    const triggerLines = args.actionMatrix
+    const actionMatrixTriggers = args.actionMatrix
       .slice(0, 5)
       .map(
         (row) =>
@@ -2187,43 +2258,125 @@ export class SynthesisService {
       missingFields.push("analyst_buy_ratio");
     }
 
+    const triggerLines =
+      args.actionDecision === "insufficient_evidence"
+        ? [
+            `  - If at least 2 issuer-specific headlines with direct KPI linkage are captured in 14 days, then re-evaluate decision confidence (${primaryCitation})`,
+            `  - If a new filing confirms quantified guidance=true or demand_strength=true, then re-evaluate directional stance (${primaryCitation})`,
+            `  - If at least 3 core metrics are refreshed with current as-of dates, then re-evaluate evidence quality (${primaryCitation})`,
+          ].join("\n")
+        : args.actionDecision === "watch_low_quality"
+          ? [
+              `  - If sector KPI coverage rises above 1 optional KPI while core KPI coverage stays intact, then upgrade one notch (${primaryCitation})`,
+              `  - If filing risk facts switch to true, then reduce risk exposure (${primaryCitation})`,
+              `  - If two sequential refresh cycles keep sector KPI coverage at 0, then hold position sizing until quality improves (${primaryCitation})`,
+            ].join("\n")
+          : actionMatrixTriggers;
+
+    const reasonsToInvestSecondLine =
+      args.actionDecision === "insufficient_evidence"
+        ? `  - Current evidence map is useful for triage, but not yet sufficient for high-conviction direction [${primaryCitation}]`
+        : `  - Evidence coverage includes ${args.metrics.length} metrics, ${args.filings.length} filings, and ${args.selectedDocs.length} issuer-matched headlines [${primaryCitation}]`;
+    const reasonsToStayAwaySecondLine =
+      args.actionDecision === "insufficient_evidence"
+        ? `  - Missing structured fields block durable confirmation: ${missingFields.length > 0 ? missingFields.join(", ") : "none"} [${primaryCitation}]`
+        : `  - Missing structured fields can reduce conviction: ${missingFields.length > 0 ? missingFields.join(", ") : "none"} [${primaryCitation}]`;
+    const conclusionLine =
+      args.actionDecision === "insufficient_evidence"
+        ? `Decision remains ${decisionLabel} until evidence checkpoints are satisfied and trigger thresholds can be audited [${primaryCitation}].`
+        : `Decision remains ${decisionLabel} under deterministic policy gates until missing evidence is filled and trigger thresholds are re-evaluated [${primaryCitation}].`;
+
     return [
       "# Action Summary",
       `- Decision: ${decisionLabel} [${primaryCitation}]`,
       `- Timeframe fit: Short-term (0-3m) signal-gated; Long-term (12m+) conviction only with sustained evidence [${primaryCitation}]`,
       "- Reasons to invest:",
       `  - Deterministic signal set indicates measurable upside conditions when thresholds are met [${primaryCitation}]`,
-      `  - Evidence coverage includes ${args.metrics.length} metrics, ${args.filings.length} filings, and ${args.selectedDocs.length} issuer-matched headlines [${primaryCitation}]`,
+      reasonsToInvestSecondLine,
       "- Reasons to stay away:",
       `  - Evidence quality remains constrained by excluded/noisy headlines (${args.relevanceSelection.excludedHeadlinesCount}) [${primaryCitation}]`,
-      `  - Missing structured fields can reduce conviction: ${missingFields.length > 0 ? missingFields.join(", ") : "none"} [${primaryCitation}]`,
+      reasonsToStayAwaySecondLine,
       "- If/Then triggers:",
       triggerLines,
       "- Thesis invalidation:",
-      `  - If two or more core triggers fail in sequence, then downgrade one notch (${primaryCitation})`,
+      `  - If two or more core evidence checkpoints fail in sequence, then hold current stance (${primaryCitation})`,
       `  - If filing risk facts switch to true (regulatory or risk-factor flags), then reduce risk exposure (${primaryCitation})`,
       "",
       "# Evidence Map",
       args.evidenceMapLines,
       "",
       "# Overview",
-      `Deterministic fallback applied because thesis quality score did not meet floor ${this.thesisQualityMinScore}.`,
+      `Deterministic fallback applied because thesis quality score did not meet floor ${this.thesisQualityMinScore} [${primaryCitation}].`,
       "",
       "# Shareholder/Institutional Dynamics",
-      "No deterministic shareholder/institutional signal available in fallback mode.",
+      `No deterministic shareholder/institutional signal available in fallback mode [${primaryCitation}].`,
       "",
       "# Valuation and Growth Interpretation",
-      "Valuation and growth interpretation is derived from available metric thresholds in Action Summary.",
+      `Valuation and growth interpretation is derived from available metric thresholds in Action Summary [${primaryCitation}].`,
       "",
       "# Regulatory Filings",
-      "Filing-derived boolean facts are used directly in triggers when available.",
+      `Filing-derived boolean facts are used directly in triggers when available [${primaryCitation}].`,
       "",
       "# Missing Evidence",
-      `Missing deterministic fields: ${missingFields.length > 0 ? missingFields.join(", ") : "none"}.`,
+      `Missing deterministic fields: ${missingFields.length > 0 ? missingFields.join(", ") : "none"} [${primaryCitation}].`,
       "",
       "# Conclusion",
-      `Decision remains ${decisionLabel} under deterministic policy gates until missing evidence is filled and trigger thresholds are re-evaluated [${primaryCitation}].`,
+      conclusionLine,
     ].join("\n");
+  }
+
+  /**
+   * Parses one decision line into normalized action, citation presence, and generic-language flags so validation/scoring use one rule set.
+   */
+  private parseDecisionLine(actionSummarySection: string | null): {
+    raw: string | null;
+    decision: ActionDecision | null;
+    hasCitation: boolean;
+    hasGenericLanguage: boolean;
+  } {
+    if (!actionSummarySection) {
+      return {
+        raw: null,
+        decision: null,
+        hasCitation: false,
+        hasGenericLanguage: false,
+      };
+    }
+
+    const raw = actionSummarySection
+      .split("\n")
+      .find((line) => /decision:/i.test(line)) ?? null;
+    if (!raw) {
+      return {
+        raw: null,
+        decision: null,
+        hasCitation: false,
+        hasGenericLanguage: false,
+      };
+    }
+
+    const normalized = raw.toLowerCase();
+    let decision: ActionDecision | null = null;
+    if (/decision:\s*watch\s*\(low quality\)\b/i.test(raw)) {
+      decision = "watch_low_quality";
+    } else if (/decision:\s*insufficient evidence\b/i.test(raw)) {
+      decision = "insufficient_evidence";
+    } else if (/decision:\s*buy\b/i.test(raw)) {
+      decision = "buy";
+    } else if (/decision:\s*avoid\b/i.test(raw)) {
+      decision = "avoid";
+    } else if (/decision:\s*watch\b/i.test(raw)) {
+      decision = "watch";
+    }
+
+    return {
+      raw,
+      decision,
+      hasCitation: /\b(?:N(?:_[a-z_]+)?\d+|M\d+|F\d+|R\d+)\b/.test(raw),
+      hasGenericLanguage: /(watch for|monitor|stay tuned|could\b|may\b)/i.test(
+        normalized,
+      ),
+    };
   }
 
   /**
@@ -2242,33 +2395,8 @@ export class SynthesisService {
   /**
    * Parses the action decision label so weak-evidence policy can enforce conservative directional output.
    */
-  private extractDecision(
-    actionSummarySection: string | null,
-  ): ThesisDecision | null {
-    if (!actionSummarySection) {
-      return null;
-    }
-
-    const decisionLine = actionSummarySection
-      .split("\n")
-      .find((line) => /decision:/i.test(line));
-    if (!decisionLine) {
-      return null;
-    }
-
-    if (/decision:\s*buy\b/i.test(decisionLine)) {
-      return "buy";
-    }
-
-    if (/decision:\s*watch\b/i.test(decisionLine)) {
-      return "watch";
-    }
-
-    if (/decision:\s*avoid\b/i.test(decisionLine)) {
-      return "avoid";
-    }
-
-    return null;
+  private extractDecision(actionSummarySection: string | null): ActionDecision | null {
+    return this.parseDecisionLine(actionSummarySection).decision;
   }
 
   /**
@@ -2416,11 +2544,90 @@ export class SynthesisService {
   }
 
   /**
+   * Merges current-run KPI coverage with fresh prior-run KPI names so evidence gates can tolerate sparse single-run windows.
+   */
+  private async computeKpiCoverage(args: {
+    payload: JobPayload;
+    now: Date;
+    fallbackSelectedKpiNames: string[];
+  }): Promise<KpiCoverageComputation> {
+    const currentSelected = args.payload.kpiContext?.selected ?? [];
+    const currentSelectedSet = new Set(currentSelected);
+    const previousSnapshot = await this.snapshotRepo.latestBySymbol(args.payload.symbol);
+    const priorRunSnapshot =
+      previousSnapshot?.runId === args.payload.runId ? null : previousSnapshot;
+    const previousKpiNames = priorRunSnapshot?.investorViewV2?.keyKpis.map(
+      (kpi) => kpi.name,
+    ) ?? [];
+    const ageDays =
+      priorRunSnapshot && priorRunSnapshot.createdAt
+        ? Math.floor(
+            (args.now.getTime() - priorRunSnapshot.createdAt.getTime()) /
+              (24 * 60 * 60 * 1000),
+          )
+        : null;
+    const canCarryForward =
+      ageDays !== null &&
+      ageDays >= 0 &&
+      ageDays <= this.kpiCarryForwardMaxAgeDays;
+
+    const carriedKpis = canCarryForward
+      ? previousKpiNames
+          .filter((name) => !currentSelectedSet.has(name))
+          .map((name) => ({
+            name,
+            ageDays: ageDays ?? this.kpiCarryForwardMaxAgeDays,
+            usedForGate: true,
+          }))
+      : [];
+
+    const requiredKpis = args.payload.kpiContext?.required ?? [];
+    const optionalKpis = args.payload.kpiContext?.optional ?? [];
+    const carriedByName = new Set(carriedKpis.map((item) => item.name));
+    const coreCurrentCount = requiredKpis.filter((name) =>
+      currentSelectedSet.has(name),
+    ).length;
+    const coreCarriedCount = requiredKpis.filter((name) =>
+      carriedByName.has(name),
+    ).length;
+    const sectorCurrentCount = optionalKpis.filter((name) =>
+      currentSelectedSet.has(name),
+    ).length;
+    const sectorCarriedCount = optionalKpis.filter((name) =>
+      carriedByName.has(name),
+    ).length;
+    const hasSectorWeakness =
+      optionalKpis.length > 0 && sectorCurrentCount + sectorCarriedCount < 1;
+
+    return {
+      selectedCurrentKpiNames:
+        currentSelected.length > 0 ? currentSelected : args.fallbackSelectedKpiNames,
+      diagnostics: {
+        mode:
+          this.graceAllowOnSectorWeakness && hasSectorWeakness
+            ? "grace_low_quality"
+            : "strict",
+        coreRequiredCount:
+          requiredKpis.length > 0
+            ? Math.min(this.coreKpiMinRequired, requiredKpis.length)
+            : 0,
+        coreCurrentCount,
+        coreCarriedCount,
+        sectorExpectedCount: optionalKpis.length,
+        sectorCurrentCount,
+        sectorCarriedCount,
+        carryForwardMaxAgeDays: this.kpiCarryForwardMaxAgeDays,
+        carriedKpis,
+      },
+    };
+  }
+
+  /**
    * Enforces Stage-1 minimum evidence requirements so low-data runs return insufficient-evidence decisions deterministically.
    */
   private buildEvidenceGate(args: {
     filingsCount: number;
-    kpiCount: number;
+    kpiCoverage: KpiCoverageDiagnostics;
     valuationAvailable: boolean;
     catalystsCount: number;
     falsifiersCount: number;
@@ -2432,9 +2639,19 @@ export class SynthesisService {
       failures.push("missing_filing_evidence");
       missingFields.push("filings");
     }
-    if (args.kpiCount < 3) {
-      failures.push("insufficient_kpi_items");
+    if (
+      args.kpiCoverage.coreCurrentCount + args.kpiCoverage.coreCarriedCount <
+      args.kpiCoverage.coreRequiredCount
+    ) {
+      failures.push("insufficient_core_kpi_items");
       missingFields.push("kpis");
+    }
+    if (
+      args.kpiCoverage.sectorExpectedCount > 0 &&
+      args.kpiCoverage.sectorCurrentCount + args.kpiCoverage.sectorCarriedCount <
+        1
+    ) {
+      failures.push("low_sector_kpi_quality");
     }
     if (!args.valuationAvailable) {
       failures.push("missing_valuation_context");
@@ -2458,7 +2675,30 @@ export class SynthesisService {
   private toActionDecision(
     decision: ThesisDecision,
     gate: EvidenceGateDiagnostics,
+    kpiCoverage: KpiCoverageDiagnostics,
   ): ActionDecision {
+    const gateFailures = new Set(gate.failures);
+    const hasNonKpiFailure = [...gateFailures].some(
+      (failure) =>
+        failure !== "insufficient_core_kpi_items" &&
+        failure !== "low_sector_kpi_quality",
+    );
+    if (hasNonKpiFailure) {
+      return "insufficient_evidence";
+    }
+
+    if (gateFailures.has("insufficient_core_kpi_items")) {
+      return "insufficient_evidence";
+    }
+
+    if (
+      this.graceAllowOnSectorWeakness &&
+      gateFailures.has("low_sector_kpi_quality") &&
+      kpiCoverage.mode === "grace_low_quality"
+    ) {
+      return "watch_low_quality";
+    }
+
     if (!gate.passed) {
       return "insufficient_evidence";
     }
@@ -2754,11 +2994,33 @@ export class SynthesisService {
     );
     const actionMatrixLines = this.formatActionMatrix(actionMatrix);
     const falsification = this.buildFalsification(actionMatrix);
+    const now = this.clock.now();
+    const valuationView = this.deriveValuationView(latestMetrics);
+    const derivedCatalysts = this.deriveCatalysts(selectedDocs, latestMetrics, filings);
+    const fallbackSelectedKpiNames = latestMetrics
+      .slice(0, 8)
+      .map((metric) => metric.metricName);
+    const kpiCoverage = await this.computeKpiCoverage({
+      payload,
+      now,
+      fallbackSelectedKpiNames,
+    });
+    const evidenceGate = this.buildEvidenceGate({
+      filingsCount: filings.length,
+      kpiCoverage: kpiCoverage.diagnostics,
+      valuationAvailable: !valuationView.toLowerCase().includes("unavailable"),
+      catalystsCount: derivedCatalysts.length,
+      falsifiersCount: falsification.length,
+    });
+    const actionDecision = this.toActionDecision(
+      decisionResult.decision,
+      evidenceGate,
+      kpiCoverage.diagnostics,
+    );
     const decisionReasonLines =
       decisionResult.reasons.length > 0
         ? decisionResult.reasons.map((reason) => `- ${reason}`).join("\n")
         : "- none";
-    const now = this.clock.now();
     const memoryResult = await this.fetchCrossRunMemory(
       payload,
       selectedDocs,
@@ -2858,7 +3120,7 @@ export class SynthesisService {
     let fallbackApplied = false;
     if (thesisQuality.score < this.thesisQualityMinScore) {
       thesis = this.buildDeterministicFallbackThesis({
-        decision: decisionResult.decision,
+        actionDecision,
         actionMatrix,
         evidenceMapLines,
         selectedDocs,
@@ -2897,15 +3159,11 @@ export class SynthesisService {
       now,
       relevanceCoverage,
     );
-    const valuationView = this.deriveValuationView(latestMetrics);
-    const evidenceGate = this.buildEvidenceGate({
-      filingsCount: filings.length,
-      kpiCount: payload.kpiContext?.selected.length ?? latestMetrics.length,
-      valuationAvailable: !valuationView.toLowerCase().includes("unavailable"),
-      catalystsCount: this.deriveCatalysts(selectedDocs, latestMetrics, filings).length,
-      falsifiersCount: falsification.length,
-    });
-    const actionDecision = this.toActionDecision(decisionResult.decision, evidenceGate);
+    thesis = this.upsertFinalDecisionPresentation(
+      thesis,
+      actionDecision,
+      actionMatrix,
+    );
     const confidenceV2 = this.buildConfidenceDecomposition({
       selectedDocs,
       metrics: latestMetrics,
@@ -2917,20 +3175,12 @@ export class SynthesisService {
       fallbackApplied,
     });
     const citationDiagnostics = this.computeCitationDiagnostics(thesis);
-    const selectedKpiNames =
-      payload.kpiContext?.selected.length && payload.kpiContext.selected.length > 0
-        ? payload.kpiContext.selected
-        : latestMetrics.slice(0, 8).map((metric) => metric.metricName);
     const investorKpis = this.buildInvestorKpis(
-      selectedKpiNames,
+      kpiCoverage.selectedCurrentKpiNames,
       metricLabelByName,
       latestMetrics,
     );
-    const investorCatalysts: InvestorCatalyst[] = this.deriveCatalysts(
-      selectedDocs,
-      latestMetrics,
-      filings,
-    ).map((catalyst, index) => ({
+    const investorCatalysts: InvestorCatalyst[] = derivedCatalysts.map((catalyst, index) => ({
       event: catalyst,
       window:
         (payload.horizonContext?.horizon ?? "1_2_quarters") === "0_4_weeks"
@@ -2978,17 +3228,23 @@ export class SynthesisService {
         oneLineThesis:
           actionDecision === "insufficient_evidence"
             ? "Evidence is currently insufficient for a high-conviction directional call."
-            : `Current evidence supports a ${actionDecision} stance with explicit KPI and catalyst checkpoints.`,
+            : actionDecision === "watch_low_quality"
+              ? "Core KPI evidence is present, but sector KPI quality is weak and requires tighter monitoring."
+              : `Current evidence supports a ${actionDecision} stance with explicit KPI and catalyst checkpoints.`,
       },
       variantView: {
         pricedInNarrative: "Market is pricing continuation of current operating trajectory.",
         ourVariant:
           actionDecision === "insufficient_evidence"
             ? "Evidence quality is not yet strong enough to support a differentiated variant view."
+            : actionDecision === "watch_low_quality"
+              ? "Core KPI direction is visible, but sector-specific KPI depth is not yet broad enough for a stronger call."
             : "Upside/downside asymmetry depends on KPI durability through upcoming checkpoints.",
         whyMispriced:
           actionDecision === "insufficient_evidence"
             ? "Signal set is incomplete."
+            : actionDecision === "watch_low_quality"
+              ? "Partial KPI coverage can understate sector-specific risks and opportunities."
             : "Current narrative may over/underweight near-term KPI durability versus valuation.",
       },
       drivers: investorDrivers.slice(0, 4),
@@ -3023,7 +3279,7 @@ export class SynthesisService {
       score,
       thesis,
       risks: this.deriveRisks(selectedDocs, latestMetrics, filings),
-      catalysts: this.deriveCatalysts(selectedDocs, latestMetrics, filings),
+      catalysts: derivedCatalysts,
       valuationView,
       confidence,
       sources: this.uniqueSources(selectedDocs, promptMetrics, filings),
@@ -3077,6 +3333,7 @@ export class SynthesisService {
           fallbackApplied,
         },
         evidenceGate,
+        kpiCoverage: kpiCoverage.diagnostics,
         missingFields: evidenceGate.missingFields,
         citationCoveragePct: citationDiagnostics.citationCoveragePct,
         unlinkedClaimsCount: citationDiagnostics.unlinkedClaimsCount,

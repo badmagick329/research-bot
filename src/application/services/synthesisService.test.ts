@@ -113,6 +113,8 @@ const createService = (args: {
   now?: Date;
   embeddingPort?: EmbeddingPort;
   memoryRepo?: EmbeddingMemoryRepositoryPort;
+  previousSnapshot?: ResearchSnapshotEntity | null;
+  options?: ConstructorParameters<typeof SynthesisService>[9];
 }) => {
   const documentRepo: DocumentRepositoryPort = {
     upsertMany: async () => {},
@@ -134,7 +136,7 @@ const createService = (args: {
     save: async (snapshot) => {
       savedSnapshots.push(snapshot);
     },
-    latestBySymbol: async () => null,
+    latestBySymbol: async () => args.previousSnapshot ?? null,
   };
 
   const clock: ClockPort = {
@@ -167,6 +169,7 @@ const createService = (args: {
     args.llm,
     clock,
     ids,
+    args.options,
   );
 
   return { service, savedSnapshots };
@@ -318,6 +321,91 @@ describe("SynthesisService", () => {
     expect(saved.confidence).toBe(0.82);
   });
 
+  it("rejects noisy issuer-adjacent headlines even when symbol matched", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-noisy",
+        symbol: "NVDA",
+        provider: "finnhub",
+        providerItemId: "f-noisy",
+        type: "news",
+        title: "Stock Market Today: Dow Higher After Jobless Claims; Nvidia Rallies On Earnings (Live Coverage)",
+        summary: "Broad market live coverage with Nvidia mention.",
+        content: "NVIDIA mention appears in broad market wrap and futures context.",
+        url: "https://example.com/noisy-nvda",
+        publishedAt: new Date("2026-02-17T08:00:00.000Z"),
+        language: "en",
+        topics: ["market-news"],
+        sourceType: "api",
+        rawPayload: { related: "NVDA,SPY,QQQ" },
+        createdAt: new Date("2026-02-17T08:00:00.000Z"),
+      },
+      {
+        id: "doc-high",
+        symbol: "NVDA",
+        provider: "finnhub",
+        providerItemId: "f-high",
+        type: "news",
+        title: "NVIDIA raises data-center guidance and expands capacity",
+        summary: "Issuer guidance update tied to demand and gross margin.",
+        content:
+          "NVIDIA guidance update improves demand outlook, gross_margin, and revenue_growth_yoy expectations.",
+        url: "https://example.com/high-nvda",
+        publishedAt: new Date("2026-02-17T09:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "NVDA" },
+        createdAt: new Date("2026-02-17T09:00:00.000Z"),
+      },
+    ];
+
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok(validThesis),
+    };
+
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics: [],
+      filings: [],
+      llm,
+    });
+
+    await service.run({
+      ...payload,
+      symbol: "NVDA",
+      resolvedIdentity: {
+        requestedSymbol: "NVDA",
+        canonicalSymbol: "NVDA",
+        companyName: "NVIDIA Corporation",
+        aliases: ["NVDA"],
+        confidence: 0.99,
+        resolutionSource: "manual_map",
+      },
+      kpiContext: {
+        template: "semis",
+        required: ["revenue_growth_yoy", "gross_margin"],
+        optional: ["price_to_earnings"],
+        selected: ["revenue_growth_yoy", "gross_margin"],
+        requiredHitCount: 2,
+        minRequiredForStrongNote: 2,
+      },
+    });
+
+    const saved = savedSnapshots[0];
+    expect(
+      saved?.diagnostics?.newsQualityV2?.excludedByReason
+        .issuer_noise_or_adjacent_context ?? 0,
+    ).toBeGreaterThan(0);
+    expect(saved?.thesis).toContain(
+      '- N_issuer1: news "NVIDIA raises data-center guidance and expands capacity"',
+    );
+    expect(saved?.thesis).not.toContain(
+      "Stock Market Today: Dow Higher After Jobless Claims; Nvidia Rallies On Earnings (Live Coverage)",
+    );
+  });
+
   it("keeps no-evidence runs without forcing citation repair", async () => {
     const prompts: string[] = [];
     const llm: LlmPort = {
@@ -370,6 +458,433 @@ describe("SynthesisService", () => {
     expect(saved.investorViewV2?.action.decision).toBe("insufficient_evidence");
     expect(saved.investorViewV2?.action.positionSizing).toBe("none");
     expect(saved.diagnostics?.evidenceGate?.passed).toBeFalse();
+    expect(saved.thesis).toContain("- Decision: Insufficient Evidence");
+  });
+
+  it("returns watch_low_quality when only sector KPI quality is weak", async () => {
+    const llm: LlmPort = {
+      summarize: async () => ok("unused"),
+      synthesize: async () => ok(validThesis),
+    };
+    const metrics: MetricPointEntity[] = [
+      {
+        id: "metric-1",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "revenue_growth_yoy",
+        metricValue: 0.12,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "quarter",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+      {
+        id: "metric-2",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "profit_margin",
+        metricValue: 0.21,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "ttm",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+      {
+        id: "metric-3",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "price_to_earnings",
+        metricValue: 25,
+        metricUnit: "multiple",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "point_in_time",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+    ];
+    const filings: FilingEntity[] = [
+      {
+        id: "filing-1",
+        dedupeKey: "accession:0000000000-26-000001",
+        symbol: "TTWO",
+        provider: "sec-edgar",
+        issuerName: "Take-Two Interactive Software, Inc.",
+        filingType: "8-K",
+        accessionNo: "0000000000-26-000001",
+        filedAt: new Date("2026-02-15T00:00:00.000Z"),
+        periodEnd: undefined,
+        docUrl: "https://sec.example/filing-1",
+        sections: [],
+        extractedFacts: [],
+        rawPayload: {},
+        createdAt: new Date("2026-02-15T00:00:00.000Z"),
+      },
+    ];
+    const { service, savedSnapshots } = createService({
+      docs: [],
+      metrics,
+      filings,
+      llm,
+    });
+
+    await service.run({
+      ...payload,
+      kpiContext: {
+        template: "software_saas",
+        required: ["revenue_growth_yoy", "profit_margin"],
+        optional: ["analyst_buy_ratio"],
+        selected: ["revenue_growth_yoy", "profit_margin"],
+        requiredHitCount: 2,
+        minRequiredForStrongNote: 2,
+      },
+    });
+
+    const saved = savedSnapshots[0];
+    expect(saved?.investorViewV2?.action.decision).toBe("watch_low_quality");
+    expect(saved?.investorViewV2?.action.positionSizing).toBe("small");
+    expect(saved?.diagnostics?.kpiCoverage?.mode).toBe("grace_low_quality");
+  });
+
+  it("forces insufficient_evidence when core KPI floor fails", async () => {
+    const llm: LlmPort = {
+      summarize: async () => ok("unused"),
+      synthesize: async () => ok(validThesis),
+    };
+    const metrics: MetricPointEntity[] = [
+      {
+        id: "metric-1",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "revenue_growth_yoy",
+        metricValue: 0.12,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "quarter",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+      {
+        id: "metric-2",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "price_to_earnings",
+        metricValue: 25,
+        metricUnit: "multiple",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "point_in_time",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+    ];
+    const filings: FilingEntity[] = [
+      {
+        id: "filing-1",
+        dedupeKey: "accession:0000000000-26-000001",
+        symbol: "TTWO",
+        provider: "sec-edgar",
+        issuerName: "Take-Two Interactive Software, Inc.",
+        filingType: "8-K",
+        accessionNo: "0000000000-26-000001",
+        filedAt: new Date("2026-02-15T00:00:00.000Z"),
+        periodEnd: undefined,
+        docUrl: "https://sec.example/filing-1",
+        sections: [],
+        extractedFacts: [],
+        rawPayload: {},
+        createdAt: new Date("2026-02-15T00:00:00.000Z"),
+      },
+    ];
+    const { service, savedSnapshots } = createService({
+      docs: [],
+      metrics,
+      filings,
+      llm,
+    });
+
+    await service.run({
+      ...payload,
+      kpiContext: {
+        template: "software_saas",
+        required: ["revenue_growth_yoy", "profit_margin"],
+        optional: ["analyst_buy_ratio"],
+        selected: ["revenue_growth_yoy"],
+        requiredHitCount: 1,
+        minRequiredForStrongNote: 2,
+      },
+    });
+
+    const saved = savedSnapshots[0];
+    expect(saved?.investorViewV2?.action.decision).toBe("insufficient_evidence");
+    expect(saved?.diagnostics?.evidenceGate?.failures).toContain(
+      "insufficient_core_kpi_items",
+    );
+  });
+
+  it("preserves grace-mode decision when fallback thesis is applied", async () => {
+    const llm: LlmPort = {
+      summarize: async () => ok("unused"),
+      synthesize: async () => ok("watch and monitor developments"),
+    };
+    const metrics: MetricPointEntity[] = [
+      {
+        id: "metric-1",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "revenue_growth_yoy",
+        metricValue: 0.12,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "quarter",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+      {
+        id: "metric-2",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "profit_margin",
+        metricValue: 0.21,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "ttm",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+      {
+        id: "metric-3",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "price_to_earnings",
+        metricValue: 25,
+        metricUnit: "multiple",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "point_in_time",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+    ];
+    const filings: FilingEntity[] = [
+      {
+        id: "filing-1",
+        dedupeKey: "accession:0000000000-26-000001",
+        symbol: "TTWO",
+        provider: "sec-edgar",
+        issuerName: "Take-Two Interactive Software, Inc.",
+        filingType: "8-K",
+        accessionNo: "0000000000-26-000001",
+        filedAt: new Date("2026-02-15T00:00:00.000Z"),
+        periodEnd: undefined,
+        docUrl: "https://sec.example/filing-1",
+        sections: [],
+        extractedFacts: [],
+        rawPayload: {},
+        createdAt: new Date("2026-02-15T00:00:00.000Z"),
+      },
+    ];
+    const { service, savedSnapshots } = createService({
+      docs: [],
+      metrics,
+      filings,
+      llm,
+    });
+
+    await service.run({
+      ...payload,
+      kpiContext: {
+        template: "software_saas",
+        required: ["revenue_growth_yoy", "profit_margin"],
+        optional: ["analyst_buy_ratio"],
+        selected: ["revenue_growth_yoy", "profit_margin"],
+        requiredHitCount: 2,
+        minRequiredForStrongNote: 2,
+      },
+    });
+
+    const saved = savedSnapshots[0];
+    expect(saved?.diagnostics?.thesisQuality?.fallbackApplied).toBeTrue();
+    expect(saved?.investorViewV2?.action.decision).toBe("watch_low_quality");
+    expect(saved?.diagnostics?.thesisQuality?.failedChecks).not.toContain(
+      "weak_or_uncited_decision_line",
+    );
+    expect(saved?.thesis).toContain("- Decision: Watch (Low Quality)");
+  });
+
+  it("uses carried-forward KPI coverage in diagnostics only", async () => {
+    const llm: LlmPort = {
+      summarize: async () => ok("unused"),
+      synthesize: async () => ok(validThesis),
+    };
+    const metrics: MetricPointEntity[] = [
+      {
+        id: "metric-1",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "revenue_growth_yoy",
+        metricValue: 0.12,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "quarter",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+      {
+        id: "metric-2",
+        symbol: "TTWO",
+        provider: "alphavantage",
+        metricName: "price_to_earnings",
+        metricValue: 25,
+        metricUnit: "multiple",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "point_in_time",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+    ];
+    const filings: FilingEntity[] = [
+      {
+        id: "filing-1",
+        dedupeKey: "accession:0000000000-26-000001",
+        symbol: "TTWO",
+        provider: "sec-edgar",
+        issuerName: "Take-Two Interactive Software, Inc.",
+        filingType: "8-K",
+        accessionNo: "0000000000-26-000001",
+        filedAt: new Date("2026-02-15T00:00:00.000Z"),
+        periodEnd: undefined,
+        docUrl: "https://sec.example/filing-1",
+        sections: [],
+        extractedFacts: [],
+        rawPayload: {},
+        createdAt: new Date("2026-02-15T00:00:00.000Z"),
+      },
+    ];
+    const previousSnapshot: ResearchSnapshotEntity = {
+      id: "snap-prev-1",
+      runId: "run-prev-1",
+      taskId: "task-prev-1",
+      symbol: "TTWO",
+      horizon: "1_2_quarters",
+      score: 25,
+      thesis: "prior",
+      risks: [],
+      catalysts: [],
+      valuationView: "fair",
+      confidence: 0.8,
+      sources: [],
+      investorViewV2: {
+        thesisType: "compounder",
+        action: { decision: "watch", positionSizing: "small" },
+        horizon: { bucket: "1_2_quarters", rationale: "prior" },
+        summary: { oneLineThesis: "prior" },
+        variantView: {
+          pricedInNarrative: "prior",
+          ourVariant: "prior",
+          whyMispriced: "prior",
+        },
+        drivers: [],
+        keyKpis: [
+          {
+            name: "profit_margin",
+            value: "0.20",
+            trend: "flat",
+            whyItMatters: "prior",
+            evidenceRefs: ["M1"],
+          },
+          {
+            name: "analyst_buy_ratio",
+            value: "0.70",
+            trend: "flat",
+            whyItMatters: "prior",
+            evidenceRefs: ["M2"],
+          },
+        ],
+        catalysts: [],
+        falsification: [],
+        valuation: {
+          valuationFramework: "prior",
+          keyMultiples: [],
+          historyContext: "prior",
+          peerContext: "prior",
+          valuationView: "fair",
+        },
+        confidence: {
+          dataConfidence: 70,
+          thesisConfidence: 70,
+          timingConfidence: 70,
+        },
+      },
+      createdAt: new Date("2026-02-10T00:00:00.000Z"),
+    };
+    const { service, savedSnapshots } = createService({
+      docs: [],
+      metrics,
+      filings,
+      llm,
+      previousSnapshot,
+    });
+
+    await service.run({
+      ...payload,
+      kpiContext: {
+        template: "software_saas",
+        required: ["revenue_growth_yoy", "profit_margin"],
+        optional: ["analyst_buy_ratio"],
+        selected: ["revenue_growth_yoy"],
+        requiredHitCount: 1,
+        minRequiredForStrongNote: 2,
+      },
+    });
+
+    const saved = savedSnapshots[0];
+    expect(saved?.investorViewV2?.action.decision).not.toBe("insufficient_evidence");
+    expect(
+      saved?.diagnostics?.kpiCoverage?.carriedKpis.map((item) => item.name),
+    ).toEqual(["profit_margin", "analyst_buy_ratio"]);
+    expect(
+      saved?.investorViewV2?.keyKpis.some((kpi) => kpi.name === "profit_margin"),
+    ).toBeFalse();
   });
 
   it("filters mock evidence when real provider evidence exists", async () => {
@@ -898,11 +1413,31 @@ describe("SynthesisService", () => {
         createdAt: new Date("2026-02-17T08:00:00.000Z"),
       },
     ];
+    const buyFilings: FilingEntity[] = [
+      {
+        id: "filing-b-1",
+        dedupeKey: "accession:0000000000-26-000900",
+        symbol: "TTWO",
+        provider: "sec-edgar",
+        issuerName: "Take-Two Interactive Software, Inc.",
+        filingType: "8-K",
+        accessionNo: "0000000000-26-000900",
+        filedAt: new Date("2026-02-15T00:00:00.000Z"),
+        docUrl: "https://sec.example/b-1",
+        sections: [],
+        extractedFacts: [
+          { name: "mentions_demand_strength", value: "true" },
+          { name: "content_extraction_status", value: "parsed" },
+        ],
+        rawPayload: {},
+        createdAt: new Date("2026-02-15T00:00:00.000Z"),
+      },
+    ];
 
     const { service: buyService, savedSnapshots: buySnapshots } = createService({
       docs: buyDocs,
       metrics: buyMetrics,
-      filings: [],
+      filings: buyFilings,
       llm,
     });
 
@@ -1329,6 +1864,47 @@ describe("SynthesisService", () => {
     expect(saved?.thesis).toContain("# Evidence Map");
     expect(saved?.thesis).toContain("# Missing Evidence");
     expect(saved?.thesis).toContain("# Conclusion");
+  });
+
+  it("uses evidence-checkpoint fallback language for insufficient_evidence mode", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-1",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "f-1",
+        type: "news",
+        title: "TTWO operating update",
+        summary: "TTWO update",
+        content: "TTWO update details",
+        url: "https://example.com/ttwo-fallback",
+        publishedAt: new Date("2026-02-17T08:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "TTWO" },
+        createdAt: new Date("2026-02-17T08:00:00.000Z"),
+      },
+    ];
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok("watch and monitor developments"),
+    };
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics: [],
+      filings: [],
+      llm,
+    });
+
+    await service.run(payload);
+    const saved = savedSnapshots[0];
+    expect(saved?.diagnostics?.thesisQuality?.fallbackApplied).toBeTrue();
+    expect(saved?.investorViewV2?.action.decision).toBe("insufficient_evidence");
+    expect(saved?.thesis).toContain("- Decision: Insufficient Evidence");
+    expect(saved?.thesis).toContain("evidence checkpoints");
+    expect(saved?.thesis).not.toContain("upgrade one notch");
+    expect(saved?.thesis).not.toContain("downgrade one notch");
   });
 
   it("injects cross-run memory into prompt and excludes current run from retrieval", async () => {

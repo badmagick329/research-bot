@@ -8,6 +8,7 @@ export type NewsV2ExclusionReason =
   | "no_issuer_identity_match"
   | "duplicate_title"
   | "duplicate_url"
+  | "issuer_noise_or_adjacent_context"
   | "below_materiality_threshold"
   | "below_kpi_linkage_threshold"
   | "below_composite_threshold"
@@ -161,6 +162,29 @@ const scoreEconomicMateriality = (text: string): number => {
   return clampScore(score);
 };
 
+/**
+ * Detects broad market or listicle framing so issuer-matched but adjacent headlines can be excluded deterministically.
+ */
+const isIssuerNoiseOrAdjacentContext = (text: string): boolean => {
+  const adjacentPatterns = [
+    /\bmarket wrap\b/,
+    /\bdaily movers\b/,
+    /\bstocks to buy\b/,
+    /\btop stocks\b/,
+    /\bstock market today\b/,
+    /\blive coverage\b/,
+    /\bexchange traded funds?\b/,
+    /\bequity futures\b/,
+    /\bpre bell\b/,
+    /\bpre bell\b/,
+    /\bpremarket\b/,
+    /\bshould you follow suit\b/,
+    /\bwhich stock is a better buy\b/,
+  ];
+
+  return adjacentPatterns.some((pattern) => pattern.test(text));
+};
+
 const scoreHorizonRelevance = (text: string, horizon: HorizonBucket): number => {
   const nearTermSignals = /(next earnings|approval|litigation|launch|guidance update|this quarter)/;
   const mediumTermSignals = /(inventory normalization|margin inflection|estimate revision|next two quarters)/;
@@ -289,6 +313,10 @@ export const scoreNewsCandidate = (
   const horizonRelevanceScore = scoreHorizonRelevance(text, input.horizon);
   const kpiLinkageScore = scoreKpiLinkage(text, input.kpiNames);
   const sourceQualityScore = scoreSourceQuality(input.doc, input.sourceQualityMode);
+  const issuerNoiseOrAdjacent = input.issuerMatched
+    ? isIssuerNoiseOrAdjacentContext(text)
+    : false;
+  const hasKpiContext = input.kpiNames.length > 0;
 
   const composite = clampScore(
     0.25 * issuerMatchScore +
@@ -301,7 +329,23 @@ export const scoreNewsCandidate = (
 
   let exclusionReason: NewsV2ExclusionReason | undefined;
   let includedByThresholds = true;
-  if (economicMaterialityScore < config.minMaterialityScore) {
+  if (issuerNoiseOrAdjacent) {
+    exclusionReason = "issuer_noise_or_adjacent_context";
+    includedByThresholds = false;
+  } else if (
+    input.issuerMatched &&
+    economicMaterialityScore < config.minMaterialityScore + 6
+  ) {
+    exclusionReason = "issuer_noise_or_adjacent_context";
+    includedByThresholds = false;
+  } else if (
+    input.issuerMatched &&
+    hasKpiContext &&
+    kpiLinkageScore < config.minKpiLinkageScore + 8
+  ) {
+    exclusionReason = "issuer_noise_or_adjacent_context";
+    includedByThresholds = false;
+  } else if (economicMaterialityScore < config.minMaterialityScore) {
     exclusionReason = /stock rose|stock fell|shares rose|shares fell|market wrap|premarket/.test(text)
       ? "stale_for_horizon"
       : "below_materiality_threshold";

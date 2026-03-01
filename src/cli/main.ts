@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { createRuntime } from "../application/bootstrap/runtimeFactory.ts";
+import { buildRefreshThesisPayload } from "../application/services/refreshThesisContextBuilder";
 import type { ResearchSnapshotEntity } from "../core/entities/research";
 import {
   appSymbols,
@@ -32,6 +33,16 @@ const formatSnapshotReport = (snapshot: ResearchSnapshotEntity): string => {
   lines.push(`Horizon: ${snapshot.horizon}`);
   lines.push(`Score: ${snapshot.score.toFixed(1)} / 100`);
   lines.push(`Confidence: ${(snapshot.confidence * 100).toFixed(1)}%`);
+  if (snapshot.investorViewV2) {
+    lines.push(`Investor decision: ${snapshot.investorViewV2.action.decision}`);
+    lines.push(`Position sizing: ${snapshot.investorViewV2.action.positionSizing}`);
+  }
+  if (snapshot.diagnostics?.kpiCoverage) {
+    const kpiCoverage = snapshot.diagnostics.kpiCoverage;
+    lines.push(
+      `KPI coverage: mode=${kpiCoverage.mode}, core=${kpiCoverage.coreCurrentCount + kpiCoverage.coreCarriedCount}/${kpiCoverage.coreRequiredCount}, sector=${kpiCoverage.sectorCurrentCount + kpiCoverage.sectorCarriedCount}`,
+    );
+  }
 
   if (snapshot.diagnostics?.identity) {
     const identity = snapshot.diagnostics.identity;
@@ -48,7 +59,7 @@ const formatSnapshotReport = (snapshot: ResearchSnapshotEntity): string => {
   }
 
   lines.push("");
-  lines.push("Thesis:");
+  lines.push("Thesis (raw markdown):");
   lines.push(snapshot.thesis);
   lines.push("");
   lines.push("Valuation view:");
@@ -201,47 +212,10 @@ export const buildCli = () => {
       }
 
       const idempotencyKey = `${normalizedSymbol}-synthesize-refresh-${Date.now()}`;
-      const enqueueReceipt = await runtime.queue.enqueueWithReceipt("synthesize", {
-        runId: snapshot.runId,
-        taskId: snapshot.taskId,
-        symbol: normalizedSymbol,
-        idempotencyKey,
-        requestedAt: new Date().toISOString(),
-        resolvedIdentity: snapshot.diagnostics?.identity,
-        metricsDiagnostics: snapshot.diagnostics?.metrics,
-        metricsCompanyFactsDiagnostics: snapshot.diagnostics?.metricsCompanyFacts,
-        providerFailures: snapshot.diagnostics?.providerFailures,
-        stageIssues: snapshot.diagnostics?.stageIssues,
-        thesisTypeContext: snapshot.investorViewV2
-          ? {
-              thesisType: snapshot.investorViewV2.thesisType,
-              reasonCodes: ["refresh_from_snapshot"],
-              score: 50,
-            }
-          : undefined,
-        horizonContext:
-          snapshot.horizon === "0_4_weeks" ||
-          snapshot.horizon === "1_2_quarters" ||
-          snapshot.horizon === "1_3_years"
-            ? {
-                horizon: snapshot.horizon,
-                rationale:
-                  "Restored from latest snapshot context during synthesize-only refresh.",
-                score: 50,
-              }
-            : undefined,
-        kpiContext: snapshot.investorViewV2
-          ? {
-              template: "generic",
-              required: [],
-              optional: [],
-              selected: snapshot.investorViewV2.keyKpis.map((kpi) => kpi.name),
-              requiredHitCount: 0,
-              minRequiredForStrongNote: 0,
-            }
-          : undefined,
-        evidenceGate: snapshot.diagnostics?.evidenceGate,
-      });
+      const enqueueReceipt = await runtime.queue.enqueueWithReceipt(
+        "synthesize",
+        buildRefreshThesisPayload(snapshot, normalizedSymbol, idempotencyKey),
+      );
 
       logger.info(
         {
