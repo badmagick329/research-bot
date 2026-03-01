@@ -345,6 +345,8 @@ export const createRuntime = async () => {
     "sec-edgar": env.SEC_EDGAR_MIN_INTERVAL_MS,
     fred: env.FRED_MIN_INTERVAL_MS,
     bls: env.BLS_MIN_INTERVAL_MS,
+  }, {
+    alphavantage: env.ALPHA_VANTAGE_DAILY_REQUEST_CAP,
   });
 
   const documentRepo = new PostgresDocumentRepositoryService(db);
@@ -451,6 +453,9 @@ export const createRuntime = async () => {
       thesisGenericPhraseMax: env.THESIS_GENERIC_PHRASE_MAX,
       thesisMinCitationCoveragePct: env.THESIS_MIN_CITATION_COVERAGE_PCT,
       thesisQualityMinScore: env.THESIS_QUALITY_MIN_SCORE,
+      kpiCarryForwardMaxAgeDays: env.THESIS_KPI_CARRY_FORWARD_MAX_AGE_DAYS,
+      coreKpiMinRequired: env.THESIS_CORE_KPI_MIN_REQUIRED,
+      graceAllowOnSectorWeakness: env.THESIS_GRACE_ALLOW_ON_SECTOR_WEAKNESS,
       newsV2MinCompositeScore: env.NEWS_V2_MIN_COMPOSITE_SCORE,
       newsV2MinMaterialityScore: env.NEWS_V2_MIN_MATERIALITY_SCORE,
       newsV2MinKpiLinkageScore: env.NEWS_V2_MIN_KPI_LINKAGE_SCORE,

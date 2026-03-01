@@ -11,6 +11,7 @@ import { HttpJsonClient } from "../../http/httpJsonClient";
 
 const noOpRateLimiter: ProviderRateLimiterPort = {
   waitForSlot: async () => {},
+  tryConsumeDailyBudget: async () => ({ allowed: true }),
 };
 
 type AlphaVantageOverviewResponse = {
@@ -148,6 +149,20 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
       provider: "alphavantage",
       symbol,
     } as const;
+
+    const budget = await this.providerRateLimiter.tryConsumeDailyBudget(
+      "alphavantage",
+    );
+    if (!budget.allowed) {
+      return err({
+        source: "metrics",
+        code: "rate_limited",
+        provider: "alphavantage",
+        message:
+          "Alpha Vantage daily budget exhausted (daily_budget_exhausted).",
+        retryable: true,
+      });
+    }
 
     const response =
       await this.httpClient.requestJson<AlphaVantageOverviewResponse>({
@@ -317,3 +332,4 @@ export class AlphaVantageMetricsProvider implements MarketMetricsProviderPort {
     });
   }
 }
+

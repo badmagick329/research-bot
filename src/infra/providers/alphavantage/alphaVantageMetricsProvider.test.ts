@@ -157,4 +157,31 @@ describe("AlphaVantageMetricsProvider", () => {
       () => new AlphaVantageMetricsProvider("https://www.alphavantage.co", ""),
     ).toThrow("ALPHA_VANTAGE_API_KEY is required");
   });
+
+  it("fails fast when daily budget is exhausted before upstream request", async () => {
+    let fetchCalled = false;
+    setFetch(async () => {
+      fetchCalled = true;
+      return new Response("unexpected", { status: 200 });
+    });
+
+    const provider = new AlphaVantageMetricsProvider(
+      "https://www.alphavantage.co",
+      "test-key",
+      5_000,
+      undefined,
+      {
+        waitForSlot: async () => {},
+        tryConsumeDailyBudget: async () => ({ allowed: false, remaining: 0 }),
+      },
+    );
+
+    const result = await provider.fetchMetrics({ symbol: "AAPL" });
+    expect(result.isErr()).toBeTrue();
+    if (result.isErr()) {
+      expect(result.error.code).toBe("rate_limited");
+      expect(result.error.message).toContain("daily_budget_exhausted");
+    }
+    expect(fetchCalled).toBeFalse();
+  });
 });

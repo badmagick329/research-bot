@@ -10,6 +10,7 @@ import { HttpJsonClient } from "../../http/httpJsonClient";
 
 const noOpRateLimiter: ProviderRateLimiterPort = {
   waitForSlot: async () => {},
+  tryConsumeDailyBudget: async () => ({ allowed: true }),
 };
 
 type AlphaVantageTopic = {
@@ -109,6 +110,21 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
   async fetchArticles(
     request: NewsSearchRequest,
   ): Promise<Result<NormalizedNewsItem[], AppBoundaryError>> {
+    const budget = await this.providerRateLimiter.tryConsumeDailyBudget(
+      "alphavantage",
+    );
+    if (!budget.allowed) {
+      return err({
+        source: "news",
+        code: "rate_limited",
+        provider: "alphavantage",
+        message:
+          "Alpha Vantage daily budget exhausted (daily_budget_exhausted).",
+        retryable: true,
+        cause: { symbol: request.symbol.toUpperCase() },
+      });
+    }
+
     const url = new URL("/query", this.baseUrl);
     url.searchParams.set("function", "NEWS_SENTIMENT");
     url.searchParams.set("tickers", request.symbol.toUpperCase());
@@ -342,3 +358,4 @@ export class AlphaVantageNewsProvider implements NewsProviderPort {
     };
   }
 }
+

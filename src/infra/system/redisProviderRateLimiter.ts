@@ -29,9 +29,14 @@ export class RedisProviderRateLimiter implements ProviderRateLimiterPort {
     private readonly minIntervalByProvider: Partial<
       Record<ProviderRateLimitKey, number>
     >,
+    private readonly dailyRequestCapByProvider: Partial<
+      Record<ProviderRateLimitKey, number>
+    > = {},
     private readonly keyPrefix = "research-bot:provider-rate-limit",
+    redisClient?: Redis,
+    private readonly nowProvider: () => Date = () => new Date(),
   ) {
-    this.redis = new Redis(connection);
+    this.redis = redisClient ?? new Redis(connection);
   }
 
   /**
@@ -52,6 +57,33 @@ export class RedisProviderRateLimiter implements ProviderRateLimiterPort {
 
       await this.delay(waitMs);
     }
+  }
+
+  /**
+   * Reserves one request from the provider's UTC-day budget so callers can fail fast before spending network retries.
+   */
+  async tryConsumeDailyBudget(
+    provider: ProviderRateLimitKey,
+  ): Promise<{ allowed: boolean; remaining?: number }> {
+    const cap = this.dailyRequestCapByProvider[provider];
+    if (!cap || cap <= 0) {
+      return { allowed: true };
+    }
+
+    const now = this.nowProvider();
+    const dateBucket = now.toISOString().slice(0, 10);
+    const budgetKey = `${this.keyPrefix}:${provider}:daily:${dateBucket}`;
+    const ttlMs = this.msUntilNextUtcDay(now);
+    const counter = await this.redis.incr(budgetKey);
+    if (counter === 1) {
+      await this.redis.pexpire(budgetKey, ttlMs);
+    }
+
+    if (counter > cap) {
+      return { allowed: false, remaining: 0 };
+    }
+
+    return { allowed: true, remaining: Math.max(0, cap - counter) };
   }
 
   private async reserveSlot(
@@ -80,5 +112,18 @@ export class RedisProviderRateLimiter implements ProviderRateLimiterPort {
     await new Promise((resolve) => {
       setTimeout(resolve, Math.max(1, ms));
     });
+  }
+
+  private msUntilNextUtcDay(now: Date): number {
+    const next = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+      0,
+      0,
+      0,
+      0,
+    );
+    return Math.max(1, next - now.getTime());
   }
 }

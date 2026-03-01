@@ -222,4 +222,37 @@ describe("AlphaVantageNewsProvider", () => {
       () => new AlphaVantageNewsProvider("https://www.alphavantage.co", ""),
     ).toThrow("ALPHA_VANTAGE_API_KEY is required");
   });
+
+  it("fails fast when daily budget is exhausted before upstream request", async () => {
+    let fetchCalled = false;
+    setFetch(async () => {
+      fetchCalled = true;
+      return new Response("unexpected", { status: 200 });
+    });
+
+    const provider = new AlphaVantageNewsProvider(
+      "https://www.alphavantage.co",
+      "test-key",
+      5_000,
+      undefined,
+      {
+        waitForSlot: async () => {},
+        tryConsumeDailyBudget: async () => ({ allowed: false, remaining: 0 }),
+      },
+    );
+
+    const items = await provider.fetchArticles({
+      symbol: "AAPL",
+      from: new Date("2026-01-01T00:00:00.000Z"),
+      to: new Date("2026-01-10T00:00:00.000Z"),
+      limit: 5,
+    });
+
+    expect(items.isErr()).toBeTrue();
+    if (items.isErr()) {
+      expect(items.error.code).toBe("rate_limited");
+      expect(items.error.message).toContain("daily_budget_exhausted");
+    }
+    expect(fetchCalled).toBeFalse();
+  });
 });

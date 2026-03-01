@@ -11,6 +11,7 @@ import { HttpJsonClient } from "../../http/httpJsonClient";
 
 const noOpRateLimiter: ProviderRateLimiterPort = {
   waitForSlot: async () => {},
+  tryConsumeDailyBudget: async () => ({ allowed: true }),
 };
 
 type FredObservation = {
@@ -371,3 +372,4 @@ export class FredMacroProvider implements MacroContextProviderPort {
     return "provider_error";
   }
 }
+

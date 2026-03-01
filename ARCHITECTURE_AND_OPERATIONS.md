@@ -84,6 +84,12 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - Validation is strict on actionability:
   - rejects generic trigger language and weak/uncited triggers
   - requires threshold/action semantics in If/Then triggers
+- KPI gate and grace-mode policy:
+  - gate evaluates core KPI floor separately from sector KPI quality
+  - `insufficient_core_kpi_items` is hard-fail and forces `insufficient_evidence`
+  - `low_sector_kpi_quality` can map to `watch_low_quality` when other gates pass
+  - grace mode is blocked when deterministic fallback thesis is applied
+  - carried-forward KPI names (bounded by age) are diagnostics-only and never rendered into investor KPI cards
 - Quality control:
   - thesis quality is scored deterministically
   - one repair attempt is allowed
@@ -135,6 +141,9 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
   - Alpha Vantage: 1 req/sec
   - Finnhub: 1 req/sec
   - SEC EDGAR: 1 req/sec
+- Alpha Vantage daily budget guard:
+  - shared Redis UTC-day counter enforces `ALPHA_VANTAGE_DAILY_REQUEST_CAP`
+  - over-cap requests fail fast as `rate_limited` with reason `daily_budget_exhausted`
 - Stage idempotency key: `${symbol}-${stage}-${hour}`.
 - `enqueue --force` bypasses hourly dedupe.
 
@@ -178,6 +187,9 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - `THESIS_GENERIC_PHRASE_MAX=0`
 - `THESIS_MIN_CITATION_COVERAGE_PCT=80`
 - `THESIS_QUALITY_MIN_SCORE=75`
+- `THESIS_KPI_CARRY_FORWARD_MAX_AGE_DAYS=90`
+- `THESIS_CORE_KPI_MIN_REQUIRED=2`
+- `THESIS_GRACE_ALLOW_ON_SECTOR_WEAKNESS=true|false`
 - `SEC_COMPANYFACTS_ENABLED=true|false`
 - `SEC_COMPANYFACTS_TIMEOUT_MS=15000`
 - `SEC_COMPANYFACTS_MAX_FACTS_PER_METRIC=16`
@@ -191,6 +203,7 @@ Reference for current runtime behavior, pipeline decisions, and operational cont
 - `BLS_BASE_URL=https://api.bls.gov`
 - `BLS_TIMEOUT_MS=15000`
 - `BLS_MIN_INTERVAL_MS=1000`
+- `ALPHA_VANTAGE_DAILY_REQUEST_CAP=25`
 - `QUEUE_CONCURRENCY_CLASSIFY_STOCK=2`
 - `QUEUE_CONCURRENCY_SELECT_HORIZON=2`
 - `QUEUE_CONCURRENCY_BUILD_KPI_TREE=2`

@@ -10,6 +10,7 @@ import { HttpJsonClient } from "../../http/httpJsonClient";
 
 const noOpRateLimiter: ProviderRateLimiterPort = {
   waitForSlot: async () => {},
+  tryConsumeDailyBudget: async () => ({ allowed: true }),
 };
 
 type FinnhubNewsItem = {
@@ -256,3 +257,4 @@ export class FinnhubNewsProvider implements NewsProviderPort {
     };
   }
 }
+

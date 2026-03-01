@@ -297,6 +297,13 @@ function mapDiagnosticsToChips(
     items.push(`${issue.stage}:${issue.reason}`);
   }
 
+  if (diagnostics.kpiCoverage) {
+    items.push(`kpi_coverage:${diagnostics.kpiCoverage.mode}`);
+    items.push(
+      `kpi_core:${diagnostics.kpiCoverage.coreCurrentCount + diagnostics.kpiCoverage.coreCarriedCount}/${diagnostics.kpiCoverage.coreRequiredCount}`,
+    );
+  }
+
   return items;
 }
 

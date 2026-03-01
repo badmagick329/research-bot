@@ -204,4 +204,11 @@ export interface ProviderRateLimiterPort {
    * Reserves the next outbound slot for a provider so distributed workers honor shared pacing limits.
    */
   waitForSlot(provider: ProviderRateLimitKey): Promise<void>;
+
+  /**
+   * Tries to reserve one unit from the provider's UTC-day budget so callers can fail fast before issuing upstream requests.
+   */
+  tryConsumeDailyBudget(
+    provider: ProviderRateLimitKey,
+  ): Promise<{ allowed: boolean; remaining?: number }>;
 }

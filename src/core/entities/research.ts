@@ -24,6 +24,7 @@ export type ActionDecision =
   | "buy"
   | "watch"
   | "avoid"
+  | "watch_low_quality"
   | "insufficient_evidence";
 
 export type PositionSizing = "none" | "small" | "medium";
@@ -130,6 +131,22 @@ export type EvidenceGateDiagnostics = {
   passed: boolean;
   failures: string[];
   missingFields: string[];
+};
+
+export type KpiCoverageDiagnostics = {
+  mode: "strict" | "grace_low_quality";
+  coreRequiredCount: number;
+  coreCurrentCount: number;
+  coreCarriedCount: number;
+  sectorExpectedCount: number;
+  sectorCurrentCount: number;
+  sectorCarriedCount: number;
+  carryForwardMaxAgeDays: number;
+  carriedKpis: Array<{
+    name: string;
+    ageDays: number;
+    usedForGate: boolean;
+  }>;
 };
 
 export type ResearchTaskEntity = {
@@ -274,6 +291,7 @@ export type SnapshotDiagnostics = {
     fallbackApplied: boolean;
   };
   evidenceGate?: EvidenceGateDiagnostics;
+  kpiCoverage?: KpiCoverageDiagnostics;
   missingFields?: string[];
   citationCoveragePct?: number;
   unlinkedClaimsCount?: number;
