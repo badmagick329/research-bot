@@ -279,6 +279,13 @@ export type SnapshotDiagnostics = {
     excludedByClass: Record<string, number>;
     excludedByClassAndReason: Record<string, Record<string, number>>;
   };
+  issuerMatchDiagnostics?: {
+    title: number;
+    summary: number;
+    content: number;
+    payload: number;
+    payloadOnlyRejected: number;
+  };
   macroContext?: {
     totalMetricCount: number;
     providers: MacroContextProviderDiagnostics[];
@@ -290,6 +297,7 @@ export type SnapshotDiagnostics = {
     failedChecks: string[];
     fallbackApplied: boolean;
   };
+  fallbackReasonCodes?: string[];
   evidenceGate?: EvidenceGateDiagnostics;
   kpiCoverage?: KpiCoverageDiagnostics;
   missingFields?: string[];

@@ -179,5 +179,35 @@ describe("newsScoringV2", () => {
     );
     expect(shortTerm.components.kpiLinkageScore).toBeGreaterThanOrEqual(40);
   });
+
+  it("excludes payload-only issuer matches from issuer inclusion", () => {
+    const payloadOnly = scoreNewsCandidate(
+      {
+        doc: baseDoc({
+          id: "doc-5",
+          title: "Industry update with no issuer mention",
+          summary: "Broad sector context only",
+          content: "No direct company context in title summary or content.",
+          url: "https://example.com/industry-payload-only",
+        }),
+        issuerMatched: false,
+        payloadOnlyIssuerMatch: true,
+        horizon: "1_2_quarters",
+        kpiNames: ["revenue_growth_yoy"],
+        seenTitleKeys: new Set<string>(),
+        seenUrlKeys: new Set<string>(),
+        sourceQualityMode: "default",
+      },
+      {
+        minCompositeScore: 65,
+        minMaterialityScore: 50,
+        minKpiLinkageScore: 40,
+        sourceQualityMode: "default",
+      },
+    );
+
+    expect(payloadOnly.includedByThresholds).toBeFalse();
+    expect(payloadOnly.exclusionReason).toBe("payload_only_issuer_match");
+  });
 });
 

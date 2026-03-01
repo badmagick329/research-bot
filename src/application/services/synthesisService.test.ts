@@ -404,6 +404,188 @@ describe("SynthesisService", () => {
     expect(saved?.thesis).not.toContain(
       "Stock Market Today: Dow Higher After Jobless Claims; Nvidia Rallies On Earnings (Live Coverage)",
     );
+    expect(saved?.diagnostics?.issuerMatchDiagnostics).toBeDefined();
+  });
+
+  it("rejects payload-only issuer matches and records diagnostics counts", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-payload-only",
+        symbol: "AMZN",
+        provider: "finnhub",
+        providerItemId: "f-payload-only",
+        type: "news",
+        title: "Broad market wrap with utilities earnings",
+        summary: "No issuer name in narrative fields.",
+        content: "Headline discusses utilities and indexes only.",
+        url: "https://example.com/payload-only",
+        publishedAt: new Date("2026-02-17T08:00:00.000Z"),
+        language: "en",
+        topics: ["market-news"],
+        sourceType: "api",
+        rawPayload: { related: "AMZN" },
+        createdAt: new Date("2026-02-17T08:00:00.000Z"),
+      },
+    ];
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok(noEvidenceThesis),
+    };
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics: [],
+      filings: [],
+      llm,
+    });
+
+    await service.run({
+      ...payload,
+      symbol: "AMZN",
+      resolvedIdentity: {
+        requestedSymbol: "AMZN",
+        canonicalSymbol: "AMZN",
+        companyName: "Amazon.com, Inc.",
+        aliases: ["AMZN"],
+        confidence: 0.99,
+        resolutionSource: "manual_map",
+      },
+    });
+
+    const saved = savedSnapshots[0];
+    expect(
+      saved?.diagnostics?.newsQualityV2?.excludedByReason
+        .payload_only_issuer_match ?? 0,
+    ).toBeGreaterThan(0);
+    expect(saved?.diagnostics?.issuerMatchDiagnostics?.payloadOnlyRejected).toBe(1);
+  });
+
+  it("uses metric and filing refs when selected news is empty and filters unresolved investor KPIs", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-payload-only-citations",
+        symbol: "AMZN",
+        provider: "finnhub",
+        providerItemId: "f-payload-only-citations",
+        type: "news",
+        title: "Broad market wrap with no issuer narrative",
+        summary: "Payload contains symbol but title/summary/content do not.",
+        content: "Sector and index recap only.",
+        url: "https://example.com/payload-only-citations",
+        publishedAt: new Date("2026-02-17T08:00:00.000Z"),
+        language: "en",
+        topics: ["market-news"],
+        sourceType: "api",
+        rawPayload: { related: "AMZN" },
+        createdAt: new Date("2026-02-17T08:00:00.000Z"),
+      },
+    ];
+    const metrics: MetricPointEntity[] = [
+      {
+        id: "metric-citation-1",
+        symbol: "AMZN",
+        provider: "alphavantage",
+        metricName: "revenue_growth_yoy",
+        metricValue: 0.12,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "quarter",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+      {
+        id: "metric-citation-2",
+        symbol: "AMZN",
+        provider: "alphavantage",
+        metricName: "price_to_earnings",
+        metricValue: 28,
+        metricUnit: "multiple",
+        currency: "USD",
+        asOf: new Date("2026-02-17T00:00:00.000Z"),
+        periodType: "point_in_time",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.85,
+        rawPayload: {},
+        createdAt: new Date("2026-02-17T00:00:00.000Z"),
+      },
+    ];
+    const filings: FilingEntity[] = [
+      {
+        id: "filing-citation-1",
+        dedupeKey: "accession:0000000000-26-000999",
+        symbol: "AMZN",
+        provider: "sec-edgar",
+        issuerName: "Amazon.com, Inc.",
+        filingType: "8-K",
+        accessionNo: "0000000000-26-000999",
+        filedAt: new Date("2026-02-15T00:00:00.000Z"),
+        periodEnd: undefined,
+        docUrl: "https://sec.example/filing-citation-1",
+        sections: [],
+        extractedFacts: [],
+        rawPayload: {},
+        createdAt: new Date("2026-02-15T00:00:00.000Z"),
+      },
+    ];
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok(validThesis),
+    };
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics,
+      filings,
+      llm,
+    });
+
+    await service.run({
+      ...payload,
+      symbol: "AMZN",
+      resolvedIdentity: {
+        requestedSymbol: "AMZN",
+        canonicalSymbol: "AMZN",
+        companyName: "Amazon.com, Inc.",
+        aliases: ["AMZN"],
+        confidence: 0.99,
+        resolutionSource: "manual_map",
+      },
+      kpiContext: {
+        template: "retail_consumer",
+        required: ["revenue_growth_yoy"],
+        optional: ["missing_metric_for_test"],
+        selected: ["revenue_growth_yoy", "missing_metric_for_test"],
+        requiredHitCount: 1,
+        minRequiredForStrongNote: 1,
+      },
+    });
+
+    const saved = savedSnapshots[0];
+    expect(saved?.diagnostics?.newsQualityV2?.included).toBe(0);
+    expect(saved?.thesis).not.toContain("N_issuer1");
+    expect(
+      saved?.investorViewV2?.catalysts.every((catalyst) =>
+        catalyst.evidenceRefs.every((ref) => /^(M|F)\d+$/.test(ref)),
+      ),
+    ).toBeTrue();
+    expect(
+      saved?.investorViewV2?.falsification.every((item) =>
+        item.evidenceRefs.every((ref) => /^(M|F)\d+$/.test(ref)),
+      ),
+    ).toBeTrue();
+    expect(
+      saved?.investorViewV2?.keyKpis.every(
+        (kpi) => kpi.value !== "n/a" && kpi.evidenceRefs.length > 0,
+      ),
+    ).toBeTrue();
+    expect(
+      saved?.investorViewV2?.keyKpis.some(
+        (kpi) => kpi.name === "missing_metric_for_test",
+      ),
+    ).toBeFalse();
   });
 
   it("keeps no-evidence runs without forcing citation repair", async () => {
@@ -1444,6 +1626,91 @@ describe("SynthesisService", () => {
     await buyService.run(payload);
     expect(buySnapshots[0]?.thesis).toContain("Decision: Buy");
     expect(buySnapshots[0]?.diagnostics?.decisionReasons?.includes("strong_growth_with_acceptable_valuation")).toBeTrue();
+    expect(buySnapshots[0]?.diagnostics?.thesisQuality?.fallbackApplied).toBeFalse();
+    expect(buySnapshots[0]?.investorViewV2?.confidence.thesisConfidence ?? 0).toBeGreaterThan(50);
+    expect(buySnapshots[0]?.investorViewV2?.confidence.timingConfidence ?? 0).toBeGreaterThan(60);
+
+    const oneAnchorDocs: DocumentEntity[] = [
+      {
+        id: "doc-b-one-anchor",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "b-one-anchor",
+        type: "news",
+        title: "TTWO reiterates revenue growth and profit margin outlook",
+        summary: "Issuer KPI-linked update",
+        content:
+          "TTWO update explicitly references revenue_growth_yoy, profit_margin, and analyst_buy_ratio checkpoints.",
+        url: "https://example.com/b-one-anchor",
+        publishedAt: new Date("2026-02-17T10:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "TTWO" },
+        createdAt: new Date("2026-02-17T10:00:00.000Z"),
+      },
+      {
+        id: "doc-b-peer-1",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "b-peer-1",
+        type: "news",
+        title: "Peer competitor highlights revenue growth shift",
+        summary: "peer competitor KPI read-through",
+        content:
+          "peer competitor demand update points to revenue_growth_yoy and profit_margin trajectory changes.",
+        url: "https://example.com/b-peer-1",
+        publishedAt: new Date("2026-02-17T09:30:00.000Z"),
+        language: "en",
+        topics: ["industry-news"],
+        sourceType: "api",
+        rawPayload: { related: "EA" },
+        createdAt: new Date("2026-02-17T09:30:00.000Z"),
+      },
+      {
+        id: "doc-b-peer-2",
+        symbol: "TTWO",
+        provider: "finnhub",
+        providerItemId: "b-peer-2",
+        type: "news",
+        title: "Customer contract read-through signals demand momentum",
+        summary: "customer contract and KPI linkage",
+        content:
+          "customer order book and contract commentary references revenue_growth_yoy and profit_margin trends.",
+        url: "https://example.com/b-peer-2",
+        publishedAt: new Date("2026-02-17T09:10:00.000Z"),
+        language: "en",
+        topics: ["industry-news"],
+        sourceType: "api",
+        rawPayload: { related: "SONY" },
+        createdAt: new Date("2026-02-17T09:10:00.000Z"),
+      },
+    ];
+    const { service: oneAnchorService, savedSnapshots: oneAnchorSnapshots } = createService({
+      docs: oneAnchorDocs,
+      metrics: buyMetrics,
+      filings: buyFilings,
+      llm,
+    });
+    await oneAnchorService.run({
+      ...payload,
+      kpiContext: {
+        template: "software_saas",
+        required: ["revenue_growth_yoy", "profit_margin"],
+        optional: ["analyst_buy_ratio"],
+        selected: ["revenue_growth_yoy", "profit_margin", "analyst_buy_ratio"],
+        requiredHitCount: 2,
+        minRequiredForStrongNote: 2,
+      },
+    });
+    expect(oneAnchorSnapshots[0]?.investorViewV2?.action.decision).toBe("watch");
+    expect(oneAnchorSnapshots[0]?.diagnostics?.readThroughQualityV2?.issuerIncluded).toBe(1);
+    expect(
+      (oneAnchorSnapshots[0]?.diagnostics?.decisionReasons ?? []).some(
+        (reason) =>
+          reason === "insufficient_issuer_anchors" || reason === "evidence_weak",
+      ),
+    ).toBeTrue();
 
     const avoidFilings: FilingEntity[] = [
       {
@@ -1905,6 +2172,9 @@ describe("SynthesisService", () => {
     expect(saved?.thesis).toContain("evidence checkpoints");
     expect(saved?.thesis).not.toContain("upgrade one notch");
     expect(saved?.thesis).not.toContain("downgrade one notch");
+    expect(saved?.diagnostics?.fallbackReasonCodes?.length ?? 0).toBeGreaterThan(0);
+    expect(saved?.investorViewV2?.confidence.thesisConfidence ?? 0).toBeLessThanOrEqual(50);
+    expect(saved?.investorViewV2?.confidence.timingConfidence ?? 0).toBeLessThanOrEqual(60);
   });
 
   it("injects cross-run memory into prompt and excludes current run from retrieval", async () => {

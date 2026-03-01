@@ -6,6 +6,7 @@ import type { HorizonBucket } from "../../core/entities/research";
 
 export type NewsV2ExclusionReason =
   | "no_issuer_identity_match"
+  | "payload_only_issuer_match"
   | "duplicate_title"
   | "duplicate_url"
   | "issuer_noise_or_adjacent_context"
@@ -47,6 +48,7 @@ export type NewsScoringConfig = {
 export type NewsScoringInput = {
   doc: DocumentEntity;
   issuerMatched: boolean;
+  payloadOnlyIssuerMatch?: boolean;
   horizon: HorizonBucket;
   kpiNames: string[];
   seenTitleKeys: Set<string>;
@@ -329,19 +331,23 @@ export const scoreNewsCandidate = (
 
   let exclusionReason: NewsV2ExclusionReason | undefined;
   let includedByThresholds = true;
-  if (issuerNoiseOrAdjacent) {
+  if (input.payloadOnlyIssuerMatch) {
+    exclusionReason = "payload_only_issuer_match";
+    includedByThresholds = false;
+  } else if (issuerNoiseOrAdjacent) {
     exclusionReason = "issuer_noise_or_adjacent_context";
     includedByThresholds = false;
   } else if (
     input.issuerMatched &&
-    economicMaterialityScore < config.minMaterialityScore + 6
+    economicMaterialityScore < config.minMaterialityScore + 3
   ) {
     exclusionReason = "issuer_noise_or_adjacent_context";
     includedByThresholds = false;
   } else if (
     input.issuerMatched &&
     hasKpiContext &&
-    kpiLinkageScore < config.minKpiLinkageScore + 8
+    kpiLinkageScore < config.minKpiLinkageScore + 5 &&
+    economicMaterialityScore < config.minMaterialityScore + 10
   ) {
     exclusionReason = "issuer_noise_or_adjacent_context";
     includedByThresholds = false;

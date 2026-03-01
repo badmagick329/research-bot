@@ -23,22 +23,79 @@ const redisConfigFromUrl = (url: string) => {
 };
 
 /**
- * Formats snapshot data into a compact terminal report for easier manual inspection.
+ * Formats snapshot data into a compact terminal report with investor-facing structure first for faster manual review.
  */
-const formatSnapshotReport = (snapshot: ResearchSnapshotEntity): string => {
+export const formatSnapshotReport = (
+  snapshot: ResearchSnapshotEntity,
+  options?: { showRawThesis?: boolean },
+): string => {
   const lines: string[] = [];
+  const showRawThesis = options?.showRawThesis ?? false;
 
   lines.push(`Snapshot for ${snapshot.symbol}`);
   lines.push(`Created: ${new Date(snapshot.createdAt).toISOString()}`);
   lines.push(`Horizon: ${snapshot.horizon}`);
   lines.push(`Score: ${snapshot.score.toFixed(1)} / 100`);
   lines.push(`Confidence: ${(snapshot.confidence * 100).toFixed(1)}%`);
-  if (snapshot.investorViewV2) {
-    lines.push(`Investor decision: ${snapshot.investorViewV2.action.decision}`);
-    lines.push(`Position sizing: ${snapshot.investorViewV2.action.positionSizing}`);
+  const investorView = snapshot.investorViewV2;
+  if (investorView) {
+    lines.push("");
+    lines.push("Investor view:");
+    lines.push(`- Thesis type: ${investorView.thesisType}`);
+    lines.push(
+      `- Horizon: ${investorView.horizon.bucket} (${investorView.horizon.rationale})`,
+    );
+    lines.push(`- Decision: ${investorView.action.decision}`);
+    lines.push(`- Position sizing: ${investorView.action.positionSizing}`);
+    lines.push(`- One-line thesis: ${investorView.summary.oneLineThesis}`);
+    lines.push("- Variant view:");
+    lines.push(`  pricedIn=${investorView.variantView.pricedInNarrative}`);
+    lines.push(`  variant=${investorView.variantView.ourVariant}`);
+    lines.push(`  whyMispriced=${investorView.variantView.whyMispriced}`);
+    lines.push("- Confidence decomposition:");
+    lines.push(
+      `  data=${investorView.confidence.dataConfidence}, thesis=${investorView.confidence.thesisConfidence}, timing=${investorView.confidence.timingConfidence}`,
+    );
+    lines.push("- Valuation:");
+    lines.push(`  framework=${investorView.valuation.valuationFramework}`);
+    lines.push(`  view=${investorView.valuation.valuationView}`);
+    lines.push(
+      `  keyMultiples=${investorView.valuation.keyMultiples.length > 0 ? investorView.valuation.keyMultiples.join(", ") : "none"}`,
+    );
+    lines.push("- Key KPIs:");
+    if (investorView.keyKpis.length === 0) {
+      lines.push("  - none");
+    } else {
+      investorView.keyKpis.forEach((kpi) => {
+        lines.push(
+          `  - ${kpi.name}: value=${kpi.value}, trend=${kpi.trend}, refs=${kpi.evidenceRefs.join(",")}`,
+        );
+      });
+    }
+    lines.push("- Catalysts:");
+    if (investorView.catalysts.length === 0) {
+      lines.push("  - none");
+    } else {
+      investorView.catalysts.forEach((catalyst) => {
+        lines.push(
+          `  - ${catalyst.event}; window=${catalyst.window}; direction=${catalyst.expectedDirection}; refs=${catalyst.evidenceRefs.join(",")}`,
+        );
+      });
+    }
+    lines.push("- Falsification:");
+    if (investorView.falsification.length === 0) {
+      lines.push("  - none");
+    } else {
+      investorView.falsification.forEach((item) => {
+        lines.push(
+          `  - ${item.condition}; type=${item.type}; deadline=${item.deadline}; action=${item.actionIfHit}; refs=${item.evidenceRefs.join(",")}`,
+        );
+      });
+    }
   }
   if (snapshot.diagnostics?.kpiCoverage) {
     const kpiCoverage = snapshot.diagnostics.kpiCoverage;
+    lines.push("");
     lines.push(
       `KPI coverage: mode=${kpiCoverage.mode}, core=${kpiCoverage.coreCurrentCount + kpiCoverage.coreCarriedCount}/${kpiCoverage.coreRequiredCount}, sector=${kpiCoverage.sectorCurrentCount + kpiCoverage.sectorCarriedCount}`,
     );
@@ -58,10 +115,13 @@ const formatSnapshotReport = (snapshot: ResearchSnapshotEntity): string => {
     }
   }
 
-  lines.push("");
-  lines.push("Thesis (raw markdown):");
-  lines.push(snapshot.thesis);
-  lines.push("");
+  if (showRawThesis) {
+    lines.push("");
+    lines.push("Thesis (raw markdown):");
+    lines.push(snapshot.thesis);
+    lines.push("");
+  }
+
   lines.push("Valuation view:");
   lines.push(snapshot.valuationView);
   lines.push("");
@@ -101,6 +161,17 @@ const formatSnapshotReport = (snapshot: ResearchSnapshotEntity): string => {
         `- stage-issue: stage=${issue.stage}, status=${issue.status}${issue.provider ? `, provider=${issue.provider}` : ""}${issue.code ? `, code=${issue.code}` : ""}${typeof issue.retryable === "boolean" ? `, retryable=${issue.retryable}` : ""}, reason=${issue.reason}`,
       );
     });
+    if (snapshot.diagnostics?.issuerMatchDiagnostics) {
+      const issuerMatch = snapshot.diagnostics.issuerMatchDiagnostics;
+      lines.push(
+        `- issuer-match: title=${issuerMatch.title}, summary=${issuerMatch.summary}, content=${issuerMatch.content}, payload=${issuerMatch.payload}, payloadOnlyRejected=${issuerMatch.payloadOnlyRejected}`,
+      );
+    }
+    if ((snapshot.diagnostics?.fallbackReasonCodes ?? []).length > 0) {
+      lines.push(
+        `- fallback-reasons: ${(snapshot.diagnostics?.fallbackReasonCodes ?? []).join(", ")}`,
+      );
+    }
   }
 
   lines.push("");
@@ -112,12 +183,14 @@ const formatSnapshotReport = (snapshot: ResearchSnapshotEntity): string => {
     snapshot.risks.forEach((risk) => lines.push(`- ${risk}`));
   }
 
-  lines.push("");
-  lines.push("Catalysts:");
-  if (snapshot.catalysts.length === 0) {
-    lines.push("- none");
-  } else {
-    snapshot.catalysts.forEach((catalyst) => lines.push(`- ${catalyst}`));
+  if (!snapshot.investorViewV2) {
+    lines.push("");
+    lines.push("Catalysts:");
+    if (snapshot.catalysts.length === 0) {
+      lines.push("- none");
+    } else {
+      snapshot.catalysts.forEach((catalyst) => lines.push(`- ${catalyst}`));
+    }
   }
 
   lines.push("");
@@ -237,23 +310,37 @@ export const buildCli = () => {
     .command("snapshot")
     .requiredOption("--symbol <symbol>", "Ticker symbol")
     .option("--prettify", "Render a human-friendly snapshot report")
-    .action(async (opts: { symbol: string; prettify?: boolean }) => {
-      const runtime = await createRuntime();
-      const snapshot = await runtime.snapshotsRepo.latestBySymbol(
-        opts.symbol.toUpperCase(),
-      );
-      if (!snapshot) {
-        logger.info({ symbol: opts.symbol }, "No snapshot found");
-        process.exit(0);
-      }
+    .option(
+      "--show-raw-thesis",
+      "Include raw markdown thesis when used with --prettify",
+    )
+    .action(
+      async (opts: {
+        symbol: string;
+        prettify?: boolean;
+        showRawThesis?: boolean;
+      }) => {
+        const runtime = await createRuntime();
+        const snapshot = await runtime.snapshotsRepo.latestBySymbol(
+          opts.symbol.toUpperCase(),
+        );
+        if (!snapshot) {
+          logger.info({ symbol: opts.symbol }, "No snapshot found");
+          process.exit(0);
+        }
 
-      if (opts.prettify) {
-        console.log(formatSnapshotReport(snapshot));
-      } else {
-        logger.info({ snapshot }, "Latest snapshot");
-      }
-      process.exit(0);
-    });
+        if (opts.prettify) {
+          console.log(
+            formatSnapshotReport(snapshot, {
+              showRawThesis: Boolean(opts.showRawThesis),
+            }),
+          );
+        } else {
+          logger.info({ snapshot }, "Latest snapshot");
+        }
+        process.exit(0);
+      },
+    );
 
   cli
     .command("status")

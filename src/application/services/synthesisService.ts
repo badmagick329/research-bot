@@ -64,6 +64,14 @@ type RelevanceSelection = {
   excludedHeadlineReasonSamples: string[];
   averageCompositeScore: number;
   excludedByReason: Record<string, number>;
+  issuerAnchorCount: number;
+  issuerMatchDiagnostics: {
+    title: number;
+    summary: number;
+    content: number;
+    payload: number;
+    payloadOnlyRejected: number;
+  };
   scoreBreakdownSample: Array<{
     title: string;
     composite: number;
@@ -93,8 +101,16 @@ type IssuerIdentityPatterns = {
   phraseTokens: Set<string>;
 };
 type IssuerMatchField = "title" | "summary" | "content" | "payload" | "alias" | "company";
+type IssuerMatchResult = {
+  matched: boolean;
+  fieldsMatched: number;
+  matchedFields: IssuerMatchField[];
+  payloadOnlyMatch: boolean;
+  reason?: ExcludedHeadlineReason;
+};
 type ExcludedHeadlineReason =
   | "no_issuer_identity_match"
+  | "payload_only_issuer_match"
   | "below_relevance_threshold"
   | "duplicate_title"
   | "duplicate_url"
@@ -122,6 +138,7 @@ type DecisionContext = {
   growthStrength: boolean;
   filingRiskFlag: boolean;
   analystSupport: boolean;
+  issuerAnchorCount: number;
 };
 type ThesisQualityScore = {
   score: number;
@@ -732,12 +749,7 @@ export class SynthesisService {
   private matchesIssuerIdentity(
     doc: DocumentEntity,
     patterns: IssuerIdentityPatterns,
-  ): {
-    matched: boolean;
-    fieldsMatched: number;
-    matchedFields: IssuerMatchField[];
-    reason?: ExcludedHeadlineReason;
-  } {
+  ): IssuerMatchResult {
     const normalize = (value: string) =>
       value
         .toLowerCase()
@@ -780,43 +792,74 @@ export class SynthesisService {
     };
 
     const matchedFields = new Set<IssuerMatchField>();
+    let titleMatched = false;
+    let summaryMatched = false;
+    let contentMatched = false;
+    let payloadMatched = false;
     (Object.entries(fields) as Array<[IssuerMatchField, string]>)
       .filter(([field]) => field === "title" || field === "summary" || field === "content" || field === "payload")
       .forEach(([field, fieldValue]) => {
-        if (
-          matchesTokenGroup(fieldValue, patterns.exactTokens, patterns.phraseTokens)
-        ) {
+        const tokenMatch = matchesTokenGroup(
+          fieldValue,
+          patterns.exactTokens,
+          patterns.phraseTokens,
+        );
+        const aliasMatch = matchesTokenGroup(
+          fieldValue,
+          patterns.aliasExactTokens,
+          patterns.aliasPhraseTokens,
+        );
+        const companyMatch = matchesTokenGroup(
+          fieldValue,
+          patterns.companyExactTokens,
+          patterns.companyPhraseTokens,
+        );
+        if (tokenMatch || aliasMatch || companyMatch) {
           matchedFields.add(field);
+          if (field === "title") {
+            titleMatched = true;
+          } else if (field === "summary") {
+            summaryMatched = true;
+          } else if (field === "content") {
+            contentMatched = true;
+          } else if (field === "payload") {
+            payloadMatched = true;
+          }
         }
-        if (
-          matchesTokenGroup(
-            fieldValue,
-            patterns.aliasExactTokens,
-            patterns.aliasPhraseTokens,
-          )
-        ) {
+        if (aliasMatch) {
           matchedFields.add("alias");
         }
-        if (
-          matchesTokenGroup(
-            fieldValue,
-            patterns.companyExactTokens,
-            patterns.companyPhraseTokens,
-          )
-        ) {
+        if (companyMatch) {
           matchedFields.add("company");
         }
       });
     const matchedFieldsList = Array.from(matchedFields);
     const fieldsMatched = matchedFieldsList.length;
-    if (fieldsMatched >= this.issuerMatchMinFields) {
-      return { matched: true, fieldsMatched, matchedFields: matchedFieldsList };
+    const narrativeMatch = titleMatched || summaryMatched || contentMatched;
+    const payloadOnlyMatch = payloadMatched && !narrativeMatch;
+    if (payloadOnlyMatch) {
+      return {
+        matched: false,
+        fieldsMatched,
+        matchedFields: matchedFieldsList,
+        payloadOnlyMatch: true,
+        reason: "payload_only_issuer_match",
+      };
+    }
+    if (fieldsMatched >= this.issuerMatchMinFields && narrativeMatch) {
+      return {
+        matched: true,
+        fieldsMatched,
+        matchedFields: matchedFieldsList,
+        payloadOnlyMatch: false,
+      };
     }
 
     return {
       matched: false,
       fieldsMatched,
       matchedFields: matchedFieldsList,
+      payloadOnlyMatch: false,
       reason: "no_issuer_identity_match",
     };
   }
@@ -939,6 +982,14 @@ export class SynthesisService {
         excludedHeadlineReasonSamples: [],
         averageCompositeScore: 0,
         excludedByReason: {},
+        issuerAnchorCount: 0,
+        issuerMatchDiagnostics: {
+          title: 0,
+          summary: 0,
+          content: 0,
+          payload: 0,
+          payloadOnlyRejected: 0,
+        },
         scoreBreakdownSample: [],
       };
     }
@@ -962,15 +1013,38 @@ export class SynthesisService {
       industry: 0,
     };
     const excludedByClassAndReason: Record<string, Record<string, number>> = {};
+    const issuerMatchDiagnostics = {
+      title: 0,
+      summary: 0,
+      content: 0,
+      payload: 0,
+      payloadOnlyRejected: 0,
+    };
     const seenTitle = new Set<string>();
     const seenUrl = new Set<string>();
     const scored: NewsScoredItem[] = [];
     docs.forEach((doc) => {
       const match = this.matchesIssuerIdentity(doc, identityPatterns);
+      if (match.matchedFields.includes("title")) {
+        issuerMatchDiagnostics.title += 1;
+      }
+      if (match.matchedFields.includes("summary")) {
+        issuerMatchDiagnostics.summary += 1;
+      }
+      if (match.matchedFields.includes("content")) {
+        issuerMatchDiagnostics.content += 1;
+      }
+      if (match.matchedFields.includes("payload")) {
+        issuerMatchDiagnostics.payload += 1;
+      }
+      if (match.payloadOnlyMatch) {
+        issuerMatchDiagnostics.payloadOnlyRejected += 1;
+      }
       const scoredItem = scoreNewsCandidate(
         {
           doc,
           issuerMatched: match.matched,
+          payloadOnlyIssuerMatch: match.payloadOnlyMatch,
           horizon,
           kpiNames,
           seenTitleKeys: seenTitle,
@@ -1167,6 +1241,8 @@ export class SynthesisService {
       excludedHeadlineReasonSamples,
       averageCompositeScore,
       excludedByReason,
+      issuerAnchorCount: includedByClass.issuer,
+      issuerMatchDiagnostics,
       scoreBreakdownSample,
     };
   }
@@ -1375,6 +1451,7 @@ export class SynthesisService {
       growthStrength: typeof growthRatio === "number" && growthRatio >= 0.15,
       filingRiskFlag,
       analystSupport,
+      issuerAnchorCount: selection.issuerAnchorCount,
     };
   }
 
@@ -1392,6 +1469,10 @@ export class SynthesisService {
     }
 
     if (!context.evidenceWeak && !context.valuationStress && context.growthStrength) {
+      if (context.issuerAnchorCount < 2) {
+        reasons.push("insufficient_issuer_anchors");
+        return { decision: "watch", reasons };
+      }
       reasons.push("strong_growth_with_acceptable_valuation");
       if (context.analystSupport) {
         reasons.push("analyst_supportive");
@@ -1717,7 +1798,10 @@ export class SynthesisService {
     const lines: string[] = [];
 
     docs.slice(0, 10).forEach((doc) => {
-      const label = newsLabelByDocumentId.get(doc.id) ?? "N_issuer1";
+      const label = newsLabelByDocumentId.get(doc.id);
+      if (!label) {
+        return;
+      }
       lines.push(`- ${label}: news "${doc.title}"`);
     });
     metrics.slice(0, 12).forEach((metric, index) => {
@@ -2198,16 +2282,22 @@ export class SynthesisService {
     const parsedDecisionLine = this.parseDecisionLine(
       this.extractHeadingSection(thesis, "Action Summary"),
     );
+    const hasDecisionValidationIssue = validationIssues.some((issue) =>
+      issue.toLowerCase().includes("decision"),
+    );
     if (
       !parsedDecisionLine.raw ||
       !parsedDecisionLine.decision ||
       (hasEvidence && !parsedDecisionLine.hasCitation)
     ) {
-      failedChecks.push("weak_or_uncited_decision_line");
-      score -= 12;
+      if (!hasDecisionValidationIssue) {
+        failedChecks.push("weak_or_uncited_decision_line");
+      }
+      score -= 8;
     }
 
-    score -= Math.min(40, validationIssues.length * 8);
+    const uniqueValidationIssues = Array.from(new Set(validationIssues));
+    score -= Math.min(28, uniqueValidationIssues.length * 5);
     return {
       score: Math.max(0, Math.min(100, Math.round(score))),
       failedChecks: Array.from(new Set(failedChecks)).slice(0, 20),
@@ -2267,9 +2357,9 @@ export class SynthesisService {
           ].join("\n")
         : args.actionDecision === "watch_low_quality"
           ? [
-              `  - If sector KPI coverage rises above 1 optional KPI while core KPI coverage stays intact, then upgrade one notch (${primaryCitation})`,
+              `  - If sector KPI coverage rises above 1 optional KPI while core KPI coverage stays intact for 2 cycles, then increase conviction one level (${primaryCitation})`,
               `  - If filing risk facts switch to true, then reduce risk exposure (${primaryCitation})`,
-              `  - If two sequential refresh cycles keep sector KPI coverage at 0, then hold position sizing until quality improves (${primaryCitation})`,
+              `  - If two sequential refresh cycles keep sector KPI coverage at 0 through next earnings, then keep position sizing unchanged (${primaryCitation})`,
             ].join("\n")
           : actionMatrixTriggers;
 
@@ -2285,6 +2375,24 @@ export class SynthesisService {
       args.actionDecision === "insufficient_evidence"
         ? `Decision remains ${decisionLabel} until evidence checkpoints are satisfied and trigger thresholds can be audited [${primaryCitation}].`
         : `Decision remains ${decisionLabel} under deterministic policy gates until missing evidence is filled and trigger thresholds are re-evaluated [${primaryCitation}].`;
+    const overviewLine =
+      args.actionDecision === "insufficient_evidence"
+        ? `Current evidence is incomplete for a directional call; focus stays on collecting issuer-linked KPI and filing checkpoints [${primaryCitation}].`
+        : args.actionDecision === "watch_low_quality"
+          ? `Core evidence is present, but sector-quality depth is below strong-note thresholds and requires confirmation [${primaryCitation}].`
+          : `Current evidence supports a monitored ${decisionLabel} stance, with outcome driven by upcoming KPI and filing checkpoints [${primaryCitation}].`;
+    const shareholderLine =
+      args.actionDecision === "insufficient_evidence"
+        ? `No reliable shareholder/institutional change signal is available yet; do not infer positioning shifts from current data [${primaryCitation}].`
+        : `Available shareholder/institutional signals are limited, so stance is anchored to operating and filing checkpoints [${primaryCitation}].`;
+    const valuationLine =
+      args.actionDecision === "insufficient_evidence"
+        ? `Valuation interpretation is provisional until missing core metrics are refreshed and linked to issuer-specific catalysts [${primaryCitation}].`
+        : `Valuation view is tied to current metric thresholds and will be re-scored at the next evidence checkpoint [${primaryCitation}].`;
+    const filingsLine =
+      args.actionDecision === "insufficient_evidence"
+        ? `Next filing updates are required to confirm whether guidance, demand, and risk flags support a directional thesis [${primaryCitation}].`
+        : `Filing signals are used as hard checkpoints for trigger validation and thesis invalidation [${primaryCitation}].`;
 
     return [
       "# Action Summary",
@@ -2306,16 +2414,16 @@ export class SynthesisService {
       args.evidenceMapLines,
       "",
       "# Overview",
-      `Deterministic fallback applied because thesis quality score did not meet floor ${this.thesisQualityMinScore} [${primaryCitation}].`,
+      overviewLine,
       "",
       "# Shareholder/Institutional Dynamics",
-      `No deterministic shareholder/institutional signal available in fallback mode [${primaryCitation}].`,
+      shareholderLine,
       "",
       "# Valuation and Growth Interpretation",
-      `Valuation and growth interpretation is derived from available metric thresholds in Action Summary [${primaryCitation}].`,
+      valuationLine,
       "",
       "# Regulatory Filings",
-      `Filing-derived boolean facts are used directly in triggers when available [${primaryCitation}].`,
+      filingsLine,
       "",
       "# Missing Evidence",
       `Missing deterministic fields: ${missingFields.length > 0 ? missingFields.join(", ") : "none"} [${primaryCitation}].`,
@@ -2751,6 +2859,7 @@ export class SynthesisService {
     horizonScore: number;
     evidenceGate: EvidenceGateDiagnostics;
     fallbackApplied: boolean;
+    issuerAnchorCount: number;
   }): ConfidenceDecomposition {
     const dataConfidence = Math.max(
       0,
@@ -2779,14 +2888,23 @@ export class SynthesisService {
     if (args.fallbackApplied) {
       thesisConfidence = Math.min(thesisConfidence, 50);
     }
+    if (args.issuerAnchorCount < 2) {
+      thesisConfidence = Math.min(thesisConfidence, 55);
+    }
 
-    const timingConfidence = Math.max(
+    let timingConfidence = Math.max(
       0,
       Math.min(
         100,
         Math.round(args.horizonScore + Math.min(12, args.selectedDocs.length * 2)),
       ),
     );
+    if (args.fallbackApplied) {
+      timingConfidence = Math.min(timingConfidence, 60);
+    }
+    if (args.issuerAnchorCount < 2) {
+      timingConfidence = Math.min(timingConfidence, 65);
+    }
 
     return {
       dataConfidence,
@@ -2796,7 +2914,7 @@ export class SynthesisService {
   }
 
   /**
-   * Projects selected KPI names into investor-facing KPI cards with evidence refs and concise business rationale.
+   * Projects selected KPI names into investor-facing KPI cards, skipping unresolved or uncited KPI entries.
    */
   private buildInvestorKpis(
     selectedKpiNames: string[],
@@ -2804,20 +2922,56 @@ export class SynthesisService {
     metrics: MetricPointEntity[],
   ): InvestorKpi[] {
     const byName = new Map(metrics.map((metric) => [metric.metricName, metric]));
-    return selectedKpiNames.slice(0, 10).map((name) => {
+    return selectedKpiNames.slice(0, 10).flatMap((name) => {
       const metric = byName.get(name);
       const label = metricLabelByName.get(name);
-      const value = metric ? this.formatMetricValue(metric) : "n/a";
+      if (!metric || !label) {
+        return [];
+      }
+
+      const value = this.formatMetricValue(metric);
+      if (value === "n/a") {
+        return [];
+      }
+
       const trend: InvestorKpi["trend"] =
         name.includes("growth") ? "up" : name.includes("volatility") ? "mixed" : "unknown";
-      return {
+      return [{
         name,
         value,
         trend,
         whyItMatters: `Tracks ${name.replace(/_/g, " ")} as a core thesis checkpoint.`,
-        evidenceRefs: label ? [label] : [],
-      };
+        evidenceRefs: [label],
+      }];
     });
+  }
+
+  /**
+   * Resolves investor catalyst evidence refs so no synthetic news labels are emitted when selected news is empty.
+   */
+  private resolveCatalystEvidenceRefs(args: {
+    index: number;
+    selectedNewsLabels: string[];
+    metricCount: number;
+    filingCount: number;
+  }): string[] {
+    if (args.selectedNewsLabels.length > 0) {
+      const label =
+        args.selectedNewsLabels[
+          Math.min(args.index, Math.max(0, args.selectedNewsLabels.length - 1))
+        ];
+      return label ? [label] : [];
+    }
+
+    if (args.metricCount > 0) {
+      return [`M${(args.index % args.metricCount) + 1}`];
+    }
+
+    if (args.filingCount > 0) {
+      return [`F${(args.index % args.filingCount) + 1}`];
+    }
+
+    return [];
   }
 
   /**
@@ -2918,10 +3072,13 @@ export class SynthesisService {
     const sourceLines = selectedDocs
       .slice(0, 10)
       .map((doc) => {
-        const label =
-          relevanceSelection.newsLabelByDocumentId.get(doc.id) ?? "N_issuer1";
+        const label = relevanceSelection.newsLabelByDocumentId.get(doc.id);
+        if (!label) {
+          return null;
+        }
         return `- ${label} ${doc.provider}: ${doc.title}`;
       })
+      .filter((line): line is string => Boolean(line))
       .join("\n");
 
     const metricLines = latestMetrics
@@ -3118,7 +3275,8 @@ export class SynthesisService {
       hasEvidence,
     );
     let fallbackApplied = false;
-    if (thesisQuality.score < this.thesisQualityMinScore) {
+    const fallbackTriggeredByScore = thesisQuality.score;
+    if (fallbackTriggeredByScore < this.thesisQualityMinScore) {
       thesis = this.buildDeterministicFallbackThesis({
         actionDecision,
         actionMatrix,
@@ -3142,6 +3300,12 @@ export class SynthesisService {
         hasEvidence,
       );
     }
+    const fallbackReasonCodes = fallbackApplied
+      ? [
+          `thesis_quality_below_floor_${fallbackTriggeredByScore}_lt_${this.thesisQualityMinScore}`,
+          ...thesisQuality.failedChecks.slice(0, 5),
+        ]
+      : [];
 
     const score = this.computeScore(
       selectedDocs.length,
@@ -3173,6 +3337,7 @@ export class SynthesisService {
       horizonScore: payload.horizonContext?.score ?? 55,
       evidenceGate,
       fallbackApplied,
+      issuerAnchorCount: relevanceSelection.issuerAnchorCount,
     });
     const citationDiagnostics = this.computeCitationDiagnostics(thesis);
     const investorKpis = this.buildInvestorKpis(
@@ -3190,14 +3355,12 @@ export class SynthesisService {
             : "next 1-2 quarters",
       expectedDirection: "supports or weakens thesis depending on observed KPI trajectory",
       whyItMatters: "Catalyst determines whether current expectations need to be revised.",
-      evidenceRefs: [
-        relevanceSelection.selectedNewsLabels[
-          Math.min(
-            index,
-            Math.max(0, relevanceSelection.selectedNewsLabels.length - 1),
-          )
-        ] ?? "N_issuer1",
-      ],
+      evidenceRefs: this.resolveCatalystEvidenceRefs({
+        index,
+        selectedNewsLabels: relevanceSelection.selectedNewsLabels,
+        metricCount: promptMetrics.length,
+        filingCount: Math.min(6, filings.length),
+      }),
     }));
     const investorDrivers: InvestorDriver[] = [
       {
@@ -3317,6 +3480,7 @@ export class SynthesisService {
           excludedByClass: relevanceSelection.excludedByClass,
           excludedByClassAndReason: relevanceSelection.excludedByClassAndReason,
         },
+        issuerMatchDiagnostics: relevanceSelection.issuerMatchDiagnostics,
         macroContext: payload.macroContextDiagnostics
           ? {
               totalMetricCount: payload.macroContextDiagnostics.totalMetricCount,
@@ -3332,6 +3496,7 @@ export class SynthesisService {
           failedChecks: thesisQuality.failedChecks,
           fallbackApplied,
         },
+        fallbackReasonCodes: fallbackReasonCodes.slice(0, 8),
         evidenceGate,
         kpiCoverage: kpiCoverage.diagnostics,
         missingFields: evidenceGate.missingFields,
