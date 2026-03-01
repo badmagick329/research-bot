@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import type { DocumentEntity } from "../../core/entities/document";
-import { classifyEvidenceClass, scoreNewsCandidate } from "./newsScoringV2";
+import {
+  classifyEvidenceClass,
+  classifyNewsDocumentClass,
+  scoreNewsCandidate,
+} from "./newsScoringV2";
 
 const baseDoc = (overrides?: Partial<DocumentEntity>): DocumentEntity => ({
   id: "doc-1",
@@ -84,6 +88,19 @@ describe("newsScoringV2", () => {
     expect(issuer.composite).toBeGreaterThan(noise.composite);
     expect(issuer.includedByThresholds).toBeTrue();
     expect(noise.includedByThresholds).toBeFalse();
+    expect(noise.exclusionReason).toBe("explicit_market_noise_pattern");
+  });
+
+  it("classifies market-context and generic listicle artifacts before ranking", () => {
+    expect(
+      classifyNewsDocumentClass("stock market today market wrap", "issuer"),
+    ).toBe("market_context");
+    expect(
+      classifyNewsDocumentClass("top stocks to buy this week", "industry"),
+    ).toBe("generic_market_noise");
+    expect(classifyNewsDocumentClass("issuer guidance update", "issuer")).toBe(
+      "issuer_news",
+    );
   });
 
   it("excludes duplicate URL or title candidates via novelty gate", () => {
@@ -208,6 +225,36 @@ describe("newsScoringV2", () => {
 
     expect(payloadOnly.includedByThresholds).toBeFalse();
     expect(payloadOnly.exclusionReason).toBe("payload_only_issuer_match");
+  });
+
+  it("keeps borderline issuer narratives as rankable candidates", () => {
+    const borderlineIssuer = scoreNewsCandidate(
+      {
+        doc: baseDoc({
+          id: "doc-6",
+          title: "NVIDIA discusses demand trends ahead of earnings",
+          summary: "Mixed margin outlook but direct issuer narrative remains.",
+          content:
+            "NVIDIA commentary highlights demand and next earnings context without explicit KPI aliases.",
+          url: "https://example.com/nvda-borderline",
+        }),
+        issuerMatched: true,
+        horizon: "1_2_quarters",
+        kpiNames: ["free_cash_flow_margin"],
+        seenTitleKeys: new Set<string>(),
+        seenUrlKeys: new Set<string>(),
+        sourceQualityMode: "default",
+      },
+      {
+        minCompositeScore: 65,
+        minMaterialityScore: 50,
+        minKpiLinkageScore: 40,
+        sourceQualityMode: "default",
+      },
+    );
+
+    expect(borderlineIssuer.includedByThresholds).toBeTrue();
+    expect(borderlineIssuer.exclusionReason).toBeUndefined();
   });
 });
 

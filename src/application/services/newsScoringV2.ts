@@ -9,6 +9,9 @@ export type NewsV2ExclusionReason =
   | "payload_only_issuer_match"
   | "duplicate_title"
   | "duplicate_url"
+  | "market_context_prefiltered"
+  | "generic_market_noise_prefiltered"
+  | "explicit_market_noise_pattern"
   | "issuer_noise_or_adjacent_context"
   | "below_materiality_threshold"
   | "below_kpi_linkage_threshold"
@@ -16,6 +19,14 @@ export type NewsV2ExclusionReason =
   | "low_source_quality"
   | "stale_for_horizon"
   | "read_through_without_issuer_anchor";
+
+export type NewsDocumentClass =
+  | "issuer_news"
+  | "read_through_news"
+  | "market_context"
+  | "generic_market_noise";
+
+export type NewsScoreConfidenceBand = "high" | "medium" | "low";
 
 export type NewsScoreComponents = {
   issuerMatchScore: number;
@@ -29,8 +40,10 @@ export type NewsScoreComponents = {
 export type NewsScoredItem = {
   doc: DocumentEntity;
   evidenceClass: NewsEvidenceClass;
+  documentClass: NewsDocumentClass;
   components: NewsScoreComponents;
   composite: number;
+  confidenceBand: NewsScoreConfidenceBand;
   includedByThresholds: boolean;
   exclusionReason?: NewsV2ExclusionReason;
   debugReason?: string;
@@ -165,10 +178,52 @@ const scoreEconomicMateriality = (text: string): number => {
 };
 
 /**
- * Detects broad market or listicle framing so issuer-matched but adjacent headlines can be excluded deterministically.
+ * Assigns a deterministic document class so context artifacts can be filtered out before ranking.
  */
-const isIssuerNoiseOrAdjacentContext = (text: string): boolean => {
-  const adjacentPatterns = [
+export const classifyNewsDocumentClass = (
+  text: string,
+  evidenceClass: NewsEvidenceClass,
+): NewsDocumentClass => {
+  const marketContextPatterns = [
+    /\bmarket wrap\b/,
+    /\bstock market today\b/,
+    /\bdaily movers\b/,
+    /\bequity futures\b/,
+    /\bindex futures\b/,
+    /\bpre[-\s]?market\b/,
+    /\bwall street\b/,
+    /\bdow\b/,
+    /\bs&p\b/,
+    /\bnasdaq\b/,
+    /\btreasury yields?\b/,
+    /\bbroad market\b/,
+  ];
+  if (marketContextPatterns.some((pattern) => pattern.test(text))) {
+    return "market_context";
+  }
+
+  const genericNoisePatterns = [
+    /\bstocks to buy\b/,
+    /\btop stocks\b/,
+    /\bbest stocks\b/,
+    /\bwatchlist\b/,
+    /\bwhich stock is a better buy\b/,
+    /\bhot stocks\b/,
+    /\btop picks\b/,
+    /\betf picks\b/,
+  ];
+  if (genericNoisePatterns.some((pattern) => pattern.test(text))) {
+    return "generic_market_noise";
+  }
+
+  return evidenceClass === "issuer" ? "issuer_news" : "read_through_news";
+};
+
+/**
+ * Detects explicit broad-market/listicle framing that must always be hard-excluded.
+ */
+const hasExplicitMarketNoisePattern = (text: string): boolean => {
+  const hardPatterns = [
     /\bmarket wrap\b/,
     /\bdaily movers\b/,
     /\bstocks to buy\b/,
@@ -180,11 +235,34 @@ const isIssuerNoiseOrAdjacentContext = (text: string): boolean => {
     /\bpre bell\b/,
     /\bpre bell\b/,
     /\bpremarket\b/,
-    /\bshould you follow suit\b/,
     /\bwhich stock is a better buy\b/,
   ];
 
-  return adjacentPatterns.some((pattern) => pattern.test(text));
+  return hardPatterns.some((pattern) => pattern.test(text));
+};
+
+/**
+ * Detects adjacent framing that should reduce ranking score without forcing hard exclusion.
+ */
+const hasAdjacentNoiseSignal = (text: string): boolean =>
+  /\bshares rose\b|\bshares fell\b|\bstock rose\b|\bstock fell\b|\blive coverage\b|\bmarket chatter\b/.test(
+    text,
+  );
+
+/**
+ * Buckets confidence so ranking diagnostics can explain why borderline headlines were selected or dropped.
+ */
+const toConfidenceBand = (
+  composite: number,
+  penaltyPoints: number,
+): NewsScoreConfidenceBand => {
+  if (composite >= 80 && penaltyPoints <= 8) {
+    return "high";
+  }
+  if (composite >= 65) {
+    return "medium";
+  }
+  return "low";
 };
 
 const scoreHorizonRelevance = (text: string, horizon: HorizonBucket): number => {
@@ -270,6 +348,7 @@ export const scoreNewsCandidate = (
     return {
       doc: input.doc,
       evidenceClass: input.issuerMatched ? "issuer" : "industry",
+      documentClass: input.issuerMatched ? "issuer_news" : "read_through_news",
       components: {
         issuerMatchScore: input.issuerMatched ? 100 : 0,
         economicMaterialityScore: 0,
@@ -279,6 +358,7 @@ export const scoreNewsCandidate = (
         sourceQualityScore: 0,
       },
       composite: 0,
+      confidenceBand: "low",
       includedByThresholds: false,
       exclusionReason: "duplicate_url",
       debugReason: "duplicate_url",
@@ -291,6 +371,7 @@ export const scoreNewsCandidate = (
     return {
       doc: input.doc,
       evidenceClass: input.issuerMatched ? "issuer" : "industry",
+      documentClass: input.issuerMatched ? "issuer_news" : "read_through_news",
       components: {
         issuerMatchScore: input.issuerMatched ? 100 : 0,
         economicMaterialityScore: 0,
@@ -300,6 +381,7 @@ export const scoreNewsCandidate = (
         sourceQualityScore: 0,
       },
       composite: 0,
+      confidenceBand: "low",
       includedByThresholds: false,
       exclusionReason: "duplicate_title",
       debugReason: "duplicate_title",
@@ -309,55 +391,50 @@ export const scoreNewsCandidate = (
   }
 
   const evidenceClass = classifyEvidenceClass(text, input.issuerMatched);
+  const documentClass = classifyNewsDocumentClass(text, evidenceClass);
   const issuerMatchScore = input.issuerMatched ? 100 : 20;
   const economicMaterialityScore = scoreEconomicMateriality(text);
   const noveltyScore = 85;
   const horizonRelevanceScore = scoreHorizonRelevance(text, input.horizon);
   const kpiLinkageScore = scoreKpiLinkage(text, input.kpiNames);
   const sourceQualityScore = scoreSourceQuality(input.doc, input.sourceQualityMode);
-  const issuerNoiseOrAdjacent = input.issuerMatched
-    ? isIssuerNoiseOrAdjacentContext(text)
-    : false;
-  const hasKpiContext = input.kpiNames.length > 0;
+  const explicitMarketNoise = hasExplicitMarketNoisePattern(text);
+  const adjacentNoise = hasAdjacentNoiseSignal(text);
+  const lowMaterialityPenalty =
+    economicMaterialityScore < config.minMaterialityScore ? 12 : 0;
+  const lowKpiPenalty = kpiLinkageScore < config.minKpiLinkageScore ? 10 : 0;
+  const adjacentPenalty = adjacentNoise ? 18 : 0;
+  const readThroughPenalty = evidenceClass === "issuer" ? 0 : 8;
+  const penaltyPoints =
+    lowMaterialityPenalty +
+    lowKpiPenalty +
+    adjacentPenalty +
+    readThroughPenalty;
 
   const composite = clampScore(
-    0.25 * issuerMatchScore +
-      0.25 * economicMaterialityScore +
-      0.15 * noveltyScore +
-      0.15 * horizonRelevanceScore +
-      0.15 * kpiLinkageScore +
-      0.05 * sourceQualityScore,
+    0.34 * issuerMatchScore +
+      0.22 * economicMaterialityScore +
+      0.12 * noveltyScore +
+      0.12 * horizonRelevanceScore +
+      0.14 * kpiLinkageScore +
+      0.06 * sourceQualityScore -
+      penaltyPoints,
   );
+  const confidenceBand = toConfidenceBand(composite, penaltyPoints);
 
   let exclusionReason: NewsV2ExclusionReason | undefined;
   let includedByThresholds = true;
   if (input.payloadOnlyIssuerMatch) {
     exclusionReason = "payload_only_issuer_match";
     includedByThresholds = false;
-  } else if (issuerNoiseOrAdjacent) {
-    exclusionReason = "issuer_noise_or_adjacent_context";
+  } else if (explicitMarketNoise) {
+    exclusionReason = "explicit_market_noise_pattern";
     includedByThresholds = false;
-  } else if (
-    input.issuerMatched &&
-    economicMaterialityScore < config.minMaterialityScore + 3
-  ) {
-    exclusionReason = "issuer_noise_or_adjacent_context";
+  } else if (documentClass === "market_context") {
+    exclusionReason = "market_context_prefiltered";
     includedByThresholds = false;
-  } else if (
-    input.issuerMatched &&
-    hasKpiContext &&
-    kpiLinkageScore < config.minKpiLinkageScore + 5 &&
-    economicMaterialityScore < config.minMaterialityScore + 10
-  ) {
-    exclusionReason = "issuer_noise_or_adjacent_context";
-    includedByThresholds = false;
-  } else if (economicMaterialityScore < config.minMaterialityScore) {
-    exclusionReason = /stock rose|stock fell|shares rose|shares fell|market wrap|premarket/.test(text)
-      ? "stale_for_horizon"
-      : "below_materiality_threshold";
-    includedByThresholds = false;
-  } else if (kpiLinkageScore < config.minKpiLinkageScore) {
-    exclusionReason = "below_kpi_linkage_threshold";
+  } else if (documentClass === "generic_market_noise") {
+    exclusionReason = "generic_market_noise_prefiltered";
     includedByThresholds = false;
   } else if (sourceQualityScore < 30) {
     exclusionReason = "low_source_quality";
@@ -370,6 +447,7 @@ export const scoreNewsCandidate = (
   return {
     doc: input.doc,
     evidenceClass,
+    documentClass,
     components: {
       issuerMatchScore,
       economicMaterialityScore,
@@ -379,6 +457,7 @@ export const scoreNewsCandidate = (
       sourceQualityScore,
     },
     composite,
+    confidenceBand,
     includedByThresholds,
     exclusionReason,
     debugReason: exclusionReason,

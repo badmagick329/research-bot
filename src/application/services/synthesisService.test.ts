@@ -370,6 +370,9 @@ describe("SynthesisService", () => {
       metrics: [],
       filings: [],
       llm,
+      options: {
+        newsV2MinCompositeScore: 30,
+      },
     });
 
     await service.run({
@@ -396,7 +399,7 @@ describe("SynthesisService", () => {
     const saved = savedSnapshots[0];
     expect(
       saved?.diagnostics?.newsQualityV2?.excludedByReason
-        .issuer_noise_or_adjacent_context ?? 0,
+        .explicit_market_noise_pattern ?? 0,
     ).toBeGreaterThan(0);
     expect(saved?.thesis).toContain(
       '- N_issuer1: news "NVIDIA raises data-center guidance and expands capacity"',
@@ -405,6 +408,92 @@ describe("SynthesisService", () => {
       "Stock Market Today: Dow Higher After Jobless Claims; Nvidia Rallies On Earnings (Live Coverage)",
     );
     expect(saved?.diagnostics?.issuerMatchDiagnostics).toBeDefined();
+  });
+
+  it("selects at least one issuer anchor in AMZN-like mixed payload and narrative set", async () => {
+    const docs: DocumentEntity[] = [
+      {
+        id: "doc-amzn-issuer",
+        symbol: "AMZN",
+        provider: "finnhub",
+        providerItemId: "amzn-issuer",
+        type: "news",
+        title: "Amazon updates AWS demand outlook and margin guidance",
+        summary: "Issuer narrative includes guidance and demand context.",
+        content:
+          "Amazon.com discussed demand durability, aws operating margin, and revenue_growth_yoy expectations.",
+        url: "https://example.com/amzn-issuer",
+        publishedAt: new Date("2026-02-17T10:00:00.000Z"),
+        language: "en",
+        topics: ["company-news"],
+        sourceType: "api",
+        rawPayload: { related: "AMZN" },
+        createdAt: new Date("2026-02-17T10:00:00.000Z"),
+      },
+      ...[1, 2, 3, 4].map((index) => ({
+        id: `doc-amzn-payload-${index}`,
+        symbol: "AMZN",
+        provider: "finnhub",
+        providerItemId: `amzn-payload-${index}`,
+        type: "news" as const,
+        title: `Broad sector recap headline ${index}`,
+        summary: "No issuer mention in narrative text.",
+        content: "Headline covers indices and sectors without issuer details.",
+        url: `https://example.com/amzn-payload-${index}`,
+        publishedAt: new Date(`2026-02-17T0${index}:00:00.000Z`),
+        language: "en",
+        topics: ["market-news"],
+        sourceType: "api" as const,
+        rawPayload: { related: "AMZN" },
+        createdAt: new Date(`2026-02-17T0${index}:00:00.000Z`),
+      })),
+    ];
+
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok(validThesis),
+    };
+
+    const { service, savedSnapshots } = createService({
+      docs,
+      metrics: [],
+      filings: [],
+      llm,
+      options: {
+        newsV2MinCompositeScore: 30,
+      },
+    });
+
+    await service.run({
+      ...payload,
+      symbol: "AMZN",
+      resolvedIdentity: {
+        requestedSymbol: "AMZN",
+        canonicalSymbol: "AMZN",
+        companyName: "Amazon.com, Inc.",
+        aliases: ["AMZN"],
+        confidence: 0.99,
+        resolutionSource: "manual_map",
+      },
+      kpiContext: {
+        template: "retail_consumer",
+        required: ["revenue_growth_yoy"],
+        optional: ["operating_margin"],
+        selected: ["revenue_growth_yoy", "operating_margin"],
+        requiredHitCount: 1,
+        minRequiredForStrongNote: 1,
+      },
+    });
+
+    const saved = savedSnapshots[0];
+    expect(saved?.diagnostics?.newsQualityV2?.included ?? 0).toBeGreaterThan(0);
+    expect(saved?.diagnostics?.newsQualityV2?.issuerAnchorAvailable).toBeTrue();
+    expect(
+      saved?.diagnostics?.newsQualityV2?.issuerAnchorSelectedCount ?? 0,
+    ).toBeGreaterThan(0);
+    expect(saved?.thesis).toContain(
+      '- N_issuer1: news "Amazon updates AWS demand outlook and margin guidance"',
+    );
   });
 
   it("rejects payload-only issuer matches and records diagnostics counts", async () => {
@@ -2025,8 +2114,7 @@ describe("SynthesisService", () => {
       (saved?.diagnostics?.readThroughQualityV2?.industryIncluded ?? 0);
     expect(nonIssuerIncluded).toBeLessThanOrEqual(4);
     expect(
-      saved?.diagnostics?.newsQualityV2?.excludedByReason.read_through_capped ??
-        0,
+      saved?.diagnostics?.newsQualityV2?.issuerAnchorSelectedCount ?? 0,
     ).toBeGreaterThan(0);
   });
 
@@ -2086,10 +2174,9 @@ describe("SynthesisService", () => {
 
     const saved = savedSnapshots[0];
     expect(saved?.diagnostics?.readThroughQualityV2?.issuerAnchorPresent).toBeFalse();
-    expect(
-      saved?.diagnostics?.newsQualityV2?.excludedByReason
-        .read_through_without_issuer_anchor ?? 0,
-    ).toBeGreaterThan(0);
+    expect(saved?.diagnostics?.newsQualityV2?.issuerAnchorAvailable).toBeFalse();
+    expect(saved?.diagnostics?.newsQualityV2?.included).toBe(0);
+    expect(saved?.diagnostics?.newsQualityV2?.excluded).toBeGreaterThan(0);
   });
 
   it("applies deterministic fallback when thesis quality remains below floor after repair", async () => {

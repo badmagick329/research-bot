@@ -35,6 +35,7 @@ import type {
   SnapshotStageDiagnostics,
 } from "../../core/entities/research";
 import {
+  type NewsDocumentClass,
   type NewsScoredItem,
   scoreNewsCandidate,
 } from "./newsScoringV2";
@@ -65,6 +66,10 @@ type RelevanceSelection = {
   averageCompositeScore: number;
   excludedByReason: Record<string, number>;
   issuerAnchorCount: number;
+  prefilterClassCountsBefore: Record<NewsDocumentClass, number>;
+  prefilterClassCountsAfter: Record<NewsDocumentClass, number>;
+  issuerAnchorAvailable: boolean;
+  issuerAnchorAvailableCount: number;
   issuerMatchDiagnostics: {
     title: number;
     summary: number;
@@ -85,6 +90,8 @@ type RelevanceSelection = {
     };
     included: boolean;
     reason?: string;
+    documentClass: NewsDocumentClass;
+    confidenceBand: string;
   }>;
 };
 
@@ -114,6 +121,9 @@ type ExcludedHeadlineReason =
   | "below_relevance_threshold"
   | "duplicate_title"
   | "duplicate_url"
+  | "market_context_prefiltered"
+  | "generic_market_noise_prefiltered"
+  | "explicit_market_noise_pattern"
   | "issuer_noise_or_adjacent_context"
   | "below_materiality_threshold"
   | "below_kpi_linkage_threshold"
@@ -950,6 +960,13 @@ export class SynthesisService {
     horizon: HorizonBucket,
     kpiNames: string[],
   ): RelevanceSelection {
+    const emptyPrefilterClassCounts: Record<NewsDocumentClass, number> = {
+      issuer_news: 0,
+      read_through_news: 0,
+      market_context: 0,
+      generic_market_noise: 0,
+    };
+
     if (docs.length === 0) {
       return {
         selected: [],
@@ -983,6 +1000,10 @@ export class SynthesisService {
         averageCompositeScore: 0,
         excludedByReason: {},
         issuerAnchorCount: 0,
+        prefilterClassCountsBefore: { ...emptyPrefilterClassCounts },
+        prefilterClassCountsAfter: { ...emptyPrefilterClassCounts },
+        issuerAnchorAvailable: false,
+        issuerAnchorAvailableCount: 0,
         issuerMatchDiagnostics: {
           title: 0,
           summary: 0,
@@ -1013,6 +1034,12 @@ export class SynthesisService {
       industry: 0,
     };
     const excludedByClassAndReason: Record<string, Record<string, number>> = {};
+    const prefilterClassCountsBefore: Record<NewsDocumentClass, number> = {
+      ...emptyPrefilterClassCounts,
+    };
+    const prefilterClassCountsAfter: Record<NewsDocumentClass, number> = {
+      ...emptyPrefilterClassCounts,
+    };
     const issuerMatchDiagnostics = {
       title: 0,
       summary: 0,
@@ -1059,6 +1086,7 @@ export class SynthesisService {
         },
       );
       scored.push(scoredItem);
+      prefilterClassCountsBefore[scoredItem.documentClass] += 1;
       if (scoredItem.urlKey) {
         seenUrl.add(scoredItem.urlKey);
       }
@@ -1067,9 +1095,14 @@ export class SynthesisService {
       }
     });
 
-    const issuerIncludedExists = scored.some(
-      (item) => item.evidenceClass === "issuer" && item.includedByThresholds,
+    const rankingEligible = scored.filter((item) => item.includedByThresholds);
+    rankingEligible.forEach((item) => {
+      prefilterClassCountsAfter[item.documentClass] += 1;
+    });
+    const issuerAnchorCandidates = rankingEligible.filter(
+      (item) => item.evidenceClass === "issuer",
     );
+    const issuerAnchorAvailable = issuerAnchorCandidates.length > 0;
     const maxNonIssuerItems = Math.floor(this.newsV2MaxItems * 0.4);
     let selectedNonIssuerCount = 0;
     const sortedCandidates = [...scored].sort((left, right) => {
@@ -1085,65 +1118,125 @@ export class SynthesisService {
       return right.doc.publishedAt.getTime() - left.doc.publishedAt.getTime();
     });
 
-    const evaluatedCandidates = sortedCandidates.map((item) => {
-      let includedFinal = false;
-      let exclusionReason: ExcludedHeadlineReason | undefined = item.exclusionReason;
+    const evaluatedCandidates = sortedCandidates.map((item) => ({
+      ...item,
+      includedFinal: false,
+      exclusionReason: item.exclusionReason as ExcludedHeadlineReason | undefined,
+    }));
+    const evaluatedById = new Map(
+      evaluatedCandidates.map((item) => [item.doc.id, item]),
+    );
+    const selectedDocumentIds = new Set<string>();
+    const excludedDocumentIds = new Set<string>();
+    const selectedProviders = new Set<string>();
 
-      const isReadThrough = item.evidenceClass !== "issuer";
-      if (!item.includedByThresholds) {
-        includedFinal = false;
-        exclusionReason = exclusionReason ?? "below_composite_threshold";
-      } else if (
-        isReadThrough &&
-        item.components.economicMaterialityScore <
-          this.newsV2MinMaterialityScore + 10
-      ) {
-        includedFinal = false;
-        exclusionReason = "below_materiality_threshold";
-      } else if (
-        isReadThrough &&
-        item.components.kpiLinkageScore < this.newsV2MinKpiLinkageScore + 10
-      ) {
-        includedFinal = false;
-        exclusionReason = "below_kpi_linkage_threshold";
-      } else if (isReadThrough && !issuerIncludedExists) {
-        includedFinal = false;
-        exclusionReason = "read_through_without_issuer_anchor";
-      } else if (isReadThrough && selectedNonIssuerCount >= maxNonIssuerItems) {
-        includedFinal = false;
-        exclusionReason = "read_through_capped";
-      } else if (
-        !isReadThrough &&
-        includedByClass.issuer >= this.newsV2MaxItems
-      ) {
-        includedFinal = false;
-        exclusionReason = "below_composite_threshold";
-      } else if (
-        includedByClass.issuer +
-          includedByClass.peer +
-          includedByClass.supply_chain +
-          includedByClass.customer +
-          includedByClass.industry >=
-        this.newsV2MaxItems
-      ) {
-        includedFinal = false;
-        exclusionReason = isReadThrough
-          ? "read_through_capped"
-          : "below_composite_threshold";
-      } else {
-        includedFinal = true;
-        includedByClass[item.evidenceClass] += 1;
-        if (isReadThrough) {
-          selectedNonIssuerCount += 1;
-        }
+    const applySelection = (item: NewsScoredItem) => {
+      if (selectedDocumentIds.has(item.doc.id)) {
+        return;
+      }
+      const evaluated = evaluatedById.get(item.doc.id);
+      if (!evaluated) {
+        return;
+      }
+      evaluated.includedFinal = true;
+      evaluated.exclusionReason = undefined;
+      selectedDocumentIds.add(item.doc.id);
+      selectedProviders.add(item.doc.provider.toLowerCase());
+      includedByClass[item.evidenceClass] += 1;
+      if (item.evidenceClass !== "issuer") {
+        selectedNonIssuerCount += 1;
+      }
+    };
+
+    const applyExclusion = (
+      item: NewsScoredItem,
+      reason: ExcludedHeadlineReason,
+    ) => {
+      const evaluated = evaluatedById.get(item.doc.id);
+      if (!evaluated || evaluated.includedFinal) {
+        return;
+      }
+      evaluated.exclusionReason = reason;
+      excludedDocumentIds.add(item.doc.id);
+    };
+
+    if (issuerAnchorAvailable) {
+      const bestIssuerAnchor = sortedCandidates.find(
+        (item) => item.includedByThresholds && item.evidenceClass === "issuer",
+      );
+      if (bestIssuerAnchor) {
+        applySelection(bestIssuerAnchor);
+      }
+    }
+
+    while (selectedDocumentIds.size < this.newsV2MaxItems) {
+      const remaining = sortedCandidates.filter(
+        (item) =>
+          !selectedDocumentIds.has(item.doc.id) &&
+          !excludedDocumentIds.has(item.doc.id),
+      );
+      if (remaining.length === 0) {
+        break;
       }
 
-      return {
-        ...item,
-        includedFinal,
-        exclusionReason,
-      };
-    });
+      const rankedRemaining = remaining
+        .map((item) => {
+          let adjustedScore = item.composite;
+          const providerKey = item.doc.provider.toLowerCase();
+          if (!selectedProviders.has(providerKey)) {
+            adjustedScore += 4;
+          }
+          if (includedByClass[item.evidenceClass] === 0) {
+            adjustedScore += 3;
+          }
+          if (item.evidenceClass === "issuer" && includedByClass.issuer === 0) {
+            adjustedScore += 8;
+          }
+          return { item, adjustedScore };
+        })
+        .sort((left, right) => {
+          if (right.adjustedScore !== left.adjustedScore) {
+            return right.adjustedScore - left.adjustedScore;
+          }
+          return (
+            right.item.doc.publishedAt.getTime() - left.item.doc.publishedAt.getTime()
+          );
+        });
+      const next = rankedRemaining.at(0)?.item;
+      if (!next) {
+        break;
+      }
+
+      if (!next.includedByThresholds) {
+        applyExclusion(
+          next,
+          (next.exclusionReason ?? "below_composite_threshold") as ExcludedHeadlineReason,
+        );
+        continue;
+      }
+
+      const isReadThrough = next.evidenceClass !== "issuer";
+      if (isReadThrough && !issuerAnchorAvailable) {
+        applyExclusion(next, "read_through_without_issuer_anchor");
+        continue;
+      }
+      if (isReadThrough && includedByClass.issuer === 0) {
+        applyExclusion(next, "read_through_without_issuer_anchor");
+        continue;
+      }
+      if (isReadThrough && selectedNonIssuerCount >= maxNonIssuerItems) {
+        applyExclusion(next, "read_through_capped");
+        continue;
+      }
+
+      applySelection(next);
+    }
+
+    evaluatedCandidates
+      .filter((item) => !item.includedFinal && !item.exclusionReason)
+      .forEach((item) => {
+        item.exclusionReason = "below_composite_threshold";
+      });
 
     const selectedRanked = evaluatedCandidates.filter((item) => item.includedFinal);
     selectedRanked.forEach((item) => {
@@ -1210,6 +1303,8 @@ export class SynthesisService {
       components: item.components,
       included: item.includedFinal,
       reason: item.includedFinal ? undefined : item.exclusionReason,
+      documentClass: item.documentClass,
+      confidenceBand: item.confidenceBand,
     }));
 
     return {
@@ -1225,7 +1320,7 @@ export class SynthesisService {
         .map((item) => newsLabelByDocumentId.get(item.doc.id))
         .filter((label): label is string => Boolean(label)),
       newsLabelByDocumentId,
-      issuerAnchorPresent: issuerIncludedExists,
+      issuerAnchorPresent: includedByClass.issuer > 0,
       includedByClass,
       excludedByClass,
       excludedByClassAndReason,
@@ -1242,6 +1337,10 @@ export class SynthesisService {
       averageCompositeScore,
       excludedByReason,
       issuerAnchorCount: includedByClass.issuer,
+      prefilterClassCountsBefore,
+      prefilterClassCountsAfter,
+      issuerAnchorAvailable,
+      issuerAnchorAvailableCount: issuerAnchorCandidates.length,
       issuerMatchDiagnostics,
       scoreBreakdownSample,
     };
@@ -1712,6 +1811,15 @@ export class SynthesisService {
       `- excludedHeadlines=${args.relevanceSelection.excludedHeadlinesCount}`,
       `- includedHeadlines=${args.relevanceSelection.selected.length}`,
       `- averageCompositeScore=${args.relevanceSelection.averageCompositeScore}`,
+      `- prefilterClassCountsBefore=${Object.entries(args.relevanceSelection.prefilterClassCountsBefore)
+        .map(([name, count]) => `${name}:${count}`)
+        .join(",")}`,
+      `- prefilterClassCountsAfter=${Object.entries(args.relevanceSelection.prefilterClassCountsAfter)
+        .map(([name, count]) => `${name}:${count}`)
+        .join(",")}`,
+      `- issuerAnchorAvailable=${args.relevanceSelection.issuerAnchorAvailable}`,
+      `- issuerAnchorAvailableCount=${args.relevanceSelection.issuerAnchorAvailableCount}`,
+      `- issuerAnchorSelectedCount=${args.relevanceSelection.issuerAnchorCount}`,
       Object.keys(args.relevanceSelection.excludedByReason).length > 0
         ? `- excludedByReason=${Object.entries(args.relevanceSelection.excludedByReason)
             .map(([reason, count]) => `${reason}:${count}`)
@@ -3467,6 +3575,11 @@ export class SynthesisService {
           excluded: relevanceSelection.excludedHeadlinesCount,
           averageCompositeScore: relevanceSelection.averageCompositeScore,
           mode: "enforce",
+          prefilterClassCountsBefore: relevanceSelection.prefilterClassCountsBefore,
+          prefilterClassCountsAfter: relevanceSelection.prefilterClassCountsAfter,
+          issuerAnchorAvailable: relevanceSelection.issuerAnchorAvailable,
+          issuerAnchorAvailableCount: relevanceSelection.issuerAnchorAvailableCount,
+          issuerAnchorSelectedCount: relevanceSelection.issuerAnchorCount,
           excludedByReason: relevanceSelection.excludedByReason,
           scoreBreakdownSample: relevanceSelection.scoreBreakdownSample.slice(0, 8),
         },

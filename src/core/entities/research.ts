@@ -253,6 +253,11 @@ export type SnapshotDiagnostics = {
     excluded: number;
     averageCompositeScore: number;
     mode: "enforce";
+    prefilterClassCountsBefore?: Record<string, number>;
+    prefilterClassCountsAfter?: Record<string, number>;
+    issuerAnchorAvailable?: boolean;
+    issuerAnchorAvailableCount?: number;
+    issuerAnchorSelectedCount?: number;
     excludedByReason: Record<string, number>;
     scoreBreakdownSample: Array<{
       title: string;
@@ -267,6 +272,8 @@ export type SnapshotDiagnostics = {
       };
       included: boolean;
       reason?: string;
+      documentClass?: string;
+      confidenceBand?: string;
     }>;
   };
   readThroughQualityV2?: {
