@@ -149,6 +149,54 @@ export type KpiCoverageDiagnostics = {
   }>;
 };
 
+export type NormalizedSignalDirection = "positive" | "negative" | "neutral";
+
+export type NormalizedSignal = {
+  signalId: string;
+  metricName: string;
+  sourceMetricNames: string[];
+  normalizedValue: number;
+  direction: NormalizedSignalDirection;
+  level: number;
+  trend: number;
+  acceleration: number;
+  freshnessDays: number;
+  historyZScore?: number;
+  peerZScore?: number;
+  confidenceContribution: number;
+};
+
+export type SignalPack = {
+  signals: NormalizedSignal[];
+  coverage: {
+    totalSignals: number;
+    freshSignals: number;
+    staleSignals: number;
+    hasPeerRelativeContext: boolean;
+  };
+};
+
+export type SufficiencyDiagnostics = {
+  score: number;
+  threshold: number;
+  passed: boolean;
+  missingCriticalDimensions: string[];
+  reasonCodes: string[];
+};
+
+export type DecisionScoreBreakdown = {
+  buyScore: number;
+  avoidScore: number;
+  netScore: number;
+  reasonCodes: string[];
+  contributions: Array<{
+    signalId: string;
+    weight: number;
+    normalizedValue: number;
+    contribution: number;
+  }>;
+};
+
 export type ResearchTaskEntity = {
   id: string;
   runId: string;
@@ -307,6 +355,10 @@ export type SnapshotDiagnostics = {
   fallbackReasonCodes?: string[];
   evidenceGate?: EvidenceGateDiagnostics;
   kpiCoverage?: KpiCoverageDiagnostics;
+  signalDiagnostics?: SignalPack;
+  sufficiencyDiagnostics?: SufficiencyDiagnostics;
+  decisionScoreBreakdown?: DecisionScoreBreakdown;
+  insufficientEvidenceReasons?: string[];
   missingFields?: string[];
   citationCoveragePct?: number;
   unlinkedClaimsCount?: number;

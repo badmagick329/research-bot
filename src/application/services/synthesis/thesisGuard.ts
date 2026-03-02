@@ -488,108 +488,64 @@ export class DeterministicSynthesisThesisGuard implements SynthesisThesisGuardPo
               : "Watch";
     const citations = args.actionMatrix.flatMap((row) => row.citations).filter(Boolean);
     const primaryCitation = citations[0] ?? "M1";
-    const actionMatrixTriggers = args.actionMatrix
-      .slice(0, 5)
+    const triggerRows =
+      args.actionMatrix.length > 0
+        ? args.actionMatrix.slice(0, 3)
+        : [
+            {
+              condition: "If signal coverage remains below 3",
+              action: "then re-evaluate decision confidence",
+              citations: [primaryCitation],
+            },
+          ];
+    const triggerLines = triggerRows
       .map(
         (row) =>
           `  - If ${row.condition.replace(/^If\s+/i, "").replace(/\.$/, "")}, ${row.action} (${row.citations.join(", ")})`,
       )
       .join("\n");
 
-    const missingFields: string[] = [];
     const metricNames = new Set(args.metrics.map((metric) => metric.metricName));
-    if (!metricNames.has("revenue_growth_yoy")) {
-      missingFields.push("revenue_growth_yoy");
-    }
-    if (!metricNames.has("price_to_earnings")) {
-      missingFields.push("price_to_earnings");
-    }
-    if (!metricNames.has("analyst_buy_ratio")) {
-      missingFields.push("analyst_buy_ratio");
-    }
-
-    const triggerLines =
-      args.actionDecision === "insufficient_evidence"
-        ? [
-            `  - If at least 2 issuer-specific headlines with direct KPI linkage are captured in 14 days, then re-evaluate decision confidence (${primaryCitation})`,
-            `  - If a new filing confirms quantified guidance=true or demand_strength=true, then re-evaluate directional stance (${primaryCitation})`,
-            `  - If at least 3 core metrics are refreshed with current as-of dates, then re-evaluate evidence quality (${primaryCitation})`,
-          ].join("\n")
-        : args.actionDecision === "watch_low_quality"
-          ? [
-              `  - If sector KPI coverage rises above 1 optional KPI while core KPI coverage stays intact for 2 cycles, then increase conviction one level (${primaryCitation})`,
-              `  - If filing risk facts switch to true, then reduce risk exposure (${primaryCitation})`,
-              `  - If two sequential refresh cycles keep sector KPI coverage at 0 through next earnings, then keep position sizing unchanged (${primaryCitation})`,
-            ].join("\n")
-          : actionMatrixTriggers;
-
-    const reasonsToInvestSecondLine =
-      args.actionDecision === "insufficient_evidence"
-        ? `  - Current evidence map is useful for triage, but not yet sufficient for high-conviction direction [${primaryCitation}]`
-        : `  - Evidence coverage includes ${args.metrics.length} metrics, ${args.filings.length} filings, and ${args.selectedDocs.length} issuer-matched headlines [${primaryCitation}]`;
-    const reasonsToStayAwaySecondLine =
-      args.actionDecision === "insufficient_evidence"
-        ? `  - Missing structured fields block durable confirmation: ${missingFields.length > 0 ? missingFields.join(", ") : "none"} [${primaryCitation}]`
-        : `  - Missing structured fields can reduce conviction: ${missingFields.length > 0 ? missingFields.join(", ") : "none"} [${primaryCitation}]`;
-    const conclusionLine =
-      args.actionDecision === "insufficient_evidence"
-        ? `Decision remains ${decisionLabel} until evidence checkpoints are satisfied and trigger thresholds can be audited [${primaryCitation}].`
-        : `Decision remains ${decisionLabel} under deterministic policy gates until missing evidence is filled and trigger thresholds are re-evaluated [${primaryCitation}].`;
-    const overviewLine =
-      args.actionDecision === "insufficient_evidence"
-        ? `Current evidence is incomplete for a directional call; focus stays on collecting issuer-linked KPI and filing checkpoints [${primaryCitation}].`
-        : args.actionDecision === "watch_low_quality"
-          ? `Core evidence is present, but sector-quality depth is below strong-note thresholds and requires confirmation [${primaryCitation}].`
-          : `Current evidence supports a monitored ${decisionLabel} stance, with outcome driven by upcoming KPI and filing checkpoints [${primaryCitation}].`;
-    const shareholderLine =
-      args.actionDecision === "insufficient_evidence"
-        ? `No reliable shareholder/institutional change signal is available yet; do not infer positioning shifts from current data [${primaryCitation}].`
-        : `Available shareholder/institutional signals are limited, so stance is anchored to operating and filing checkpoints [${primaryCitation}].`;
-    const valuationLine =
-      args.actionDecision === "insufficient_evidence"
-        ? `Valuation interpretation is provisional until missing core metrics are refreshed and linked to issuer-specific catalysts [${primaryCitation}].`
-        : `Valuation view is tied to current metric thresholds and will be re-scored at the next evidence checkpoint [${primaryCitation}].`;
-    const filingsLine =
-      args.actionDecision === "insufficient_evidence"
-        ? `Next filing updates are required to confirm whether guidance, demand, and risk flags support a directional thesis [${primaryCitation}].`
-        : `Filing signals are used as hard checkpoints for trigger validation and thesis invalidation [${primaryCitation}].`;
+    const missingFields = ["revenue_growth_yoy", "price_to_earnings", "analyst_buy_ratio"].filter(
+      (name) => !metricNames.has(name),
+    );
 
     return [
       "# Action Summary",
       `- Decision: ${decisionLabel} [${primaryCitation}]`,
       `- Timeframe fit: Short-term (0-3m) signal-gated; Long-term (12m+) conviction only with sustained evidence [${primaryCitation}]`,
       "- Reasons to invest:",
-      `  - Deterministic signal set indicates measurable upside conditions when thresholds are met [${primaryCitation}]`,
-      reasonsToInvestSecondLine,
+      `  - Deterministic signal set indicates measurable upside conditions only when trigger thresholds are met [${primaryCitation}]`,
+      `  - Current run includes ${args.metrics.length} metrics, ${args.filings.length} filings, and ${args.selectedDocs.length} issuer-linked headlines [${primaryCitation}]`,
       "- Reasons to stay away:",
-      `  - Evidence quality remains constrained by excluded/noisy headlines (${args.relevanceSelection.excludedHeadlinesCount}) [${primaryCitation}]`,
-      reasonsToStayAwaySecondLine,
+      `  - Evidence quality can degrade when excluded/noisy headlines remain high (${args.relevanceSelection.excludedHeadlinesCount}) [${primaryCitation}]`,
+      `  - Missing structured fields lower conviction: ${missingFields.length > 0 ? missingFields.join(", ") : "none"} [${primaryCitation}]`,
       "- If/Then triggers:",
       triggerLines,
       "- Thesis invalidation:",
-      `  - If two or more core evidence checkpoints fail in sequence, then hold current stance (${primaryCitation})`,
+      `  - If two or more core evidence checkpoints fail in sequence, then reduce risk exposure (${primaryCitation})`,
       `  - If filing risk facts switch to true (regulatory or risk-factor flags), then reduce risk exposure (${primaryCitation})`,
       "",
       "# Evidence Map",
       args.evidenceMapLines,
       "",
       "# Overview",
-      overviewLine,
+      `Current fallback note reflects structured evidence only; directional conviction remains tied to numeric sufficiency and filing checkpoints [${primaryCitation}].`,
       "",
       "# Shareholder/Institutional Dynamics",
-      shareholderLine,
+      `Shareholder positioning is treated as secondary context until numeric sufficiency and filing confirmation improve [${primaryCitation}].`,
       "",
       "# Valuation and Growth Interpretation",
-      valuationLine,
+      `Valuation and growth interpretation remains conditional on refreshed KPI signals and trigger outcomes [${primaryCitation}].`,
       "",
       "# Regulatory Filings",
-      filingsLine,
+      `Filing facts are retained as hard stop conditions for risk control and thesis invalidation [${primaryCitation}].`,
       "",
       "# Missing Evidence",
       `Missing deterministic fields: ${missingFields.length > 0 ? missingFields.join(", ") : "none"} [${primaryCitation}].`,
       "",
       "# Conclusion",
-      conclusionLine,
+      `Decision remains ${decisionLabel} until sufficiency gaps close and trigger thresholds can be re-tested [${primaryCitation}].`,
     ].join("\n");
   }
 

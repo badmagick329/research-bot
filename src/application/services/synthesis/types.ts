@@ -7,13 +7,15 @@ import type { MetricPointEntity } from "../../../core/entities/metric";
 import type {
   ActionDecision,
   ConfidenceDecomposition,
-  EvidenceGateDiagnostics,
+  DecisionScoreBreakdown,
   FalsificationCondition,
   HorizonBucket,
   InvestorKpi,
   KpiCoverageDiagnostics,
   ResolvedCompanyIdentity,
+  SignalPack,
   SnapshotStageDiagnostics,
+  SufficiencyDiagnostics,
 } from "../../../core/entities/research";
 import type {
   EmbeddingMemoryMatch,
@@ -134,16 +136,6 @@ export type ActionMatrixRow = {
   hasNumericThreshold: boolean;
 };
 
-export type DecisionContext = {
-  evidenceWeak: boolean;
-  lowRelevance: boolean;
-  valuationStress: boolean;
-  growthStrength: boolean;
-  filingRiskFlag: boolean;
-  analystSupport: boolean;
-  issuerAnchorCount: number;
-};
-
 export type ThesisQualityScore = {
   score: number;
   failedChecks: string[];
@@ -153,6 +145,17 @@ export type KpiCoverageComputation = {
   selectedCurrentKpiNames: string[];
   diagnostics: KpiCoverageDiagnostics;
 };
+
+export interface SynthesisNormalizedSignalPort {
+  /**
+   * Converts raw and historical metric points into deterministic normalized signals for decision scoring.
+   */
+  buildSignalPack(args: {
+    metrics: MetricPointEntity[];
+    now: Date;
+    selectedKpiNames: string[];
+  }): SignalPack;
+}
 
 export interface SynthesisEvidenceSelectorPort {
   /**
@@ -177,25 +180,10 @@ export interface SynthesisEvidenceSelectorPort {
 
 export interface SynthesisDecisionPolicyPort {
   /**
-   * Produces deterministic context flags from evidence for downstream decision policy.
-   */
-  buildDecisionContext(
-    selection: RelevanceSelection,
-    metrics: MetricPointEntity[],
-    filings: FilingEntity[],
-  ): DecisionContext;
-
-  /**
-   * Converts deterministic context into a directional seed plus reason codes.
-   */
-  deriveDecisionFromContext(
-    context: DecisionContext,
-  ): { decision: ThesisDecision; reasons: string[] };
-
-  /**
-   * Builds deterministic trigger matrix rows from metric/filing evidence.
+   * Produces deterministic if/then triggers from normalized signals and available filings.
    */
   buildActionMatrix(
+    signalPack: SignalPack,
     metrics: MetricPointEntity[],
     filings: FilingEntity[],
     metricLabelByName: Map<string, string>,
@@ -203,27 +191,43 @@ export interface SynthesisDecisionPolicyPort {
   ): ActionMatrixRow[];
 
   /**
+   * Scores evidence sufficiency on a continuous scale before directional decisioning.
+   */
+  buildSufficiencyDiagnostics(args: {
+    selection: RelevanceSelection;
+    signalPack: SignalPack;
+    kpiCoverage: KpiCoverageDiagnostics;
+    filingsCount: number;
+    valuationAvailable: boolean;
+    catalystsCount: number;
+    falsifiersCount: number;
+  }): SufficiencyDiagnostics;
+
+  /**
+   * Derives directional seed plus weighted score diagnostics from normalized signals.
+   */
+  deriveDecisionFromSignals(args: {
+    signalPack: SignalPack;
+    sufficiency: SufficiencyDiagnostics;
+    selection: RelevanceSelection;
+    filings: FilingEntity[];
+  }): {
+    decision: ThesisDecision;
+    reasons: string[];
+    scoreBreakdown: DecisionScoreBreakdown;
+  };
+
+  /**
    * Formats action matrix rows for prompt constraints.
    */
   formatActionMatrix(rows: ActionMatrixRow[]): string;
 
   /**
-   * Applies Stage-1 evidence floor checks.
-   */
-  buildEvidenceGate(args: {
-    filingsCount: number;
-    kpiCoverage: KpiCoverageDiagnostics;
-    valuationAvailable: boolean;
-    catalystsCount: number;
-    falsifiersCount: number;
-  }): EvidenceGateDiagnostics;
-
-  /**
-   * Maps policy seed + evidence gate into public action decision.
+   * Maps directional seed plus sufficiency result into public action decision.
    */
   toActionDecision(
     decision: ThesisDecision,
-    gate: EvidenceGateDiagnostics,
+    sufficiency: SufficiencyDiagnostics,
     kpiCoverage: KpiCoverageDiagnostics,
   ): ActionDecision;
 
@@ -364,7 +368,8 @@ export interface SynthesisInvestorViewBuilderPort {
     now: Date;
     relevanceCoverage: number;
     horizonScore: number;
-    evidenceGate: EvidenceGateDiagnostics;
+    sufficiencyDiagnostics: SufficiencyDiagnostics;
+    decisionScoreBreakdown: DecisionScoreBreakdown;
     fallbackApplied: boolean;
     issuerAnchorCount: number;
   }): ConfidenceDecomposition;

@@ -3,8 +3,9 @@ import type { FilingEntity } from "../../../core/entities/filing";
 import type { MetricPointEntity } from "../../../core/entities/metric";
 import type {
   ConfidenceDecomposition,
-  EvidenceGateDiagnostics,
+  DecisionScoreBreakdown,
   InvestorKpi,
+  SufficiencyDiagnostics,
 } from "../../../core/entities/research";
 import type { SynthesisInvestorViewBuilderPort } from "./types";
 
@@ -35,7 +36,8 @@ export class SynthesisInvestorViewBuilder
     now: Date;
     relevanceCoverage: number;
     horizonScore: number;
-    evidenceGate: EvidenceGateDiagnostics;
+    sufficiencyDiagnostics: SufficiencyDiagnostics;
+    decisionScoreBreakdown: DecisionScoreBreakdown;
     fallbackApplied: boolean;
     issuerAnchorCount: number;
   }): ConfidenceDecomposition {
@@ -56,11 +58,12 @@ export class SynthesisInvestorViewBuilder
     );
 
     let thesisConfidence = Math.round(
-      (args.evidenceGate.passed ? 62 : 38) +
+      (args.sufficiencyDiagnostics.passed ? 62 : 38) +
         Math.min(18, args.metrics.length * 2) +
-        Math.min(10, args.filings.length * 3),
+        Math.min(10, args.filings.length * 3) +
+        Math.min(8, Math.abs(args.decisionScoreBreakdown.netScore) * 10),
     );
-    if (!args.evidenceGate.passed) {
+    if (!args.sufficiencyDiagnostics.passed) {
       thesisConfidence = Math.min(thesisConfidence, 40);
     }
     if (args.fallbackApplied) {
@@ -68,6 +71,9 @@ export class SynthesisInvestorViewBuilder
     }
     if (args.issuerAnchorCount < 2) {
       thesisConfidence = Math.min(thesisConfidence, 55);
+    }
+    if (args.sufficiencyDiagnostics.reasonCodes.includes("signal_freshness_weak")) {
+      thesisConfidence = Math.min(thesisConfidence, 52);
     }
 
     let timingConfidence = Math.max(

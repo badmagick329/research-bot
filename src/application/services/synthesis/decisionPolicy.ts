@@ -1,15 +1,20 @@
 import type { FilingEntity } from "../../../core/entities/filing";
 import type { MetricPointEntity } from "../../../core/entities/metric";
-import type { KpiCoverageDiagnostics } from "../../../core/entities/research";
+import type {
+  ActionDecision,
+  DecisionScoreBreakdown,
+  KpiCoverageDiagnostics,
+  SignalPack,
+  SufficiencyDiagnostics,
+} from "../../../core/entities/research";
 import type {
   ActionMatrixRow,
-  DecisionContext,
   RelevanceSelection,
   SynthesisDecisionPolicyPort,
 } from "./types";
 
 /**
- * Implements deterministic action policy so final stance and trigger logic stay auditable and stable.
+ * Implements deterministic decision scoring so directional output comes from normalized numeric evidence first.
  */
 export class DeterministicSynthesisDecisionPolicy
   implements SynthesisDecisionPolicyPort
@@ -18,234 +23,255 @@ export class DeterministicSynthesisDecisionPolicy
     private readonly thesisTriggerMinNumeric: number,
     private readonly graceAllowOnSectorWeakness: boolean,
     private readonly formatMetricValue: (metric: MetricPointEntity) => string,
-    private readonly isEvidenceWeak: (
-      selection: RelevanceSelection,
-      metricsCount: number,
-      filingsCount: number,
-    ) => boolean,
   ) {}
 
   /**
-   * Produces deterministic context flags from evidence for downstream decision policy.
-   */
-  buildDecisionContext(
-    selection: RelevanceSelection,
-    metrics: MetricPointEntity[],
-    filings: FilingEntity[],
-  ): DecisionContext {
-    const byName = new Map(metrics.map((metric) => [metric.metricName, metric]));
-    const pe = byName.get("price_to_earnings")?.metricValue;
-    const growthRatio = byName.get("revenue_growth_yoy")?.metricValue;
-    const analystSupport =
-      (byName.get("analyst_buy_ratio")?.metricValue ?? 0) >= 0.55;
-
-    const filingRiskFlag = filings.some((filing) =>
-      filing.extractedFacts.some(
-        (fact) =>
-          (fact.name === "mentions_risk_factor_change" ||
-            fact.name === "mentions_regulatory_action") &&
-          fact.value === "true",
-      ),
-    );
-
-    return {
-      evidenceWeak: this.isEvidenceWeak(selection, metrics.length, filings.length),
-      lowRelevance: selection.lowRelevance,
-      valuationStress: typeof pe === "number" && pe >= 45,
-      growthStrength: typeof growthRatio === "number" && growthRatio >= 0.15,
-      filingRiskFlag,
-      analystSupport,
-      issuerAnchorCount: selection.issuerAnchorCount,
-    };
-  }
-
-  /**
-   * Converts deterministic context into a directional seed plus reason codes.
-   */
-  deriveDecisionFromContext(
-    context: DecisionContext,
-  ): { decision: "buy" | "watch" | "avoid"; reasons: string[] } {
-    const reasons: string[] = [];
-
-    if (context.filingRiskFlag && context.valuationStress) {
-      reasons.push("high_valuation_with_filing_risk");
-      return { decision: "avoid", reasons };
-    }
-
-    if (!context.evidenceWeak && !context.valuationStress && context.growthStrength) {
-      if (context.issuerAnchorCount < 2) {
-        reasons.push("insufficient_issuer_anchors");
-        return { decision: "watch", reasons };
-      }
-      reasons.push("strong_growth_with_acceptable_valuation");
-      if (context.analystSupport) {
-        reasons.push("analyst_supportive");
-      }
-      return { decision: "buy", reasons };
-    }
-
-    reasons.push("conservative_default_watch");
-    if (context.evidenceWeak) {
-      reasons.push("evidence_weak");
-    }
-    if (context.valuationStress) {
-      reasons.push("valuation_stress");
-    }
-
-    return { decision: "watch", reasons };
-  }
-
-  /**
-   * Builds deterministic trigger matrix rows from metric/filing evidence.
+   * Builds deterministic trigger rows from highest-impact normalized signals so falsifiers stay specific and auditable.
    */
   buildActionMatrix(
+    signalPack: SignalPack,
     metrics: MetricPointEntity[],
     filings: FilingEntity[],
     metricLabelByName: Map<string, string>,
     filingLabelByFactName: Map<string, string>,
   ): ActionMatrixRow[] {
-    const byName = new Map(metrics.map((metric) => [metric.metricName, metric]));
-    const rows: ActionMatrixRow[] = [];
-    const metricCitation = (metricName: string): string[] => {
-      const label = metricLabelByName.get(metricName);
-      return label ? [label] : [];
-    };
-    const filingCitation = (factName: string): string[] => {
-      const label = filingLabelByFactName.get(factName);
-      return label ? [label] : [];
-    };
+    const byMetricName = new Map(metrics.map((metric) => [metric.metricName, metric]));
+    const topSignals = signalPack.signals
+      .slice()
+      .sort((left, right) => Math.abs(right.normalizedValue) - Math.abs(left.normalizedValue))
+      .slice(0, 4);
 
-    const pe = byName.get("price_to_earnings");
-    if (pe) {
-      rows.push({
-        signalId: "valuation_pe",
-        label: "Valuation multiple pressure",
-        currentValue: `${this.formatMetricValue(pe)}${pe.metricUnit ? ` ${pe.metricUnit}` : ""}`,
-        condition: "If P/E falls below 35 or earnings growth re-accelerates above 20%",
-        action: "then upgrade one notch",
-        citations: metricCitation("price_to_earnings"),
-        hasNumericThreshold: true,
-      });
-    }
+    const rows: ActionMatrixRow[] = topSignals.flatMap((signal) => {
+      const metric = byMetricName.get(signal.metricName);
+      if (!metric) {
+        return [];
+      }
 
-    const growth = byName.get("revenue_growth_yoy");
-    if (growth) {
-      rows.push({
-        signalId: "growth_revenue",
-        label: "Top-line momentum",
-        currentValue: `${(growth.metricValue * 100).toFixed(1)}%`,
-        condition: "If revenue growth stays above 15% for next two quarters",
-        action: "then add on strength",
-        citations: metricCitation("revenue_growth_yoy"),
-        hasNumericThreshold: true,
-      });
-    }
+      const currentValue = `${this.formatMetricValue(metric)}${metric.metricUnit ? ` ${metric.metricUnit}` : ""}`;
+      const threshold = this.deriveThreshold(metric.metricName, metric.metricValue, signal.direction);
+      const condition = `If ${metric.metricName.replace(/_/g, " ")} ${signal.direction === "negative" ? "moves above" : "moves below"} ${threshold}`;
+      const action =
+        signal.direction === "negative"
+          ? "then reduce risk exposure"
+          : "then add selectively";
+      const citation = metricLabelByName.get(metric.metricName) ?? "M1";
 
-    const peerPePremium = byName.get("peer_pe_premium_pct");
-    if (peerPePremium) {
-      rows.push({
-        signalId: "valuation_peer_premium",
-        label: "Peer valuation premium",
-        currentValue: `${peerPePremium.metricValue.toFixed(1)}%`,
-        condition: "If peer P/E premium compresses below 10%",
-        action: "then add selectively",
-        citations: metricCitation("peer_pe_premium_pct"),
-        hasNumericThreshold: true,
-      });
-    }
-
-    const analyst = byName.get("analyst_buy_ratio");
-    if (analyst) {
-      rows.push({
-        signalId: "analyst_support",
-        label: "Analyst stance",
-        currentValue: `${(analyst.metricValue * 100).toFixed(1)}% buy`,
-        condition: "If analyst buy ratio drops below 45%",
-        action: "then downgrade one notch",
-        citations: metricCitation("analyst_buy_ratio"),
-        hasNumericThreshold: true,
-      });
-    }
-
-    const nextEarnings = byName.get("earnings_event_days_to_next");
-    if (nextEarnings) {
-      rows.push({
-        signalId: "earnings_timing",
-        label: "Event timing risk",
-        currentValue: `${Math.round(nextEarnings.metricValue)} days`,
-        condition: "If next earnings are within 10 days and valuation remains above 45x",
-        action: "then hold size constant",
-        citations: metricCitation("earnings_event_days_to_next"),
-        hasNumericThreshold: true,
-      });
-    }
-
-    const return3m = byName.get("price_return_3m");
-    const volRegime = byName.get("volatility_regime_score");
-    if (return3m && volRegime) {
-      rows.push({
-        signalId: "price_momentum_volatility",
-        label: "Momentum versus volatility regime",
-        currentValue: `3m return=${return3m.metricValue.toFixed(1)}%, volScore=${volRegime.metricValue.toFixed(1)}`,
-        condition: "If 3m return stays above 15% while volatility regime score stays below 45",
-        action: "then add on pullbacks",
-        citations: [
-          ...metricCitation("price_return_3m"),
-          ...metricCitation("volatility_regime_score"),
-        ],
-        hasNumericThreshold: true,
-      });
-    }
+      return [
+        {
+          signalId: signal.signalId,
+          label: `${metric.metricName.replace(/_/g, " ")} regime`,
+          currentValue,
+          condition,
+          action,
+          citations: [citation],
+          hasNumericThreshold: true,
+        },
+      ];
+    });
 
     const filingRisk = filings.some((filing) =>
       filing.extractedFacts.some(
-        (fact) =>
-          fact.name === "mentions_regulatory_action" && fact.value === "true",
+        (fact) => fact.name === "mentions_regulatory_action" && fact.value === "true",
       ),
     );
-    rows.push({
-      signalId: "filing_risk",
-      label: "Regulatory risk signal",
-      currentValue: filingRisk ? "true" : "false",
-      condition: "If filing risk signals turn true in next disclosure",
-      action: "then reduce risk exposure",
-      citations: filingCitation("mentions_regulatory_action"),
-      hasNumericThreshold: true,
-    });
+    if (filingRisk || filings.length > 0) {
+      rows.push({
+        signalId: "signal_filing_risk",
+        label: "Regulatory filing risk",
+        currentValue: filingRisk ? "true" : "false",
+        condition: "If mentions_regulatory_action becomes true",
+        action: filingRisk ? "then reduce risk exposure" : "then hold size constant",
+        citations: [filingLabelByFactName.get("mentions_regulatory_action") ?? "F1"],
+        hasNumericThreshold: true,
+      });
+    }
 
-    const filtered = rows
-      .map((row) => ({
-        ...row,
-        citations: row.citations.length > 0 ? row.citations : ["M1"],
-      }))
+    const deduped = rows
+      .filter((row, index, all) => all.findIndex((item) => item.signalId === row.signalId) === index)
       .slice(0, 5);
-    const numericCount = filtered.filter((row) => row.hasNumericThreshold).length;
-    if (numericCount < this.thesisTriggerMinNumeric) {
-      filtered.push({
-        signalId: "insufficient_signal",
-        label: "Insufficient numeric signal coverage",
-        currentValue: `${numericCount} numeric triggers`,
-        condition: `If at least ${this.thesisTriggerMinNumeric} numeric triggers become available`,
+    return deduped.length > 0 ? deduped : [
+      {
+        signalId: "signal_minimum_coverage",
+        label: "Signal coverage checkpoint",
+        currentValue: `${signalPack.coverage.totalSignals} signals`,
+        condition: `If total normalized signals moves below ${this.thesisTriggerMinNumeric}`,
         action: "then re-evaluate decision confidence",
         citations: ["M1"],
         hasNumericThreshold: true,
-      });
+      },
+    ];
+  }
+
+  /**
+   * Builds continuous sufficiency diagnostics so evidence quality can degrade gracefully instead of hard-failing early.
+   */
+  buildSufficiencyDiagnostics(args: {
+    selection: RelevanceSelection;
+    signalPack: SignalPack;
+    kpiCoverage: KpiCoverageDiagnostics;
+    filingsCount: number;
+    valuationAvailable: boolean;
+    catalystsCount: number;
+    falsifiersCount: number;
+  }): SufficiencyDiagnostics {
+    let score = 25;
+    const missingCriticalDimensions: string[] = [];
+    const reasonCodes: string[] = [];
+
+    if (args.kpiCoverage.coreRequiredCount > 0) {
+      const coreCoverageRatio =
+        (args.kpiCoverage.coreCurrentCount + args.kpiCoverage.coreCarriedCount) /
+        args.kpiCoverage.coreRequiredCount;
+      score += Math.min(30, Math.max(0, coreCoverageRatio) * 30);
+      if (coreCoverageRatio < 1) {
+        missingCriticalDimensions.push("core_kpi_coverage");
+        reasonCodes.push("insufficient_core_kpi_coverage");
+      }
+    } else {
+      score += 18;
     }
 
-    while (filtered.length < 3) {
-      const idx = filtered.length + 1;
-      filtered.push({
-        signalId: `coverage_fallback_${idx}`,
-        label: "Coverage completion trigger",
-        currentValue: `${metrics.length} metrics / ${filings.length} filings`,
-        condition: `If available metric count reaches ${this.thesisTriggerMinNumeric + 2}`,
-        action: "then upgrade confidence one step",
-        citations: ["M1"],
-        hasNumericThreshold: true,
-      });
+    if (args.kpiCoverage.sectorExpectedCount > 0) {
+      const sectorCoverageRatio =
+        (args.kpiCoverage.sectorCurrentCount + args.kpiCoverage.sectorCarriedCount) /
+        args.kpiCoverage.sectorExpectedCount;
+      score += Math.min(10, Math.max(0, sectorCoverageRatio) * 10);
+      if (sectorCoverageRatio < 0.5) {
+        reasonCodes.push("sector_kpi_depth_weak");
+      }
     }
 
-    return filtered.slice(0, 5);
+    const freshRatio =
+      args.signalPack.coverage.totalSignals === 0
+        ? 0
+        : args.signalPack.coverage.freshSignals / args.signalPack.coverage.totalSignals;
+    score += freshRatio * 15;
+    if (args.signalPack.coverage.totalSignals < this.thesisTriggerMinNumeric) {
+      missingCriticalDimensions.push("numeric_signal_coverage");
+      reasonCodes.push("insufficient_numeric_signal_coverage");
+      score -= 12;
+    }
+    if (freshRatio < 0.4) {
+      reasonCodes.push("signal_freshness_weak");
+      score -= 8;
+    }
+
+    if (args.filingsCount < 1) {
+      missingCriticalDimensions.push("filing_evidence");
+      reasonCodes.push("missing_filing_evidence");
+      score -= 12;
+    } else {
+      score += 8;
+    }
+
+    if (!args.valuationAvailable) {
+      missingCriticalDimensions.push("valuation_context");
+      reasonCodes.push("missing_valuation_context");
+      score -= 10;
+    } else {
+      score += 6;
+    }
+
+    if (args.catalystsCount + args.falsifiersCount < 1) {
+      missingCriticalDimensions.push("actionability");
+      reasonCodes.push("missing_actionability");
+      score -= 10;
+    } else {
+      score += 6;
+    }
+
+    if (args.selection.lowRelevance) {
+      reasonCodes.push("low_issuer_relevance");
+      score -= 6;
+    }
+    if (args.selection.issuerAnchorCount < 1) {
+      reasonCodes.push("missing_issuer_anchor");
+      score -= 5;
+    } else {
+      score += Math.min(4, args.selection.issuerAnchorCount * 1.5);
+    }
+
+    const normalizedScore = Math.max(0, Math.min(100, Math.round(score)));
+    const threshold = 55;
+    return {
+      score: normalizedScore,
+      threshold,
+      passed: normalizedScore >= threshold && missingCriticalDimensions.length === 0,
+      missingCriticalDimensions: Array.from(new Set(missingCriticalDimensions)),
+      reasonCodes: Array.from(new Set(reasonCodes)).slice(0, 12),
+    };
+  }
+
+  /**
+   * Converts normalized signals into weighted buy/avoid pressure scores for deterministic directional seeds.
+   */
+  deriveDecisionFromSignals(args: {
+    signalPack: SignalPack;
+    sufficiency: SufficiencyDiagnostics;
+    selection: RelevanceSelection;
+    filings: FilingEntity[];
+  }): {
+    decision: "buy" | "watch" | "avoid";
+    reasons: string[];
+    scoreBreakdown: DecisionScoreBreakdown;
+  } {
+    const contributions = args.signalPack.signals.slice(0, 10).map((signal) => {
+      const weight = this.signalWeight(signal.metricName);
+      return {
+        signalId: signal.signalId,
+        weight,
+        normalizedValue: signal.normalizedValue,
+        contribution: Number.parseFloat((weight * signal.normalizedValue).toFixed(4)),
+      };
+    });
+    const netScoreRaw = contributions.reduce(
+      (sum, contribution) => sum + contribution.contribution,
+      0,
+    );
+    const buyScore = contributions
+      .filter((contribution) => contribution.contribution > 0)
+      .reduce((sum, contribution) => sum + contribution.contribution, 0);
+    const avoidScore = Math.abs(
+      contributions
+        .filter((contribution) => contribution.contribution < 0)
+        .reduce((sum, contribution) => sum + contribution.contribution, 0),
+    );
+
+    let netScore = netScoreRaw;
+    if (args.selection.lowRelevance) {
+      netScore -= 0.2;
+    }
+    if (args.filings.some((filing) =>
+      filing.extractedFacts.some(
+        (fact) => fact.name === "mentions_regulatory_action" && fact.value === "true",
+      ),
+    )) {
+      netScore -= 0.35;
+    }
+    if (!args.sufficiency.passed) {
+      netScore = this.clamp(netScore, -0.25, 0.25);
+    }
+
+    const reasons = args.sufficiency.reasonCodes.slice(0, 6);
+    if (netScore >= 0.2) {
+      reasons.push("weighted_signals_support_buy");
+    } else if (netScore <= -0.2) {
+      reasons.push("weighted_signals_support_avoid");
+    } else {
+      reasons.push("weighted_signals_mixed_watch");
+    }
+
+    return {
+      decision: netScore >= 0.2 ? "buy" : netScore <= -0.2 ? "avoid" : "watch",
+      reasons: Array.from(new Set(reasons)),
+      scoreBreakdown: {
+        buyScore: Number.parseFloat(buyScore.toFixed(4)),
+        avoidScore: Number.parseFloat(avoidScore.toFixed(4)),
+        netScore: Number.parseFloat(netScore.toFixed(4)),
+        reasonCodes: Array.from(new Set(reasons)).slice(0, 10),
+        contributions,
+      },
+    };
   }
 
   /**
@@ -261,101 +287,43 @@ export class DeterministicSynthesisDecisionPolicy
   }
 
   /**
-   * Applies Stage-1 evidence floor checks.
-   */
-  buildEvidenceGate(args: {
-    filingsCount: number;
-    kpiCoverage: KpiCoverageDiagnostics;
-    valuationAvailable: boolean;
-    catalystsCount: number;
-    falsifiersCount: number;
-  }): { passed: boolean; failures: string[]; missingFields: string[] } {
-    const failures: string[] = [];
-    const missingFields: string[] = [];
-
-    if (args.filingsCount < 1) {
-      failures.push("missing_filing_evidence");
-      missingFields.push("filings");
-    }
-    if (
-      args.kpiCoverage.coreCurrentCount + args.kpiCoverage.coreCarriedCount <
-      args.kpiCoverage.coreRequiredCount
-    ) {
-      failures.push("insufficient_core_kpi_items");
-      missingFields.push("kpis");
-    }
-    if (
-      args.kpiCoverage.sectorExpectedCount > 0 &&
-      args.kpiCoverage.sectorCurrentCount + args.kpiCoverage.sectorCarriedCount <
-        1
-    ) {
-      failures.push("low_sector_kpi_quality");
-    }
-    if (!args.valuationAvailable) {
-      failures.push("missing_valuation_context");
-      missingFields.push("valuation_context");
-    }
-    if (args.catalystsCount + args.falsifiersCount < 1) {
-      failures.push("missing_catalyst_or_falsifier");
-      missingFields.push("catalyst_or_falsifier");
-    }
-
-    return {
-      passed: failures.length === 0,
-      failures,
-      missingFields,
-    };
-  }
-
-  /**
-   * Maps policy seed + evidence gate into public action decision.
+   * Maps directional seed and sufficiency diagnostics into public action states while preserving low-quality watch semantics.
    */
   toActionDecision(
     decision: "buy" | "watch" | "avoid",
-    gate: { passed: boolean; failures: string[] },
+    sufficiency: SufficiencyDiagnostics,
     kpiCoverage: KpiCoverageDiagnostics,
-  ): "buy" | "watch" | "avoid" | "watch_low_quality" | "insufficient_evidence" {
-    const gateFailures = new Set(gate.failures);
-    const hasNonKpiFailure = [...gateFailures].some(
-      (failure) =>
-        failure !== "insufficient_core_kpi_items" &&
-        failure !== "low_sector_kpi_quality",
-    );
-    if (hasNonKpiFailure) {
-      return "insufficient_evidence";
-    }
-
-    if (gateFailures.has("insufficient_core_kpi_items")) {
+  ): ActionDecision {
+    if (!sufficiency.passed) {
+      const onlySectorWeakness =
+        sufficiency.missingCriticalDimensions.length === 0 &&
+        sufficiency.reasonCodes.includes("sector_kpi_depth_weak");
+      if (
+        this.graceAllowOnSectorWeakness &&
+        onlySectorWeakness &&
+        kpiCoverage.mode === "grace_low_quality"
+      ) {
+        return "watch_low_quality";
+      }
       return "insufficient_evidence";
     }
 
     if (
       this.graceAllowOnSectorWeakness &&
-      gateFailures.has("low_sector_kpi_quality") &&
-      kpiCoverage.mode === "grace_low_quality"
+      kpiCoverage.mode === "grace_low_quality" &&
+      kpiCoverage.sectorExpectedCount > 0 &&
+      kpiCoverage.sectorCurrentCount + kpiCoverage.sectorCarriedCount < 1
     ) {
       return "watch_low_quality";
     }
 
-    if (!gate.passed) {
-      return "insufficient_evidence";
-    }
-
-    if (decision === "buy") {
-      return "buy";
-    }
-    if (decision === "avoid") {
-      return "avoid";
-    }
-    return "watch";
+    return decision;
   }
 
   /**
-   * Derives position sizing from final action decision.
+   * Derives position sizing from final action decision so downstream consumers can keep portfolio controls deterministic.
    */
-  toPositionSizing(
-    decision: "buy" | "watch" | "avoid" | "watch_low_quality" | "insufficient_evidence",
-  ): "none" | "small" | "medium" {
+  toPositionSizing(decision: ActionDecision): "none" | "small" | "medium" {
     if (decision === "insufficient_evidence") {
       return "none";
     }
@@ -366,7 +334,7 @@ export class DeterministicSynthesisDecisionPolicy
   }
 
   /**
-   * Projects action matrix rows into structured falsification conditions.
+   * Projects trigger rows into investor-facing falsification blocks without leaking policy internals.
    */
   buildFalsification(actionMatrix: ActionMatrixRow[]) {
     return actionMatrix.slice(0, 3).map((row) => ({
@@ -384,5 +352,49 @@ export class DeterministicSynthesisDecisionPolicy
       actionIfHit: string;
       evidenceRefs: string[];
     }>;
+  }
+
+  /**
+   * Calibrates metric threshold strings from current values so triggers remain symbol-specific instead of static templates.
+   */
+  private deriveThreshold(
+    metricName: string,
+    metricValue: number,
+    direction: "positive" | "negative" | "neutral",
+  ): string {
+    const multiplier = direction === "negative" ? 1.1 : 0.9;
+    if (/ratio|margin|growth/.test(metricName)) {
+      return `${(metricValue * multiplier * 100).toFixed(1)}%`;
+    }
+    if (/days/.test(metricName)) {
+      return `${Math.max(1, Math.round(metricValue * multiplier))} days`;
+    }
+    return Number.parseFloat((metricValue * multiplier).toFixed(2)).toString();
+  }
+
+  /**
+   * Encodes metric family importance so weighted scoring emphasizes valuation, growth, and profitability anchors.
+   */
+  private signalWeight(metricName: string): number {
+    if (/price_to_earnings|peer_pe_premium|ev_to_sales|ev_to_ebit/.test(metricName)) {
+      return 0.32;
+    }
+    if (/revenue_growth|profit_margin|eps/.test(metricName)) {
+      return 0.36;
+    }
+    if (/analyst_buy_ratio|price_return_3m/.test(metricName)) {
+      return 0.2;
+    }
+    if (/volatility|days_to_next/.test(metricName)) {
+      return 0.14;
+    }
+    return 0.16;
+  }
+
+  /**
+   * Bounds derived directional score after quality penalties so weak-evidence runs cannot overstate conviction.
+   */
+  private clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, Number.parseFloat(value.toFixed(4))));
   }
 }

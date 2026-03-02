@@ -20,7 +20,7 @@ import type { FilingEntity } from "../../core/entities/filing";
 import type {
   ActionDecision,
   ConfidenceDecomposition,
-  EvidenceGateDiagnostics,
+  DecisionScoreBreakdown,
   FalsificationCondition,
   HorizonBucket,
   InvestorCatalyst,
@@ -31,8 +31,10 @@ import type {
   KpiTemplateName,
   PositionSizing,
   ResolvedCompanyIdentity,
+  SignalPack,
   SnapshotProviderFailureDiagnostics,
   SnapshotStageDiagnostics,
+  SufficiencyDiagnostics,
 } from "../../core/entities/research";
 import {
   type NewsDocumentClass,
@@ -45,6 +47,7 @@ import {
 } from "./shared/stageIssue";
 import { DeterministicSynthesisEvidenceSelector } from "./synthesis/evidenceSelection";
 import { DeterministicSynthesisDecisionPolicy } from "./synthesis/decisionPolicy";
+import { DeterministicNormalizedSignalService } from "./synthesis/normalizedSignalService";
 import { SynthesisPromptBuilder } from "./synthesis/promptBuilder";
 import { DeterministicSynthesisThesisGuard } from "./synthesis/thesisGuard";
 import { SynthesisInvestorViewBuilder } from "./synthesis/investorViewBuilder";
@@ -52,6 +55,7 @@ import type {
   SynthesisDecisionPolicyPort,
   SynthesisEvidenceSelectorPort,
   SynthesisInvestorViewBuilderPort,
+  SynthesisNormalizedSignalPort,
   SynthesisPromptBuilderPort,
   SynthesisThesisGuardPort,
 } from "./synthesis/types";
@@ -157,15 +161,6 @@ type ActionMatrixRow = {
   citations: string[];
   hasNumericThreshold: boolean;
 };
-type DecisionContext = {
-  evidenceWeak: boolean;
-  lowRelevance: boolean;
-  valuationStress: boolean;
-  growthStrength: boolean;
-  filingRiskFlag: boolean;
-  analystSupport: boolean;
-  issuerAnchorCount: number;
-};
 type ThesisQualityScore = {
   score: number;
   failedChecks: string[];
@@ -183,6 +178,12 @@ const evidenceClassSortOrder: Record<NewsEvidenceClass, number> = {
   customer: 3,
   industry: 4,
 };
+
+/**
+ * Preserves legacy gate-failure shape so existing diagnostics consumers keep working during decision rework.
+ */
+const insufficiencyReasonsToFailures = (reasons: string[]): string[] =>
+  reasons.length > 0 ? reasons : ["insufficient_evidence"];
 
 /**
  * Consolidates evidence into a durable snapshot so decision outputs remain traceable to stored sources.
@@ -207,6 +208,7 @@ export class SynthesisService {
   private readonly newsV2MaxItems: number;
   private readonly newsV2SourceQualityMode: "default";
   private readonly evidenceSelector: SynthesisEvidenceSelectorPort;
+  private readonly normalizedSignalService: SynthesisNormalizedSignalPort;
   private readonly decisionPolicy: SynthesisDecisionPolicyPort;
   private readonly promptBuilder: SynthesisPromptBuilderPort;
   private readonly thesisGuard: SynthesisThesisGuardPort;
@@ -265,12 +267,11 @@ export class SynthesisService {
       this.newsV2MaxItems,
       this.newsV2SourceQualityMode,
     );
+    this.normalizedSignalService = new DeterministicNormalizedSignalService();
     this.decisionPolicy = new DeterministicSynthesisDecisionPolicy(
       this.thesisTriggerMinNumeric,
       this.graceAllowOnSectorWeakness,
       (metric) => this.formatMetricValue(metric),
-      (selection, metricsCount, filingsCount) =>
-        this.isEvidenceWeak(selection, metricsCount, filingsCount),
     );
     this.promptBuilder = new SynthesisPromptBuilder((metric) =>
       this.formatMetricValue(metric),
@@ -850,22 +851,6 @@ export class SynthesisService {
   }
 
   /**
-   * Converts evidence coverage quality into a simple weak/strong flag so synthesis can default to non-directional decisions.
-   */
-  private isEvidenceWeak(
-    selection: RelevanceSelection,
-    metricsCount: number,
-    filingsCount: number,
-  ): boolean {
-    void filingsCount;
-    return (
-      selection.lowRelevance ||
-      selection.selectedRelevantCount < 3 ||
-      metricsCount < 3
-    );
-  }
-
-  /**
    * Derives deterministic decision context flags so non-Watch outcomes can be reached only when objective evidence gates pass.
    */
   private deriveValuationView(metrics: MetricPointEntity[]): string {
@@ -1164,14 +1149,12 @@ export class SynthesisService {
         payload.resolvedIdentity,
         relevanceSelection,
       );
-    const decisionContext = this.decisionPolicy.buildDecisionContext(
-      relevanceSelection,
-      latestMetrics,
-      filings,
-    );
-    const evidenceWeak = decisionContext.evidenceWeak;
-    const decisionResult =
-      this.decisionPolicy.deriveDecisionFromContext(decisionContext);
+    const now = this.clock.now();
+    const signalPack = this.normalizedSignalService.buildSignalPack({
+      metrics,
+      now,
+      selectedKpiNames: payload.kpiContext?.selected ?? payload.kpiContext?.required ?? [],
+    });
     const metricLabelByName = new Map<string, string>();
     latestMetrics.forEach((metric, index) => {
       metricLabelByName.set(metric.metricName, `M${index + 1}`);
@@ -1191,7 +1174,10 @@ export class SynthesisService {
         }
       });
     });
+    const valuationView = this.deriveValuationView(latestMetrics);
+    const derivedCatalysts = this.deriveCatalysts(selectedDocs, latestMetrics, filings);
     const actionMatrix = this.decisionPolicy.buildActionMatrix(
+      signalPack,
       latestMetrics,
       filings,
       metricLabelByName,
@@ -1199,9 +1185,6 @@ export class SynthesisService {
     );
     const actionMatrixLines = this.decisionPolicy.formatActionMatrix(actionMatrix);
     const falsification = this.decisionPolicy.buildFalsification(actionMatrix);
-    const now = this.clock.now();
-    const valuationView = this.deriveValuationView(latestMetrics);
-    const derivedCatalysts = this.deriveCatalysts(selectedDocs, latestMetrics, filings);
     const fallbackSelectedKpiNames = latestMetrics
       .slice(0, 8)
       .map((metric) => metric.metricName);
@@ -1210,18 +1193,38 @@ export class SynthesisService {
       now,
       fallbackSelectedKpiNames,
     });
-    const evidenceGate = this.decisionPolicy.buildEvidenceGate({
-      filingsCount: filings.length,
+    const sufficiencyDiagnostics = this.decisionPolicy.buildSufficiencyDiagnostics({
+      selection: relevanceSelection,
+      signalPack,
       kpiCoverage: kpiCoverage.diagnostics,
+      filingsCount: filings.length,
       valuationAvailable: !valuationView.toLowerCase().includes("unavailable"),
       catalystsCount: derivedCatalysts.length,
       falsifiersCount: falsification.length,
     });
+    const decisionResult = this.decisionPolicy.deriveDecisionFromSignals({
+      signalPack,
+      sufficiency: sufficiencyDiagnostics,
+      selection: relevanceSelection,
+      filings,
+    });
     const actionDecision = this.decisionPolicy.toActionDecision(
       decisionResult.decision,
-      evidenceGate,
+      sufficiencyDiagnostics,
       kpiCoverage.diagnostics,
     );
+    const evidenceWeak = !sufficiencyDiagnostics.passed;
+    const insufficientEvidenceReasons =
+      actionDecision === "insufficient_evidence"
+        ? Array.from(
+            new Set([
+              ...sufficiencyDiagnostics.reasonCodes,
+              ...sufficiencyDiagnostics.missingCriticalDimensions.map(
+                (dimension) => `missing_${dimension}`,
+              ),
+            ]),
+          ).slice(0, 8)
+        : [];
     const decisionReasonLines =
       decisionResult.reasons.length > 0
         ? decisionResult.reasons.map((reason) => `- ${reason}`).join("\n")
@@ -1383,7 +1386,8 @@ export class SynthesisService {
       now,
       relevanceCoverage,
       horizonScore: payload.horizonContext?.score ?? 55,
-      evidenceGate,
+      sufficiencyDiagnostics,
+      decisionScoreBreakdown: decisionResult.scoreBreakdown,
       fallbackApplied,
       issuerAnchorCount: relevanceSelection.issuerAnchorCount,
     });
@@ -1440,23 +1444,24 @@ export class SynthesisService {
           actionDecision === "insufficient_evidence"
             ? "Evidence is currently insufficient for a high-conviction directional call."
             : actionDecision === "watch_low_quality"
-              ? "Core KPI evidence is present, but sector KPI quality is weak and requires tighter monitoring."
-              : `Current evidence supports a ${actionDecision} stance with explicit KPI and catalyst checkpoints.`,
+              ? "Directional signal exists, but sector KPI quality is below strong-note quality."
+              : `Current evidence supports a ${actionDecision} stance from normalized signal strength and sufficiency checks.`,
       },
       variantView: {
-        pricedInNarrative: "Market is pricing continuation of current operating trajectory.",
+        pricedInNarrative:
+          "Market appears priced for continuation of recent operating and valuation trajectory.",
         ourVariant:
           actionDecision === "insufficient_evidence"
-            ? "Evidence quality is not yet strong enough to support a differentiated variant view."
+            ? "Sufficiency and signal coverage do not yet support a differentiated variant."
             : actionDecision === "watch_low_quality"
-              ? "Core KPI direction is visible, but sector-specific KPI depth is not yet broad enough for a stronger call."
-            : "Upside/downside asymmetry depends on KPI durability through upcoming checkpoints.",
+              ? "Core KPI direction is visible, but sector signal depth remains shallow."
+              : "Expected outcome depends on whether weighted KPI signals persist through upcoming checkpoints.",
         whyMispriced:
           actionDecision === "insufficient_evidence"
-            ? "Signal set is incomplete."
+            ? "Signal pack is incomplete or stale across critical dimensions."
             : actionDecision === "watch_low_quality"
-              ? "Partial KPI coverage can understate sector-specific risks and opportunities."
-            : "Current narrative may over/underweight near-term KPI durability versus valuation.",
+              ? "Partial sector KPI coverage can understate sector-specific risk/reward."
+              : "Current pricing may under/overweight durability of the strongest normalized signals.",
       },
       drivers: investorDrivers.slice(0, 4),
       keyKpis: investorKpis.slice(0, 10),
@@ -1550,9 +1555,17 @@ export class SynthesisService {
           fallbackApplied,
         },
         fallbackReasonCodes: fallbackReasonCodes.slice(0, 8),
-        evidenceGate,
+        evidenceGate: {
+          passed: sufficiencyDiagnostics.passed,
+          failures: insufficiencyReasonsToFailures(insufficientEvidenceReasons),
+          missingFields: sufficiencyDiagnostics.missingCriticalDimensions,
+        },
         kpiCoverage: kpiCoverage.diagnostics,
-        missingFields: evidenceGate.missingFields,
+        signalDiagnostics: signalPack,
+        sufficiencyDiagnostics,
+        decisionScoreBreakdown: decisionResult.scoreBreakdown,
+        insufficientEvidenceReasons,
+        missingFields: sufficiencyDiagnostics.missingCriticalDimensions,
         citationCoveragePct: citationDiagnostics.citationCoveragePct,
         unlinkedClaimsCount: citationDiagnostics.unlinkedClaimsCount,
       },
