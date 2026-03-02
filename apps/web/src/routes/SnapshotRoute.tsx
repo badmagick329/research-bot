@@ -345,7 +345,12 @@ function SnapshotContent({ snapshot, qualityAlerts }: SnapshotContentProps) {
         <DiagnosticChips items={qualityAlerts} />
       </section>
 
-      {investorView ? <InvestorViewSection investorView={investorView} /> : null}
+      {investorView ? (
+        <InvestorViewSection
+          investorView={investorView}
+          diagnostics={snapshot.diagnostics}
+        />
+      ) : null}
 
       <section className="space-y-2">
         <h4 className="text-sm font-semibold text-slate-100">Thesis</h4>
@@ -415,12 +420,16 @@ function SnapshotContent({ snapshot, qualityAlerts }: SnapshotContentProps) {
 
 type InvestorViewSectionProps = {
   investorView: InvestorViewV2;
+  diagnostics?: SnapshotDiagnostics;
 };
 
 /**
  * Renders investor-facing structured output first so users can evaluate thesis quality without parsing diagnostics internals.
  */
-function InvestorViewSection({ investorView }: InvestorViewSectionProps) {
+function InvestorViewSection({
+  investorView,
+  diagnostics,
+}: InvestorViewSectionProps) {
   return (
     <section className="space-y-3 rounded-lg border border-slate-800 bg-slate-900 p-4">
       <h4 className="text-sm font-semibold text-slate-100">Investor View (v2)</h4>
@@ -448,6 +457,30 @@ function InvestorViewSection({ investorView }: InvestorViewSectionProps) {
         </div>
       </dl>
       <p className="text-sm text-slate-200">{investorView.summary.oneLineThesis}</p>
+      {diagnostics?.sufficiencyDiagnostics || diagnostics?.decisionScoreBreakdown ? (
+        <div>
+          <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Decision diagnostics
+          </h5>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-200">
+            {diagnostics?.sufficiencyDiagnostics ? (
+              <li>
+                Sufficiency: {diagnostics.sufficiencyDiagnostics.score}/
+                {diagnostics.sufficiencyDiagnostics.threshold} (
+                {diagnostics.sufficiencyDiagnostics.passed ? "pass" : "fail"})
+              </li>
+            ) : null}
+            {diagnostics?.decisionScoreBreakdown ? (
+              <li>
+                Decision score: net=
+                {diagnostics.decisionScoreBreakdown.netScore.toFixed(2)} buy=
+                {diagnostics.decisionScoreBreakdown.buyScore.toFixed(2)} avoid=
+                {diagnostics.decisionScoreBreakdown.avoidScore.toFixed(2)}
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
       {investorView.keyKpis.length > 0 ? (
         <div>
           <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Key KPIs</h5>
@@ -566,6 +599,16 @@ function mapDiagnosticsToChips(
     items.push(`kpi_coverage:${diagnostics.kpiCoverage.mode}`);
     items.push(
       `kpi_core:${diagnostics.kpiCoverage.coreCurrentCount + diagnostics.kpiCoverage.coreCarriedCount}/${diagnostics.kpiCoverage.coreRequiredCount}`,
+    );
+  }
+  if (diagnostics.sufficiencyDiagnostics) {
+    items.push(
+      `sufficiency:${diagnostics.sufficiencyDiagnostics.score}/${diagnostics.sufficiencyDiagnostics.threshold}`,
+    );
+  }
+  if (diagnostics.insufficientEvidenceReasons?.length) {
+    items.push(
+      `insufficient:${diagnostics.insufficientEvidenceReasons.slice(0, 2).join(",")}`,
     );
   }
 

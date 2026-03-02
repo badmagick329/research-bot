@@ -2344,6 +2344,432 @@ describe("SynthesisService", () => {
     expect(capturedFrom?.toISOString()).toBe("2025-11-19T12:00:00.000Z");
   });
 
+  it("tracks replay quality metrics across AMZN NVDA ELF PANW AMD fixtures", async () => {
+    const llm: LlmPort = {
+      summarize: async () => ok(""),
+      synthesize: async () => ok(validThesis),
+    };
+
+    const scenarios: Array<{
+      symbol: "AMZN" | "NVDA" | "ELF" | "PANW" | "AMD";
+      docs: DocumentEntity[];
+      metrics: MetricPointEntity[];
+      filings: FilingEntity[];
+      kpiContext: JobPayload["kpiContext"];
+    }> = [
+      {
+        symbol: "AMZN",
+        docs: [
+          {
+            id: "amzn-doc-1",
+            symbol: "AMZN",
+            provider: "finnhub",
+            providerItemId: "amzn-1",
+            type: "news",
+            title: "Amazon updates AWS demand and margin outlook",
+            summary: "Issuer guidance update",
+            content: "AMZN guidance update with margin and demand detail",
+            url: "https://example.com/amzn-1",
+            publishedAt: new Date("2026-02-17T10:00:00.000Z"),
+            language: "en",
+            topics: ["company-news"],
+            sourceType: "api",
+            rawPayload: { related: "AMZN" },
+            createdAt: new Date("2026-02-17T10:00:00.000Z"),
+          },
+        ],
+        metrics: [
+          {
+            id: "amzn-m1",
+            symbol: "AMZN",
+            provider: "alphavantage",
+            metricName: "price_to_earnings",
+            metricValue: 28,
+            metricUnit: "multiple",
+            currency: "USD",
+            asOf: new Date("2026-02-16T00:00:00.000Z"),
+            periodType: "point_in_time",
+            rawPayload: {},
+            createdAt: new Date("2026-02-16T00:00:00.000Z"),
+          },
+          {
+            id: "amzn-m2",
+            symbol: "AMZN",
+            provider: "alphavantage",
+            metricName: "revenue_growth_yoy",
+            metricValue: 0.14,
+            metricUnit: "ratio",
+            currency: "USD",
+            asOf: new Date("2026-02-16T00:00:00.000Z"),
+            periodType: "quarter",
+            rawPayload: {},
+            createdAt: new Date("2026-02-16T00:00:00.000Z"),
+          },
+          {
+            id: "amzn-m3",
+            symbol: "AMZN",
+            provider: "finnhub-market-context",
+            metricName: "analyst_buy_ratio",
+            metricValue: 0.62,
+            metricUnit: "ratio",
+            currency: "USD",
+            asOf: new Date("2026-02-16T00:00:00.000Z"),
+            periodType: "point_in_time",
+            rawPayload: {},
+            createdAt: new Date("2026-02-16T00:00:00.000Z"),
+          },
+        ],
+        filings: [
+          {
+            id: "amzn-f1",
+            dedupeKey: "accession:0000000000-26-101001",
+            symbol: "AMZN",
+            provider: "sec-edgar",
+            issuerName: "Amazon.com, Inc.",
+            filingType: "10-Q",
+            accessionNo: "0000000000-26-101001",
+            filedAt: new Date("2026-02-15T00:00:00.000Z"),
+            docUrl: "https://sec.example/amzn-f1",
+            sections: [],
+            extractedFacts: [{ name: "content_extraction_status", value: "parsed" }],
+            rawPayload: {},
+            createdAt: new Date("2026-02-15T00:00:00.000Z"),
+          },
+        ],
+        kpiContext: {
+          template: "retail_consumer",
+          required: ["revenue_growth_yoy", "price_to_earnings"],
+          optional: ["analyst_buy_ratio"],
+          selected: ["revenue_growth_yoy", "price_to_earnings", "analyst_buy_ratio"],
+          requiredHitCount: 2,
+          minRequiredForStrongNote: 2,
+        },
+      },
+      {
+        symbol: "NVDA",
+        docs: [
+          {
+            id: "nvda-doc-1",
+            symbol: "NVDA",
+            provider: "finnhub",
+            providerItemId: "nvda-1",
+            type: "news",
+            title: "NVIDIA raises data-center guidance",
+            summary: "Issuer growth update",
+            content: "NVDA revenue growth and demand remain strong",
+            url: "https://example.com/nvda-1",
+            publishedAt: new Date("2026-02-17T10:00:00.000Z"),
+            language: "en",
+            topics: ["company-news"],
+            sourceType: "api",
+            rawPayload: { related: "NVDA" },
+            createdAt: new Date("2026-02-17T10:00:00.000Z"),
+          },
+        ],
+        metrics: [
+          {
+            id: "nvda-m1",
+            symbol: "NVDA",
+            provider: "alphavantage",
+            metricName: "price_to_earnings",
+            metricValue: 35,
+            metricUnit: "multiple",
+            currency: "USD",
+            asOf: new Date("2026-02-16T00:00:00.000Z"),
+            periodType: "point_in_time",
+            rawPayload: {},
+            createdAt: new Date("2026-02-16T00:00:00.000Z"),
+          },
+          {
+            id: "nvda-m2",
+            symbol: "NVDA",
+            provider: "alphavantage",
+            metricName: "revenue_growth_yoy",
+            metricValue: 0.26,
+            metricUnit: "ratio",
+            currency: "USD",
+            asOf: new Date("2026-02-16T00:00:00.000Z"),
+            periodType: "quarter",
+            rawPayload: {},
+            createdAt: new Date("2026-02-16T00:00:00.000Z"),
+          },
+          {
+            id: "nvda-m3",
+            symbol: "NVDA",
+            provider: "finnhub-market-context",
+            metricName: "analyst_buy_ratio",
+            metricValue: 0.74,
+            metricUnit: "ratio",
+            currency: "USD",
+            asOf: new Date("2026-02-16T00:00:00.000Z"),
+            periodType: "point_in_time",
+            rawPayload: {},
+            createdAt: new Date("2026-02-16T00:00:00.000Z"),
+          },
+        ],
+        filings: [
+          {
+            id: "nvda-f1",
+            dedupeKey: "accession:0000000000-26-101002",
+            symbol: "NVDA",
+            provider: "sec-edgar",
+            issuerName: "NVIDIA Corporation",
+            filingType: "10-Q",
+            accessionNo: "0000000000-26-101002",
+            filedAt: new Date("2026-02-15T00:00:00.000Z"),
+            docUrl: "https://sec.example/nvda-f1",
+            sections: [],
+            extractedFacts: [{ name: "content_extraction_status", value: "parsed" }],
+            rawPayload: {},
+            createdAt: new Date("2026-02-15T00:00:00.000Z"),
+          },
+        ],
+        kpiContext: {
+          template: "semis",
+          required: ["revenue_growth_yoy", "price_to_earnings"],
+          optional: ["analyst_buy_ratio"],
+          selected: ["revenue_growth_yoy", "price_to_earnings", "analyst_buy_ratio"],
+          requiredHitCount: 2,
+          minRequiredForStrongNote: 2,
+        },
+      },
+      {
+        symbol: "ELF",
+        docs: [],
+        metrics: [
+          {
+            id: "elf-m1",
+            symbol: "ELF",
+            provider: "alphavantage",
+            metricName: "revenue_growth_yoy",
+            metricValue: 0.09,
+            metricUnit: "ratio",
+            currency: "USD",
+            asOf: new Date("2026-02-16T00:00:00.000Z"),
+            periodType: "quarter",
+            rawPayload: {},
+            createdAt: new Date("2026-02-16T00:00:00.000Z"),
+          },
+        ],
+        filings: [],
+        kpiContext: {
+          template: "retail_consumer",
+          required: ["revenue_growth_yoy", "price_to_earnings"],
+          optional: ["analyst_buy_ratio"],
+          selected: ["revenue_growth_yoy"],
+          requiredHitCount: 1,
+          minRequiredForStrongNote: 2,
+        },
+      },
+      {
+        symbol: "PANW",
+        docs: [
+          {
+            id: "panw-doc-1",
+            symbol: "PANW",
+            provider: "finnhub",
+            providerItemId: "panw-1",
+            type: "news",
+            title: "Palo Alto Networks updates billings outlook",
+            summary: "Issuer demand update",
+            content: "PANW demand and growth guidance update",
+            url: "https://example.com/panw-1",
+            publishedAt: new Date("2026-02-17T10:00:00.000Z"),
+            language: "en",
+            topics: ["company-news"],
+            sourceType: "api",
+            rawPayload: { related: "PANW" },
+            createdAt: new Date("2026-02-17T10:00:00.000Z"),
+          },
+        ],
+        metrics: [
+          {
+            id: "panw-m1",
+            symbol: "PANW",
+            provider: "alphavantage",
+            metricName: "price_to_earnings",
+            metricValue: 55,
+            metricUnit: "multiple",
+            currency: "USD",
+            asOf: new Date("2026-02-16T00:00:00.000Z"),
+            periodType: "point_in_time",
+            rawPayload: {},
+            createdAt: new Date("2026-02-16T00:00:00.000Z"),
+          },
+          {
+            id: "panw-m2",
+            symbol: "PANW",
+            provider: "alphavantage",
+            metricName: "revenue_growth_yoy",
+            metricValue: 0.17,
+            metricUnit: "ratio",
+            currency: "USD",
+            asOf: new Date("2026-02-16T00:00:00.000Z"),
+            periodType: "quarter",
+            rawPayload: {},
+            createdAt: new Date("2026-02-16T00:00:00.000Z"),
+          },
+        ],
+        filings: [
+          {
+            id: "panw-f1",
+            dedupeKey: "accession:0000000000-26-101004",
+            symbol: "PANW",
+            provider: "sec-edgar",
+            issuerName: "Palo Alto Networks, Inc.",
+            filingType: "8-K",
+            accessionNo: "0000000000-26-101004",
+            filedAt: new Date("2026-02-15T00:00:00.000Z"),
+            docUrl: "https://sec.example/panw-f1",
+            sections: [],
+            extractedFacts: [{ name: "mentions_regulatory_action", value: "true" }],
+            rawPayload: {},
+            createdAt: new Date("2026-02-15T00:00:00.000Z"),
+          },
+        ],
+        kpiContext: {
+          template: "software_saas",
+          required: ["revenue_growth_yoy", "price_to_earnings"],
+          optional: ["analyst_buy_ratio"],
+          selected: ["revenue_growth_yoy", "price_to_earnings"],
+          requiredHitCount: 2,
+          minRequiredForStrongNote: 2,
+        },
+      },
+      {
+        symbol: "AMD",
+        docs: [
+          {
+            id: "amd-doc-1",
+            symbol: "AMD",
+            provider: "finnhub",
+            providerItemId: "amd-1",
+            type: "news",
+            title: "AMD updates datacenter product cadence",
+            summary: "Issuer product update",
+            content: "AMD demand and margin trajectory update",
+            url: "https://example.com/amd-1",
+            publishedAt: new Date("2026-02-17T10:00:00.000Z"),
+            language: "en",
+            topics: ["company-news"],
+            sourceType: "api",
+            rawPayload: { related: "AMD" },
+            createdAt: new Date("2026-02-17T10:00:00.000Z"),
+          },
+        ],
+        metrics: [
+          {
+            id: "amd-m1",
+            symbol: "AMD",
+            provider: "alphavantage",
+            metricName: "price_to_earnings",
+            metricValue: 32,
+            metricUnit: "multiple",
+            currency: "USD",
+            asOf: new Date("2026-02-16T00:00:00.000Z"),
+            periodType: "point_in_time",
+            rawPayload: {},
+            createdAt: new Date("2026-02-16T00:00:00.000Z"),
+          },
+          {
+            id: "amd-m2",
+            symbol: "AMD",
+            provider: "alphavantage",
+            metricName: "revenue_growth_yoy",
+            metricValue: 0.18,
+            metricUnit: "ratio",
+            currency: "USD",
+            asOf: new Date("2026-02-16T00:00:00.000Z"),
+            periodType: "quarter",
+            rawPayload: {},
+            createdAt: new Date("2026-02-16T00:00:00.000Z"),
+          },
+        ],
+        filings: [
+          {
+            id: "amd-f1",
+            dedupeKey: "accession:0000000000-26-101005",
+            symbol: "AMD",
+            provider: "sec-edgar",
+            issuerName: "Advanced Micro Devices, Inc.",
+            filingType: "10-Q",
+            accessionNo: "0000000000-26-101005",
+            filedAt: new Date("2026-02-15T00:00:00.000Z"),
+            docUrl: "https://sec.example/amd-f1",
+            sections: [],
+            extractedFacts: [{ name: "content_extraction_status", value: "parsed" }],
+            rawPayload: {},
+            createdAt: new Date("2026-02-15T00:00:00.000Z"),
+          },
+        ],
+        kpiContext: {
+          template: "semis",
+          required: ["revenue_growth_yoy", "price_to_earnings"],
+          optional: ["analyst_buy_ratio"],
+          selected: ["revenue_growth_yoy", "price_to_earnings"],
+          requiredHitCount: 2,
+          minRequiredForStrongNote: 2,
+        },
+      },
+    ];
+
+    const snapshots: ResearchSnapshotEntity[] = [];
+    for (const scenario of scenarios) {
+      const { service, savedSnapshots } = createService({
+        docs: scenario.docs,
+        metrics: scenario.metrics,
+        filings: scenario.filings,
+        llm,
+      });
+      await service.run({
+        ...payload,
+        symbol: scenario.symbol,
+        runId: `run-${scenario.symbol.toLowerCase()}`,
+        taskId: `task-${scenario.symbol.toLowerCase()}`,
+        idempotencyKey: `${scenario.symbol.toLowerCase()}-synthesize-hour`,
+        kpiContext: scenario.kpiContext,
+      });
+      const snapshot = savedSnapshots[0];
+      if (!snapshot) {
+        throw new Error(`expected snapshot for ${scenario.symbol}`);
+      }
+      snapshots.push(snapshot);
+    }
+
+    const insufficientEvidenceCount = snapshots.filter(
+      (snapshot) => snapshot.investorViewV2?.action.decision === "insufficient_evidence",
+    ).length;
+    const fallbackAppliedCount = snapshots.filter(
+      (snapshot) => snapshot.diagnostics?.thesisQuality?.fallbackApplied,
+    ).length;
+    const nonGenericFalsifierCount = snapshots.filter((snapshot) =>
+      (snapshot.investorViewV2?.falsification ?? []).every(
+        (item) => !/\b(watch for|monitor|could|may|stay tuned)\b/i.test(item.condition),
+      ),
+    ).length;
+    const sectorKpiCoverageCount = snapshots.filter(
+      (snapshot) => (snapshot.investorViewV2?.keyKpis.length ?? 0) > 0,
+    ).length;
+    const citationCoverageValues = snapshots
+      .map((snapshot) => snapshot.diagnostics?.citationCoveragePct ?? 0)
+      .filter((value) => Number.isFinite(value));
+    const averageCitationCoverage =
+      citationCoverageValues.reduce((sum, value) => sum + value, 0) /
+      Math.max(1, citationCoverageValues.length);
+
+    expect(snapshots.length).toBe(5);
+    expect(insufficientEvidenceCount).toBeLessThanOrEqual(3);
+    expect(fallbackAppliedCount).toBeLessThanOrEqual(3);
+    expect(nonGenericFalsifierCount).toBeGreaterThanOrEqual(4);
+    expect(sectorKpiCoverageCount).toBeGreaterThanOrEqual(3);
+    expect(averageCitationCoverage).toBeGreaterThanOrEqual(75);
+    snapshots.forEach((snapshot) => {
+      expect(snapshot.diagnostics?.sufficiencyDiagnostics).toBeDefined();
+      expect(snapshot.diagnostics?.decisionScoreBreakdown).toBeDefined();
+      expect(snapshot.diagnostics?.signalDiagnostics?.coverage.totalSignals ?? 0).toBeGreaterThanOrEqual(0);
+    });
+  });
+
   it("selects template-relevant macro metrics and persists macro diagnostics", async () => {
     const docs: DocumentEntity[] = [
       {
