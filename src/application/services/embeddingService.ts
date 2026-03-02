@@ -5,8 +5,10 @@ import type {
   EmbeddingRepositoryPort,
   QueuePort,
 } from "../../core/ports/outboundPorts";
-import type { AppBoundaryError } from "../../core/entities/appError";
-import type { SnapshotStageDiagnostics } from "../../core/entities/research";
+import {
+  appendStageIssue,
+  toBoundaryStageIssue,
+} from "./shared/stageIssue";
 
 /**
  * Separates vector generation from ingestion so embedding failures do not block upstream data capture.
@@ -18,33 +20,6 @@ export class EmbeddingService {
     private readonly embeddingRepo: EmbeddingRepositoryPort,
     private readonly queue: QueuePort,
   ) {}
-
-  /**
-   * Accumulates embedding-stage degradation details so snapshot output can clearly explain quality impacts.
-   */
-  private withStageIssue(
-    payload: JobPayload,
-    issue: SnapshotStageDiagnostics,
-  ): JobPayload {
-    return {
-      ...payload,
-      stageIssues: [...(payload.stageIssues ?? []), issue],
-    };
-  }
-
-  /**
-   * Converts embedding boundary errors into consistent stage issue diagnostics.
-   */
-  private toAdapterIssue(error: AppBoundaryError): SnapshotStageDiagnostics {
-    return {
-      stage: "embed",
-      status: "degraded",
-      reason: `Embedding degraded due to ${error.provider}: ${error.message}`,
-      provider: error.provider,
-      code: error.code,
-      retryable: error.retryable,
-    };
-  }
 
   /**
    * Advances research jobs into synthesis with persisted vectors for later semantic retrieval.
@@ -67,7 +42,14 @@ export class EmbeddingService {
     if (vectorsResult.isErr()) {
       await this.queue.enqueue(
         "synthesize",
-        this.withStageIssue(payload, this.toAdapterIssue(vectorsResult.error)),
+        appendStageIssue(
+          payload,
+          toBoundaryStageIssue({
+            stage: "embed",
+            summary: "Embedding degraded",
+            error: vectorsResult.error,
+          }),
+        ),
       );
       return;
     }
@@ -76,7 +58,7 @@ export class EmbeddingService {
     let nextPayload = payload;
 
     if (vectors.length !== docs.length) {
-      nextPayload = this.withStageIssue(payload, {
+      nextPayload = appendStageIssue(payload, {
         stage: "embed",
         status: "degraded",
         reason: `Embedding returned ${vectors.length} vectors for ${docs.length} documents. Persisted the available subset.`,

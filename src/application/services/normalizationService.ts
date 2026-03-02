@@ -4,8 +4,10 @@ import type {
   QueuePort,
   LlmPort,
 } from "../../core/ports/outboundPorts";
-import type { AppBoundaryError } from "../../core/entities/appError";
-import type { SnapshotStageDiagnostics } from "../../core/entities/research";
+import {
+  appendStageIssue,
+  toBoundaryStageIssue,
+} from "./shared/stageIssue";
 
 /**
  * Creates a normalization checkpoint so embedding and synthesis consume consistent context framing.
@@ -16,33 +18,6 @@ export class NormalizationService {
     private readonly llm: LlmPort,
     private readonly queue: QueuePort,
   ) {}
-
-  /**
-   * Captures normalization degradation details so synthesis can explicitly report quality gaps.
-   */
-  private withStageIssue(
-    payload: JobPayload,
-    issue: SnapshotStageDiagnostics,
-  ): JobPayload {
-    return {
-      ...payload,
-      stageIssues: [...(payload.stageIssues ?? []), issue],
-    };
-  }
-
-  /**
-   * Converts LLM boundary failures into deterministic stage diagnostics for downstream reporting.
-   */
-  private toStageIssue(error: AppBoundaryError): SnapshotStageDiagnostics {
-    return {
-      stage: "normalize",
-      status: "degraded",
-      reason: `Normalization degraded due to ${error.provider}: ${error.message}`,
-      provider: error.provider,
-      code: error.code,
-      retryable: error.retryable,
-    };
-  }
 
   /**
    * Produces a stable intermediate interpretation before expensive embedding and final synthesis steps.
@@ -67,7 +42,17 @@ export class NormalizationService {
     );
 
     if (summaryResult.isErr()) {
-      await this.queue.enqueue("classify_stock", this.withStageIssue(payload, this.toStageIssue(summaryResult.error)));
+      await this.queue.enqueue(
+        "classify_stock",
+        appendStageIssue(
+          payload,
+          toBoundaryStageIssue({
+            stage: "normalize",
+            summary: "Normalization degraded",
+            error: summaryResult.error,
+          }),
+        ),
+      );
       return;
     }
 
