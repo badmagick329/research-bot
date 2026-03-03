@@ -79,6 +79,20 @@ const createSnapshot = (): ResearchSnapshotEntity => ({
     },
   },
   diagnostics: {
+    sufficiencyDiagnostics: {
+      score: 95,
+      threshold: 55,
+      passed: true,
+      missingCriticalDimensions: [],
+      reasonCodes: [],
+    },
+    decisionScoreBreakdown: {
+      buyScore: 0.53,
+      avoidScore: 0.2,
+      netScore: 0.33,
+      reasonCodes: [],
+      contributions: [],
+    },
     issuerMatchDiagnostics: {
       title: 2,
       summary: 1,
@@ -96,7 +110,8 @@ describe("formatSnapshotReport", () => {
     const report = formatSnapshotReport(createSnapshot());
     expect(report).toContain("Investor view:");
     expect(report).toContain("- Thesis type: compounder");
-    expect(report).toContain("- Confidence decomposition:");
+    expect(report).toContain("- Confidence: data=82, thesis=61, timing=59");
+    expect(report).toContain("- Decision diagnostics:");
     expect(report).not.toContain("Thesis (raw markdown):");
     expect(report).not.toContain("\nCatalysts:\n");
   });

@@ -31,36 +31,136 @@ export const formatSnapshotReport = (
 ): string => {
   const lines: string[] = [];
   const showRawThesis = options?.showRawThesis ?? false;
+  const pushSection = (heading: string) => {
+    lines.push("");
+    lines.push(heading);
+  };
+  const formatRefs = (refs: string[]) => (refs.length > 0 ? refs.join(", ") : "none");
 
   lines.push(`Snapshot for ${snapshot.symbol}`);
   lines.push(`Created: ${new Date(snapshot.createdAt).toISOString()}`);
   lines.push(`Horizon: ${snapshot.horizon}`);
   lines.push(`Score: ${snapshot.score.toFixed(1)} / 100`);
   lines.push(`Confidence: ${(snapshot.confidence * 100).toFixed(1)}%`);
+
+  if (snapshot.diagnostics?.identity) {
+    const identity = snapshot.diagnostics.identity;
+    pushSection("Resolved identity:");
+    lines.push(`- Requested symbol: ${identity.requestedSymbol}`);
+    lines.push(`- Canonical symbol: ${identity.canonicalSymbol}`);
+    lines.push(`- Company: ${identity.companyName}`);
+    lines.push(`- Resolution source: ${identity.resolutionSource}`);
+    lines.push(`- Confidence: ${identity.confidence.toFixed(2)}`);
+    if (identity.aliases.length > 0) {
+      lines.push(`- Aliases: ${identity.aliases.join(", ")}`);
+    }
+    if (identity.exchange) {
+      lines.push(`- Exchange: ${identity.exchange}`);
+    }
+  }
+
+  pushSection("Data quality alerts:");
+  if (snapshot.diagnostics?.kpiCoverage) {
+    const kpiCoverage = snapshot.diagnostics.kpiCoverage;
+    lines.push(
+      `- KPI coverage: ${kpiCoverage.mode} (core ${kpiCoverage.coreCurrentCount + kpiCoverage.coreCarriedCount}/${kpiCoverage.coreRequiredCount}, sector ${kpiCoverage.sectorCurrentCount + kpiCoverage.sectorCarriedCount})`,
+    );
+  }
+  if (snapshot.diagnostics?.sufficiencyDiagnostics) {
+    const sufficiency = snapshot.diagnostics.sufficiencyDiagnostics;
+    lines.push(
+      `- Sufficiency: ${sufficiency.score}/${sufficiency.threshold} (${sufficiency.passed ? "pass" : "fail"})`,
+    );
+  }
+
+  const providerFailures = snapshot.diagnostics?.providerFailures ?? [];
+  const stageIssues = snapshot.diagnostics?.stageIssues ?? [];
+  const metricsDiagnostics = snapshot.diagnostics?.metrics;
+  const companyFactsDiagnostics = snapshot.diagnostics?.metricsCompanyFacts;
+  if (
+    providerFailures.length === 0 &&
+    stageIssues.length === 0 &&
+    !metricsDiagnostics &&
+    !companyFactsDiagnostics &&
+    !snapshot.diagnostics?.issuerMatchDiagnostics &&
+    (snapshot.diagnostics?.fallbackReasonCodes ?? []).length === 0 &&
+    !snapshot.diagnostics?.kpiCoverage &&
+    !snapshot.diagnostics?.sufficiencyDiagnostics
+  ) {
+    lines.push("- none");
+  } else {
+    if (metricsDiagnostics) {
+      lines.push(
+        `- Metrics provider: ${metricsDiagnostics.provider} (${metricsDiagnostics.status}, count=${metricsDiagnostics.metricCount}${metricsDiagnostics.reason ? `, reason=${metricsDiagnostics.reason}` : ""}${typeof metricsDiagnostics.httpStatus === "number" ? `, httpStatus=${metricsDiagnostics.httpStatus}` : ""})`,
+      );
+    }
+    if (companyFactsDiagnostics) {
+      lines.push(
+        `- SEC companyfacts: ${companyFactsDiagnostics.provider} (${companyFactsDiagnostics.status}, count=${companyFactsDiagnostics.metricCount}${companyFactsDiagnostics.reason ? `, reason=${companyFactsDiagnostics.reason}` : ""}${typeof companyFactsDiagnostics.httpStatus === "number" ? `, httpStatus=${companyFactsDiagnostics.httpStatus}` : ""})`,
+      );
+    }
+
+    providerFailures.forEach((failure) => {
+      lines.push(
+        `- Provider failure: ${failure.source}/${failure.provider} (${failure.status}, itemCount=${failure.itemCount}${typeof failure.httpStatus === "number" ? `, httpStatus=${failure.httpStatus}` : ""}${typeof failure.retryable === "boolean" ? `, retryable=${failure.retryable}` : ""})`,
+      );
+      lines.push(`  Reason: ${failure.reason}`);
+    });
+
+    stageIssues.forEach((issue) => {
+      lines.push(
+        `- Stage issue: ${issue.stage}${issue.provider ? ` (${issue.provider})` : ""}${issue.code ? ` [${issue.code}]` : ""}${typeof issue.retryable === "boolean" ? ` (retryable=${issue.retryable})` : ""}`,
+      );
+      lines.push(`  Reason: ${issue.reason}`);
+    });
+    if (snapshot.diagnostics?.issuerMatchDiagnostics) {
+      const issuerMatch = snapshot.diagnostics.issuerMatchDiagnostics;
+      lines.push(
+        `- Issuer match: title=${issuerMatch.title}, summary=${issuerMatch.summary}, content=${issuerMatch.content}, payload=${issuerMatch.payload}, payloadOnlyRejected=${issuerMatch.payloadOnlyRejected}`,
+      );
+    }
+    if ((snapshot.diagnostics?.fallbackReasonCodes ?? []).length > 0) {
+      lines.push(
+        `- Fallback reasons: ${(snapshot.diagnostics?.fallbackReasonCodes ?? []).join(", ")}`,
+      );
+    }
+  }
+
   const investorView = snapshot.investorViewV2;
   if (investorView) {
-    lines.push("");
-    lines.push("Investor view:");
+    pushSection("Investor view:");
     lines.push(`- Thesis type: ${investorView.thesisType}`);
     lines.push(
-      `- Horizon: ${investorView.horizon.bucket} (${investorView.horizon.rationale})`,
+      `- Horizon: ${investorView.horizon.bucket}`,
     );
-    lines.push(`- Decision: ${investorView.action.decision}`);
-    lines.push(`- Position sizing: ${investorView.action.positionSizing}`);
-    lines.push(`- One-line thesis: ${investorView.summary.oneLineThesis}`);
+    lines.push(`  Why: ${investorView.horizon.rationale}`);
+    lines.push(
+      `- Decision: ${investorView.action.decision} (${investorView.action.positionSizing})`,
+    );
+    lines.push(
+      `- Confidence: data=${investorView.confidence.dataConfidence}, thesis=${investorView.confidence.thesisConfidence}, timing=${investorView.confidence.timingConfidence}`,
+    );
+    lines.push(`- One-line thesis:`);
+    lines.push(`  ${investorView.summary.oneLineThesis}`);
+    if (snapshot.diagnostics?.decisionScoreBreakdown) {
+      const breakdown = snapshot.diagnostics.decisionScoreBreakdown;
+      lines.push("- Decision diagnostics:");
+      lines.push(
+        `  - Sufficiency: ${snapshot.diagnostics?.sufficiencyDiagnostics?.score ?? "n/a"}/${snapshot.diagnostics?.sufficiencyDiagnostics?.threshold ?? "n/a"} (${snapshot.diagnostics?.sufficiencyDiagnostics?.passed ? "pass" : "fail"})`,
+      );
+      lines.push(
+        `  - Decision score: net=${breakdown.netScore.toFixed(2)} buy=${breakdown.buyScore.toFixed(2)} avoid=${breakdown.avoidScore.toFixed(2)}`,
+      );
+    }
     lines.push("- Variant view:");
-    lines.push(`  pricedIn=${investorView.variantView.pricedInNarrative}`);
-    lines.push(`  variant=${investorView.variantView.ourVariant}`);
-    lines.push(`  whyMispriced=${investorView.variantView.whyMispriced}`);
-    lines.push("- Confidence decomposition:");
-    lines.push(
-      `  data=${investorView.confidence.dataConfidence}, thesis=${investorView.confidence.thesisConfidence}, timing=${investorView.confidence.timingConfidence}`,
-    );
+    lines.push(`  - Priced in: ${investorView.variantView.pricedInNarrative}`);
+    lines.push(`  - Our variant: ${investorView.variantView.ourVariant}`);
+    lines.push(`  - Why mispriced: ${investorView.variantView.whyMispriced}`);
     lines.push("- Valuation:");
-    lines.push(`  framework=${investorView.valuation.valuationFramework}`);
-    lines.push(`  view=${investorView.valuation.valuationView}`);
+    lines.push(`  - Framework: ${investorView.valuation.valuationFramework}`);
+    lines.push(`  - View: ${investorView.valuation.valuationView}`);
     lines.push(
-      `  keyMultiples=${investorView.valuation.keyMultiples.length > 0 ? investorView.valuation.keyMultiples.join(", ") : "none"}`,
+      `  - Key multiples: ${investorView.valuation.keyMultiples.length > 0 ? investorView.valuation.keyMultiples.join(", ") : "none"}`,
     );
     lines.push("- Key KPIs:");
     if (investorView.keyKpis.length === 0) {
@@ -68,8 +168,9 @@ export const formatSnapshotReport = (
     } else {
       investorView.keyKpis.forEach((kpi) => {
         lines.push(
-          `  - ${kpi.name}: value=${kpi.value}, trend=${kpi.trend}, refs=${kpi.evidenceRefs.join(",")}`,
+          `  - ${kpi.name}: ${kpi.value} (trend: ${kpi.trend}; refs: ${formatRefs(kpi.evidenceRefs)})`,
         );
+        lines.push(`    Why: ${kpi.whyItMatters}`);
       });
     }
     lines.push("- Catalysts:");
@@ -77,9 +178,11 @@ export const formatSnapshotReport = (
       lines.push("  - none");
     } else {
       investorView.catalysts.forEach((catalyst) => {
-        lines.push(
-          `  - ${catalyst.event}; window=${catalyst.window}; direction=${catalyst.expectedDirection}; refs=${catalyst.evidenceRefs.join(",")}`,
-        );
+        lines.push(`  - ${catalyst.event}`);
+        lines.push(`    Window: ${catalyst.window}`);
+        lines.push(`    Expected direction: ${catalyst.expectedDirection}`);
+        lines.push(`    Why: ${catalyst.whyItMatters}`);
+        lines.push(`    Refs: ${formatRefs(catalyst.evidenceRefs)}`);
       });
     }
     lines.push("- Falsification:");
@@ -87,96 +190,25 @@ export const formatSnapshotReport = (
       lines.push("  - none");
     } else {
       investorView.falsification.forEach((item) => {
-        lines.push(
-          `  - ${item.condition}; type=${item.type}; deadline=${item.deadline}; action=${item.actionIfHit}; refs=${item.evidenceRefs.join(",")}`,
-        );
+        lines.push(`  - ${item.condition}`);
+        lines.push(`    Type: ${item.type}`);
+        lines.push(`    Threshold/outcome: ${item.thresholdOrOutcome}`);
+        lines.push(`    Deadline: ${item.deadline}`);
+        lines.push(`    Action if hit: ${item.actionIfHit}`);
+        lines.push(`    Refs: ${formatRefs(item.evidenceRefs)}`);
       });
-    }
-  }
-  if (snapshot.diagnostics?.kpiCoverage) {
-    const kpiCoverage = snapshot.diagnostics.kpiCoverage;
-    lines.push("");
-    lines.push(
-      `KPI coverage: mode=${kpiCoverage.mode}, core=${kpiCoverage.coreCurrentCount + kpiCoverage.coreCarriedCount}/${kpiCoverage.coreRequiredCount}, sector=${kpiCoverage.sectorCurrentCount + kpiCoverage.sectorCarriedCount}`,
-    );
-  }
-
-  if (snapshot.diagnostics?.identity) {
-    const identity = snapshot.diagnostics.identity;
-    lines.push("Resolved identity:");
-    lines.push(
-      `- requested=${identity.requestedSymbol}, canonical=${identity.canonicalSymbol}, company=${identity.companyName}, confidence=${identity.confidence.toFixed(2)}, source=${identity.resolutionSource}`,
-    );
-    if (identity.aliases.length > 0) {
-      lines.push(`- aliases=${identity.aliases.join(", ")}`);
-    }
-    if (identity.exchange) {
-      lines.push(`- exchange=${identity.exchange}`);
     }
   }
 
   if (showRawThesis) {
-    lines.push("");
-    lines.push("Thesis (raw markdown):");
+    pushSection("Thesis (raw markdown):");
     lines.push(snapshot.thesis);
-    lines.push("");
   }
 
-  lines.push("Valuation view:");
+  pushSection("Valuation view:");
   lines.push(snapshot.valuationView);
-  lines.push("");
 
-  lines.push("Data quality alerts:");
-  const providerFailures = snapshot.diagnostics?.providerFailures ?? [];
-  const stageIssues = snapshot.diagnostics?.stageIssues ?? [];
-  const metricsDiagnostics = snapshot.diagnostics?.metrics;
-  const companyFactsDiagnostics = snapshot.diagnostics?.metricsCompanyFacts;
-
-  if (
-    providerFailures.length === 0 &&
-    stageIssues.length === 0 &&
-    !metricsDiagnostics
-  ) {
-    lines.push("- none");
-  } else {
-    if (metricsDiagnostics) {
-      lines.push(
-        `- metrics: provider=${metricsDiagnostics.provider}, status=${metricsDiagnostics.status}, metricCount=${metricsDiagnostics.metricCount}${metricsDiagnostics.reason ? `, reason=${metricsDiagnostics.reason}` : ""}${typeof metricsDiagnostics.httpStatus === "number" ? `, httpStatus=${metricsDiagnostics.httpStatus}` : ""}`,
-      );
-    }
-    if (companyFactsDiagnostics) {
-      lines.push(
-        `- metrics-companyfacts: provider=${companyFactsDiagnostics.provider}, status=${companyFactsDiagnostics.status}, metricCount=${companyFactsDiagnostics.metricCount}${companyFactsDiagnostics.reason ? `, reason=${companyFactsDiagnostics.reason}` : ""}${typeof companyFactsDiagnostics.httpStatus === "number" ? `, httpStatus=${companyFactsDiagnostics.httpStatus}` : ""}`,
-      );
-    }
-
-    providerFailures.forEach((failure) => {
-      lines.push(
-        `- provider-failure: source=${failure.source}, provider=${failure.provider}, status=${failure.status}, itemCount=${failure.itemCount}${typeof failure.httpStatus === "number" ? `, httpStatus=${failure.httpStatus}` : ""}${typeof failure.retryable === "boolean" ? `, retryable=${failure.retryable}` : ""}, reason=${failure.reason}`,
-      );
-    });
-
-    stageIssues.forEach((issue) => {
-      lines.push(
-        `- stage-issue: stage=${issue.stage}, status=${issue.status}${issue.provider ? `, provider=${issue.provider}` : ""}${issue.code ? `, code=${issue.code}` : ""}${typeof issue.retryable === "boolean" ? `, retryable=${issue.retryable}` : ""}, reason=${issue.reason}`,
-      );
-    });
-    if (snapshot.diagnostics?.issuerMatchDiagnostics) {
-      const issuerMatch = snapshot.diagnostics.issuerMatchDiagnostics;
-      lines.push(
-        `- issuer-match: title=${issuerMatch.title}, summary=${issuerMatch.summary}, content=${issuerMatch.content}, payload=${issuerMatch.payload}, payloadOnlyRejected=${issuerMatch.payloadOnlyRejected}`,
-      );
-    }
-    if ((snapshot.diagnostics?.fallbackReasonCodes ?? []).length > 0) {
-      lines.push(
-        `- fallback-reasons: ${(snapshot.diagnostics?.fallbackReasonCodes ?? []).join(", ")}`,
-      );
-    }
-  }
-
-  lines.push("");
-
-  lines.push("Risks:");
+  pushSection("Risks:");
   if (snapshot.risks.length === 0) {
     lines.push("- none");
   } else {
@@ -184,8 +216,7 @@ export const formatSnapshotReport = (
   }
 
   if (!snapshot.investorViewV2) {
-    lines.push("");
-    lines.push("Catalysts:");
+    pushSection("Catalysts:");
     if (snapshot.catalysts.length === 0) {
       lines.push("- none");
     } else {
@@ -193,8 +224,7 @@ export const formatSnapshotReport = (
     }
   }
 
-  lines.push("");
-  lines.push("Sources:");
+  pushSection("Sources:");
   if (snapshot.sources.length === 0) {
     lines.push("- none");
   } else {
