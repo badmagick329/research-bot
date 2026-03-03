@@ -63,7 +63,7 @@ const sufficiency = (overrides?: Partial<SufficiencyDiagnostics>): SufficiencyDi
 });
 
 describe("DeterministicSynthesisDecisionPolicy", () => {
-  it("returns watch_low_quality when only sector weakness exists in grace mode", () => {
+  it("returns insufficient_evidence when sufficiency fails", () => {
     const policy = new DeterministicSynthesisDecisionPolicy(3, true, () => "1.00");
 
     const decision = policy.toActionDecision(
@@ -86,7 +86,7 @@ describe("DeterministicSynthesisDecisionPolicy", () => {
       },
     );
 
-    expect(decision).toBe("watch_low_quality");
+    expect(decision).toBe("insufficient_evidence");
   });
 
   it("builds buy seed when weighted signals are strong and sufficiency passes", () => {
@@ -232,7 +232,7 @@ describe("DeterministicSynthesisDecisionPolicy", () => {
     expect(upside?.conditionDirection).toBe("upside");
     expect(upside?.actionClass).toBe("constructive");
     expect(upside?.action).toContain("add selectively");
-    expect(rows.length).toBeGreaterThanOrEqual(3);
+    expect(rows.length).toBeGreaterThanOrEqual(2);
     expect(rows.some((row) => /deteriorates/.test(row.condition) && /add selectively/.test(row.action))).toBeFalse();
   });
 
@@ -267,7 +267,7 @@ describe("DeterministicSynthesisDecisionPolicy", () => {
       },
       metricLabelByName: new Map(),
     });
-    expect(fallbackRows.length).toBe(3);
+    expect(fallbackRows.length).toBe(0);
     expect(policy.validateTriggerRows(fallbackRows)).toHaveLength(0);
   });
 });

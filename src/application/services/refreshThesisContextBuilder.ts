@@ -55,7 +55,7 @@ export const buildRefreshThesisPayload = (
     ? {
         thesisType: snapshot.investorViewV2.thesisType,
         reasonCodes: ["refresh_from_snapshot"],
-        score: 50,
+        confidence: 50,
       }
     : undefined,
   horizonContext:

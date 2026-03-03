@@ -38,7 +38,7 @@ export class ClassifyStockService {
   }
 
   /**
-   * Converts evidence mix into a stable thesis-type classification plus explainable reason codes.
+   * Converts evidence mix into a stable thesis-type classification so downstream action gating can stay conservative when confidence is weak.
    */
   private classify(
     docs: DocumentEntity[],
@@ -57,12 +57,19 @@ export class ClassifyStockService {
       .flatMap((filing) => filing.extractedFacts.map((fact) => `${fact.name}=${fact.value}`))
       .join(" ")}`.toLowerCase();
 
-    if (/(investigation|litigation|merger|acquisition|approval|court|settlement)/.test(corpus)) {
+    const hasEventLanguage =
+      /(investigation|litigation|merger|acquisition|approval|court|settlement|spinoff|bankruptcy)/.test(
+        corpus,
+      );
+    const hasCompounderProfile =
+      growth >= 0.1 && margin >= 0.15 && (pe >= 20 || analystBuyRatio >= 0.65);
+
+    if (hasEventLanguage && !hasCompounderProfile) {
       reasonCodes.push("event_window");
       return {
         thesisType: "event_driven",
         reasonCodes,
-        score: 78,
+        confidence: 78,
       };
     }
 
@@ -71,7 +78,7 @@ export class ClassifyStockService {
       return {
         thesisType: "compounder",
         reasonCodes,
-        score: 82,
+        confidence: 82,
       };
     }
 
@@ -80,7 +87,7 @@ export class ClassifyStockService {
       return {
         thesisType: "value_trap_risk",
         reasonCodes,
-        score: 72,
+        confidence: 72,
       };
     }
 
@@ -89,7 +96,7 @@ export class ClassifyStockService {
       return {
         thesisType: "cyclical",
         reasonCodes,
-        score: 68,
+        confidence: 68,
       };
     }
 
@@ -98,7 +105,7 @@ export class ClassifyStockService {
       return {
         thesisType: "compounder",
         reasonCodes,
-        score: 64,
+        confidence: 64,
       };
     }
 
@@ -107,7 +114,7 @@ export class ClassifyStockService {
       return {
         thesisType: "unclear",
         reasonCodes,
-        score: 35,
+        confidence: 35,
       };
     }
 
@@ -115,7 +122,7 @@ export class ClassifyStockService {
     return {
       thesisType: "unclear",
       reasonCodes,
-      score: 50,
+      confidence: 50,
     };
   }
 }

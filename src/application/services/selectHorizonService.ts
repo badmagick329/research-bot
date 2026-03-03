@@ -34,7 +34,7 @@ export class SelectHorizonService {
   }
 
   /**
-   * Maps thesis type and event timing into one explicit horizon with rationale and confidence score.
+   * Maps observable checkpoint timing into one explicit horizon so horizon selection does not silently reclassify stock type.
    */
   private select(
     payload: JobPayload,
@@ -51,10 +51,10 @@ export class SelectHorizonService {
     const type = payload.thesisTypeContext?.thesisType ?? "unclear";
 
     const fromEvent = typeof eventDaysToNext === "number" && eventDaysToNext >= 0 && eventDaysToNext <= 35;
-    if (fromEvent || type === "event_driven") {
+    if (fromEvent) {
       return this.build(
         "0_4_weeks",
-        "Near-term event window dominates expected price-discovery path.",
+        "Near-term event timing dominates the next investable checkpoint window.",
         78,
       );
     }
@@ -67,7 +67,7 @@ export class SelectHorizonService {
     ) {
       return this.build(
         "1_3_years",
-        "Driver mix is structurally persistent and best judged across multiple reporting cycles.",
+        "Durability of business drivers is best judged across multiple reporting cycles.",
         70,
       );
     }
@@ -75,7 +75,7 @@ export class SelectHorizonService {
     if (latestFilingAgeDays !== null && latestFilingAgeDays <= 120) {
       return this.build(
         "1_2_quarters",
-        "Recent filing context and operating updates imply thesis checkpoints over the next two earnings cycles.",
+        "The next two earnings cycles are the clearest test for operating execution.",
         66,
       );
     }

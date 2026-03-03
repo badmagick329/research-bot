@@ -16,7 +16,7 @@ const payload: JobPayload = {
   thesisTypeContext: {
     thesisType: "compounder",
     reasonCodes: ["high_growth_high_margin"],
-    score: 80,
+    confidence: 80,
   },
 };
 

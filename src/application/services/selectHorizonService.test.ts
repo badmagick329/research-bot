@@ -16,12 +16,12 @@ const payload: JobPayload = {
   thesisTypeContext: {
     thesisType: "event_driven",
     reasonCodes: ["event_window"],
-    score: 80,
+    confidence: 80,
   },
 };
 
 describe("SelectHorizonService", () => {
-  it("selects 0_4_weeks for event-driven context", async () => {
+  it("does not force 0_4_weeks without near-term event timing evidence", async () => {
     const metricsRepo: MetricsRepositoryPort = {
       upsertMany: async () => {},
       listBySymbol: async () => [],
@@ -41,7 +41,7 @@ describe("SelectHorizonService", () => {
     await service.run(payload);
 
     expect(enqueues).toHaveLength(1);
-    expect(enqueues[0]?.horizonContext?.horizon).toBe("0_4_weeks");
+    expect(enqueues[0]?.horizonContext?.horizon).toBe("1_2_quarters");
   });
 });
 

@@ -98,7 +98,7 @@ export class SynthesisInvestorViewBuilder
   }
 
   /**
-   * Converts selected KPI names into investor-facing KPI cards.
+   * Converts selected KPI names into concise investor-facing KPI cards with business interpretation.
    */
   buildInvestorKpis(
     selectedKpiNames: string[],
@@ -106,7 +106,7 @@ export class SynthesisInvestorViewBuilder
     metrics: MetricPointEntity[],
   ): InvestorKpi[] {
     const byName = new Map(metrics.map((metric) => [metric.metricName, metric]));
-    return selectedKpiNames.slice(0, 10).flatMap((name) => {
+    return selectedKpiNames.slice(0, 5).flatMap((name) => {
       const metric = byName.get(name);
       const label = metricLabelByName.get(name);
       if (!metric || !label) {
@@ -123,12 +123,20 @@ export class SynthesisInvestorViewBuilder
         : name.includes("volatility")
           ? "mixed"
           : "unknown";
+      const whyItMatters =
+        name.includes("margin")
+          ? "Margin direction indicates operating leverage and pricing power."
+          : name.includes("cash")
+            ? "Cash generation constrains downside and funds reinvestment."
+            : name.includes("revenue") || name.includes("growth")
+              ? "Growth durability is a primary driver of forward outcomes."
+              : `Tracks ${name.replace(/_/g, " ")} as a core business checkpoint.`;
       return [
         {
           name,
           value,
           trend,
-          whyItMatters: `Tracks ${name.replace(/_/g, " ")} as a core thesis checkpoint.`,
+          whyItMatters,
           evidenceRefs: [label],
         },
       ];

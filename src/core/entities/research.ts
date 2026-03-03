@@ -24,7 +24,6 @@ export type ActionDecision =
   | "buy"
   | "watch"
   | "avoid"
-  | "watch_low_quality"
   | "insufficient_evidence";
 
 export type PositionSizing = "none" | "small" | "medium";
@@ -101,7 +100,22 @@ export type InvestorViewV2 = {
 export type ThesisTypeContext = {
   thesisType: ThesisType;
   reasonCodes: string[];
-  score: number;
+  confidence: number;
+};
+
+export type SelectedKpi = {
+  key: string;
+  value: number | string | null;
+  source: string;
+  relevanceReason: string;
+  category:
+    | "growth"
+    | "margin"
+    | "cashflow"
+    | "balance_sheet"
+    | "valuation"
+    | "segment"
+    | "quality";
 };
 
 export type HorizonContext = {
@@ -123,6 +137,7 @@ export type KpiTemplateContext = {
   required: string[];
   optional: string[];
   selected: string[];
+  selectedKpis?: SelectedKpi[];
   requiredHitCount: number;
   minRequiredForStrongNote: number;
 };

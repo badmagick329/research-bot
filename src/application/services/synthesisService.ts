@@ -1046,6 +1046,15 @@ export class SynthesisService {
   }
 
   /**
+   * Enforces a minimum business-KPI floor so conviction does not rely mostly on valuation ratios.
+   */
+  private hasEnoughBusinessKpis(selectedKpiNames: string[]): boolean {
+    const valuationOnly = /price_to_earnings|price_to_book|market_cap|ev_to_sales|ev_to_ebit/;
+    const businessCount = selectedKpiNames.filter((name) => !valuationOnly.test(name)).length;
+    return businessCount >= 2 && selectedKpiNames.length >= 3;
+  }
+
+  /**
    * Renders compact extracted-fact highlights so filing evidence contributes concrete signals instead of metadata-only labels.
    */
   private formatFilingFactHighlights(filing: FilingEntity): string {
@@ -1236,14 +1245,24 @@ export class SynthesisService {
       selection: relevanceSelection,
       filings,
     });
-    const actionDecision = this.decisionPolicy.toActionDecision(
+    const rawActionDecision = this.decisionPolicy.toActionDecision(
       decisionResult.decision,
       sufficiencyDiagnostics,
       kpiCoverage.diagnostics,
     );
+    const hasEnoughBusinessKpis = this.hasEnoughBusinessKpis(kpiCoverage.selectedCurrentKpiNames);
+    const conservativeActionDecision =
+      payload.thesisTypeContext?.thesisType === "unclear" ||
+      (payload.thesisTypeContext?.confidence ?? 0) < 55 ||
+      !hasEnoughBusinessKpis
+        ? rawActionDecision === "avoid" ||
+          rawActionDecision === "insufficient_evidence"
+          ? rawActionDecision
+          : "watch"
+        : rawActionDecision;
     const evidenceWeak = !sufficiencyDiagnostics.passed;
     const insufficientEvidenceReasons =
-      actionDecision === "insufficient_evidence"
+      conservativeActionDecision === "insufficient_evidence"
         ? Array.from(
             new Set([
               ...sufficiencyDiagnostics.reasonCodes,
@@ -1357,7 +1376,7 @@ export class SynthesisService {
     const fallbackTriggeredByScore = thesisQuality.score;
     if (fallbackTriggeredByScore < this.thesisQualityMinScore) {
       thesis = this.thesisGuard.buildDeterministicFallbackThesis({
-        actionDecision,
+        actionDecision: conservativeActionDecision,
         actionMatrix,
         evidenceMapLines,
         selectedDocs,
@@ -1404,9 +1423,15 @@ export class SynthesisService {
     );
     thesis = this.thesisGuard.upsertFinalDecisionPresentation(
       thesis,
-      actionDecision,
+      fallbackApplied && conservativeActionDecision === "buy"
+        ? "watch"
+        : conservativeActionDecision,
       actionMatrix,
     );
+    const finalActionDecision: ActionDecision =
+      fallbackApplied && conservativeActionDecision === "buy"
+        ? "watch"
+        : conservativeActionDecision;
     const confidenceV2 = this.investorViewBuilder.buildConfidenceDecomposition({
       selectedDocs,
       metrics: latestMetrics,
@@ -1458,8 +1483,11 @@ export class SynthesisService {
     const investorViewV2: InvestorViewV2 = {
       thesisType: payload.thesisTypeContext?.thesisType ?? "unclear",
       action: {
-        decision: actionDecision,
-        positionSizing: this.decisionPolicy.toPositionSizing(actionDecision),
+        decision: finalActionDecision,
+        positionSizing:
+          fallbackApplied && finalActionDecision === "watch"
+            ? "small"
+            : this.decisionPolicy.toPositionSizing(finalActionDecision),
       },
       horizon: {
         bucket: (payload.horizonContext?.horizon ?? "1_2_quarters") as HorizonBucket,
@@ -1469,32 +1497,28 @@ export class SynthesisService {
       },
       summary: {
         oneLineThesis:
-          actionDecision === "insufficient_evidence"
+          finalActionDecision === "insufficient_evidence"
             ? "Evidence is currently insufficient for a high-conviction directional call."
-            : actionDecision === "watch_low_quality"
-              ? "Directional signal exists, but sector KPI quality is below strong-note quality."
-              : `Current evidence supports a ${actionDecision} stance from normalized signal strength and sufficiency checks.`,
+            : finalActionDecision === "watch"
+              ? "Current evidence supports monitoring execution, not a high-conviction directional bet."
+              : `Current evidence supports a ${finalActionDecision} stance on business execution over the selected horizon.`,
       },
       variantView: {
         pricedInNarrative:
           "Market appears priced for continuation of recent operating and valuation trajectory.",
         ourVariant:
-          actionDecision === "insufficient_evidence"
-            ? "Sufficiency and signal coverage do not yet support a differentiated variant."
-            : actionDecision === "watch_low_quality"
-              ? "Core KPI direction is visible, but sector signal depth remains shallow."
-              : "Expected outcome depends on whether weighted KPI signals persist through upcoming checkpoints.",
+          finalActionDecision === "insufficient_evidence"
+            ? "Current evidence does not yet support a differentiated variant view."
+            : "Expected outcome depends on whether key business KPIs hold through upcoming checkpoints.",
         whyMispriced:
-          actionDecision === "insufficient_evidence"
-            ? "Signal pack is incomplete or stale across critical dimensions."
-            : actionDecision === "watch_low_quality"
-              ? "Partial sector KPI coverage can understate sector-specific risk/reward."
-              : "Current pricing may under/overweight durability of the strongest normalized signals.",
+          finalActionDecision === "insufficient_evidence"
+            ? "Evidence quality and KPI depth remain too limited for a strong variant call."
+            : "Current pricing may under/overweight durability of the most material business drivers.",
       },
       drivers: investorDrivers.slice(0, 4),
       keyKpis: investorKpis.slice(0, 10),
       catalysts: investorCatalysts.slice(0, 5),
-      falsification: falsification.slice(0, 3),
+      falsification: falsification.slice(0, 2),
       valuation: {
         valuationFramework: "multiples + growth durability + filing context",
         keyMultiples: latestMetrics

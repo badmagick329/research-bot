@@ -26,7 +26,7 @@ export class DeterministicSynthesisDecisionPolicy
   ) {}
 
   /**
-   * Builds deterministic trigger rows from highest-impact normalized signals so falsifiers stay specific and auditable.
+   * Builds deterministic checkpoint rows from strongest metric/filing evidence so investor-facing falsifiers stay business-specific.
    */
   buildActionMatrix(
     signalPack: SignalPack,
@@ -98,7 +98,7 @@ export class DeterministicSynthesisDecisionPolicy
         label: "Regulatory filing risk",
         currentValue: filingRisk ? "true" : "false",
         triggerKind: "filing",
-        condition: "If mentions_regulatory_action becomes true",
+        condition: "If filings indicate rising regulatory or legal pressure",
         conditionDirection: "downside",
         actionClass: "defensive",
         action: "then reduce risk exposure",
@@ -127,12 +127,7 @@ export class DeterministicSynthesisDecisionPolicy
       })
       .slice(0, 5);
 
-    const withFloor = this.ensureMinimumTriggerRows(
-      ordered,
-      signalPack,
-      metricLabelByName,
-    );
-    return withFloor.slice(0, 5);
+    return ordered.slice(0, 5);
   }
 
   /**
@@ -140,7 +135,7 @@ export class DeterministicSynthesisDecisionPolicy
    */
   validateTriggerRows(rows: ActionMatrixRow[]): string[] {
     const violations: string[] = [];
-    if (rows.length < 3 || rows.length > 5) {
+    if (rows.length > 5) {
       violations.push(`trigger_count_out_of_bounds_${rows.length}`);
     }
     rows.forEach((row) => {
@@ -171,8 +166,7 @@ export class DeterministicSynthesisDecisionPolicy
     signalPack: SignalPack;
     metricLabelByName: Map<string, string>;
   }): ActionMatrixRow[] {
-    const coverageRows = this.buildCoverageRows(args.signalPack, args.metricLabelByName);
-    return coverageRows.slice(0, 3);
+    return [];
   }
 
   /**
@@ -360,7 +354,7 @@ export class DeterministicSynthesisDecisionPolicy
   }
 
   /**
-   * Maps directional seed and sufficiency diagnostics into public action states while preserving low-quality watch semantics.
+   * Maps directional seed and sufficiency diagnostics into conservative public action states.
    */
   toActionDecision(
     decision: "buy" | "watch" | "avoid",
@@ -368,26 +362,11 @@ export class DeterministicSynthesisDecisionPolicy
     kpiCoverage: KpiCoverageDiagnostics,
   ): ActionDecision {
     if (!sufficiency.passed) {
-      const onlySectorWeakness =
-        sufficiency.missingCriticalDimensions.length === 0 &&
-        sufficiency.reasonCodes.includes("sector_kpi_depth_weak");
-      if (
-        this.graceAllowOnSectorWeakness &&
-        onlySectorWeakness &&
-        kpiCoverage.mode === "grace_low_quality"
-      ) {
-        return "watch_low_quality";
-      }
       return "insufficient_evidence";
     }
 
-    if (
-      this.graceAllowOnSectorWeakness &&
-      kpiCoverage.mode === "grace_low_quality" &&
-      kpiCoverage.sectorExpectedCount > 0 &&
-      kpiCoverage.sectorCurrentCount + kpiCoverage.sectorCarriedCount < 1
-    ) {
-      return "watch_low_quality";
+    if (decision === "buy" && kpiCoverage.coreCurrentCount + kpiCoverage.coreCarriedCount < 3) {
+      return "watch";
     }
 
     return decision;
@@ -410,7 +389,7 @@ export class DeterministicSynthesisDecisionPolicy
    * Projects trigger rows into investor-facing falsification blocks without leaking policy internals.
    */
   buildFalsification(actionMatrix: ActionMatrixRow[]) {
-    return actionMatrix.slice(0, 5).map((row) => ({
+    return actionMatrix.slice(0, 2).map((row) => ({
       condition: row.condition,
       type: row.hasNumericThreshold ? "numeric" : "event",
       thresholdOrOutcome: row.currentValue,
@@ -443,80 +422,6 @@ export class DeterministicSynthesisDecisionPolicy
       return `${Math.max(1, Math.round(metricValue * multiplier))} days`;
     }
     return Number.parseFloat((metricValue * multiplier).toFixed(2)).toString();
-  }
-
-  /**
-   * Enforces a minimum trigger floor so outputs keep actionable falsification structure even in sparse runs.
-   */
-  private ensureMinimumTriggerRows(
-    rows: ActionMatrixRow[],
-    signalPack: SignalPack,
-    metricLabelByName: Map<string, string>,
-  ): ActionMatrixRow[] {
-    if (rows.length >= 3) {
-      return rows;
-    }
-    const seen = new Set(rows.map((row) => row.signalId));
-    const enriched = [...rows];
-    for (const row of this.buildCoverageRows(signalPack, metricLabelByName)) {
-      if (enriched.length >= 3) {
-        break;
-      }
-      if (seen.has(row.signalId)) {
-        continue;
-      }
-      enriched.push(row);
-      seen.add(row.signalId);
-    }
-    return enriched;
-  }
-
-  /**
-   * Builds deterministic neutral coverage triggers as fillers when signal-specific rows are insufficient.
-   */
-  private buildCoverageRows(
-    signalPack: SignalPack,
-    metricLabelByName: Map<string, string>,
-  ): ActionMatrixRow[] {
-    const primaryMetricCitation = Array.from(metricLabelByName.values())[0] ?? "M1";
-    return [
-      {
-        signalId: "signal_minimum_coverage",
-        label: "Signal coverage checkpoint",
-        currentValue: `${signalPack.coverage.totalSignals} signals`,
-        triggerKind: "coverage",
-        condition: `If total normalized signals moves below ${this.thesisTriggerMinNumeric}`,
-        conditionDirection: "neutral",
-        actionClass: "neutral",
-        action: "then re-evaluate decision confidence",
-        citations: [primaryMetricCitation],
-        hasNumericThreshold: true,
-      },
-      {
-        signalId: "signal_freshness_coverage",
-        label: "Signal freshness checkpoint",
-        currentValue: `${signalPack.coverage.freshSignals} fresh signals`,
-        triggerKind: "coverage",
-        condition: "If fresh signal count moves below 2",
-        conditionDirection: "neutral",
-        actionClass: "neutral",
-        action: "then hold size constant",
-        citations: [primaryMetricCitation],
-        hasNumericThreshold: true,
-      },
-      {
-        signalId: "signal_staleness_coverage",
-        label: "Signal staleness checkpoint",
-        currentValue: `${signalPack.coverage.staleSignals} stale signals`,
-        triggerKind: "coverage",
-        condition: "If stale signal count moves above 2",
-        conditionDirection: "downside",
-        actionClass: "defensive",
-        action: "then reduce risk exposure",
-        citations: [primaryMetricCitation],
-        hasNumericThreshold: true,
-      },
-    ];
   }
 
   /**
