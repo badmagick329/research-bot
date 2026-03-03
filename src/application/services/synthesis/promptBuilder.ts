@@ -27,6 +27,7 @@ export class SynthesisPromptBuilder implements SynthesisPromptBuilderPort {
     macroLines: string;
     filingLines: string;
     memoryLines: string;
+    selectedKpiNames: string[];
     decisionFromContext: ThesisDecision;
     decisionReasonLines: string;
     relevanceSelection: RelevanceSelection;
@@ -105,6 +106,11 @@ export class SynthesisPromptBuilder implements SynthesisPromptBuilderPort {
       "Cross-run memory (semantic matches, prior runs):",
       args.memoryLines,
       "",
+      "Selected KPI anchors for this note:",
+      args.selectedKpiNames.length > 0
+        ? `- ${args.selectedKpiNames.join(", ")}`
+        : "- none",
+      "",
       "Deterministic decision seed:",
       `- decision=${args.decisionFromContext}`,
       args.decisionReasonLines,
@@ -123,9 +129,9 @@ export class SynthesisPromptBuilder implements SynthesisPromptBuilderPort {
       "  # Valuation View",
       "  # Decision",
       "- Keep each section concise and business-specific.",
-      "- One-line thesis must include one business driver, one horizon-relevant condition, and one stock implication.",
+      "- One-line thesis must include one selected KPI, one business driver, one horizon-relevant condition, and one stock implication.",
       "- Include 3-5 KPIs with interpretation; at least two must be operational or financial business KPIs (not valuation ratios).",
-      "- Include at most 2 catalysts and at most 2 falsifiers. Do not fabricate if evidence is weak.",
+      "- Include at most 2 catalysts and at most 2 falsifiers. Each must reference a selected KPI or clear business checkpoint. Do not fabricate if evidence is weak.",
       "- Use R# memory references only as supporting context, never as primary support for a buy call.",
       "- Mention macro only when it is directly thesis-critical; otherwise keep macro context out of the investor note.",
       "- If evidenceWeak=true, default decision to Watch or Insufficient Evidence unless contradiction is strong.",

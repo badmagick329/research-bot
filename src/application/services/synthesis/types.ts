@@ -268,6 +268,7 @@ export interface SynthesisPromptBuilderPort {
     macroLines: string;
     filingLines: string;
     memoryLines: string;
+    selectedKpiNames: string[];
     decisionFromContext: ThesisDecision;
     decisionReasonLines: string;
     relevanceSelection: RelevanceSelection;
@@ -324,6 +325,7 @@ export interface SynthesisThesisGuardPort {
     shouldForceIdentityUncertainty: boolean,
     evidenceWeak: boolean,
     memoryCount: number,
+    selectedKpiNames: string[],
   ): string[];
 
   /**

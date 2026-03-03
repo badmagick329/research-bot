@@ -146,8 +146,8 @@ export class BuildKpiTreeService {
 
     const selected = scored.map((entry) => entry.item).slice(0, 5);
     const businessCount = selected.filter((kpi) => kpi.category !== "valuation").length;
-    if (businessCount >= 2) {
-      return selected.slice(0, Math.max(3, Math.min(5, selected.length)));
+    if (businessCount >= 2 && selected.length >= 3) {
+      return selected.slice(0, Math.min(5, selected.length));
     }
 
     const businessFallback = scored
@@ -158,7 +158,22 @@ export class BuildKpiTreeService {
       .map((entry) => entry.item)
       .filter((kpi) => kpi.category === "valuation")
       .slice(0, 3);
-    return [...businessFallback, ...valuationFallback].slice(0, 5);
+    const combined = [...businessFallback, ...valuationFallback];
+    if (combined.length >= 3) {
+      return combined.slice(0, 5);
+    }
+
+    const fallbackFill = metrics
+      .filter((metric) => !combined.some((item) => item.key === metric.metricName))
+      .slice(0, Math.max(0, 3 - combined.length))
+      .map((metric) => ({
+        key: metric.metricName,
+        value: Number.isFinite(metric.metricValue) ? metric.metricValue : null,
+        source: metric.provider,
+        relevanceReason: `${metric.metricName.replace(/_/g, " ")} is retained to keep KPI coverage explicit when evidence is sparse.`,
+        category: categorize(metric.metricName),
+      } satisfies SelectedKpi));
+    return [...combined, ...fallbackFill].slice(0, 5);
   }
 }
 

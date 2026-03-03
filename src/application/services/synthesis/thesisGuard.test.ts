@@ -15,7 +15,7 @@ describe("DeterministicSynthesisThesisGuard", () => {
 
   it("reports missing headings for invalid thesis", () => {
     const guard = new DeterministicSynthesisThesisGuard(3, 80, 0, () => "1.00");
-    const issues = guard.validateThesis("short text", true, false, false, 0);
+    const issues = guard.validateThesis("short text", true, false, false, 0, []);
     expect(issues.some((issue) => issue.includes("Missing heading"))).toBeTrue();
   });
 });

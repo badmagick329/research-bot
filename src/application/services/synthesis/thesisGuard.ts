@@ -78,6 +78,7 @@ export class DeterministicSynthesisThesisGuard implements SynthesisThesisGuardPo
     shouldForceIdentityUncertainty: boolean,
     _evidenceWeak: boolean,
     _memoryCount: number,
+    selectedKpiNames: string[],
   ): string[] {
     const issues: string[] = [];
     const usesLegacyLayout = thesis.includes("# Action Summary");
@@ -143,6 +144,20 @@ export class DeterministicSynthesisThesisGuard implements SynthesisThesisGuardPo
       ) {
         issues.push("One-line thesis is generic.");
       }
+      const normalizedOneLine = (oneLineSection ?? "").toLowerCase();
+      const hasKpiMention = selectedKpiNames.some((name) => {
+        const normalized = name.toLowerCase().replace(/_/g, " ");
+        return normalizedOneLine.includes(normalized);
+      });
+      if (selectedKpiNames.length > 0 && !hasKpiMention) {
+        issues.push("One-line thesis must reference at least one selected KPI.");
+      }
+      const hasBusinessDriver = /\b(revenue|margin|demand|pricing|volume|cash flow|backlog|utilization|segment|execution|customer)\b/i.test(
+        normalizedOneLine,
+      );
+      if (!hasBusinessDriver) {
+        issues.push("One-line thesis must include a business driver.");
+      }
     }
 
     const kpiSection = usesLegacyLayout
@@ -163,6 +178,25 @@ export class DeterministicSynthesisThesisGuard implements SynthesisThesisGuardPo
     const falsifiers = this.extractHeadingSection(thesis, "Falsifiers");
     if ((falsifiers ?? "").length > 0 && /normalized|signal|coverage|compiled trigger|invariant/i.test(falsifiers ?? "")) {
       issues.push("Falsifiers contain internal-system wording.");
+    }
+    const catalysts = this.extractHeadingSection(thesis, "Catalysts");
+    const hasCheckpointLanguage = (value: string | null): boolean =>
+      /\b(earnings|filing|guidance|launch|contract|approval|margin|revenue|cash flow|backlog|demand)\b/i.test(
+        value ?? "",
+      );
+    const hasSelectedKpiReference = (value: string | null): boolean =>
+      selectedKpiNames.some((name) =>
+        (value ?? "")
+          .toLowerCase()
+          .includes(name.toLowerCase().replace(/_/g, " ")),
+      );
+    if (!usesLegacyLayout) {
+      if ((falsifiers ?? "").length > 0 && !hasCheckpointLanguage(falsifiers) && !hasSelectedKpiReference(falsifiers)) {
+        issues.push("Falsifiers must reference selected KPIs or business checkpoints.");
+      }
+      if ((catalysts ?? "").length > 0 && !hasCheckpointLanguage(catalysts) && !hasSelectedKpiReference(catalysts)) {
+        issues.push("Catalysts must reference selected KPIs or business checkpoints.");
+      }
     }
 
     if (hasEvidence) {

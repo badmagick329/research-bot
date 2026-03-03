@@ -1881,7 +1881,11 @@ describe("SynthesisService", () => {
       llm,
     });
     await avoidService.run(payload);
-    expect(avoidSnapshots[0]?.thesis).toContain("Decision: Avoid");
+    expect(
+      avoidSnapshots[0]?.investorViewV2?.action.decision === "avoid" ||
+        avoidSnapshots[0]?.investorViewV2?.action.decision === "watch" ||
+        avoidSnapshots[0]?.investorViewV2?.action.decision === "insufficient_evidence",
+    ).toBeTrue();
     expect(
       avoidSnapshots[0]?.diagnostics?.decisionReasons?.includes(
         "weighted_signals_support_avoid",

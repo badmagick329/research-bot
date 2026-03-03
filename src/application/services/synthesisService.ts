@@ -32,6 +32,7 @@ import type {
   PositionSizing,
   ResolvedCompanyIdentity,
   SignalPack,
+  SpecificityDiagnostics,
   SnapshotProviderFailureDiagnostics,
   SnapshotStageDiagnostics,
   SufficiencyDiagnostics,
@@ -1003,6 +1004,258 @@ export class SynthesisService {
   }
 
   /**
+   * Resolves a durable KPI anchor set so note construction stays KPI-first even when current-run coverage is sparse.
+   */
+  private resolveAnchoredKpiNames(
+    selectedCurrentKpiNames: string[],
+    requiredKpiNames: string[],
+    metricNames: string[],
+  ): string[] {
+    const resolved: string[] = [];
+    const pushUnique = (name: string) => {
+      if (!resolved.includes(name)) {
+        resolved.push(name);
+      }
+    };
+
+    selectedCurrentKpiNames.forEach(pushUnique);
+    requiredKpiNames.forEach(pushUnique);
+    metricNames.forEach(pushUnique);
+
+    const minimum = 3;
+    const maximum = 5;
+    const bounded = resolved.slice(0, maximum);
+    if (bounded.length >= minimum) {
+      return bounded;
+    }
+
+    const valuationHeavy = bounded.filter((name) =>
+      this.isValuationMetricName(name),
+    ).length;
+    if (valuationHeavy >= bounded.length) {
+      const nonValuationFallback = metricNames.filter(
+        (name) => !this.isValuationMetricName(name),
+      );
+      nonValuationFallback.forEach(pushUnique);
+      return resolved.slice(0, maximum);
+    }
+
+    return bounded;
+  }
+
+  /**
+   * Computes specificity diagnostics so confidence and action are constrained by thesis usefulness, not only formatting.
+   */
+  private computeSpecificityDiagnostics(args: {
+    thesis: string;
+    selectedKpiNames: string[];
+    investorKpis: InvestorKpi[];
+    catalysts: InvestorCatalyst[];
+    falsification: FalsificationCondition[];
+  }): SpecificityDiagnostics {
+    const reasonCodes = new Set<string>();
+    const selectedKpis = args.selectedKpiNames.slice(0, 5);
+    const valuationCount = selectedKpis.filter((name) =>
+      this.isValuationMetricName(name),
+    ).length;
+    const businessCount = selectedKpis.length - valuationCount;
+    let kpiRelevanceScore = 100;
+    if (selectedKpis.length < 3) {
+      kpiRelevanceScore -= 40;
+      reasonCodes.add("kpi_count_below_floor");
+    }
+    if (businessCount < 2) {
+      kpiRelevanceScore -= 35;
+      reasonCodes.add("business_kpi_count_below_floor");
+    }
+    if (valuationCount >= Math.max(1, selectedKpis.length - 1)) {
+      kpiRelevanceScore -= 25;
+      reasonCodes.add("kpi_set_valuation_heavy");
+    }
+    if (args.investorKpis.length < 3) {
+      kpiRelevanceScore -= 20;
+      reasonCodes.add("investor_kpis_sparse");
+    }
+    kpiRelevanceScore = Math.max(0, Math.min(100, Math.round(kpiRelevanceScore)));
+
+    const oneLineThesis = this.extractSectionBody(args.thesis, "One-line Thesis") ?? "";
+    let thesisSpecificityScore = 100;
+    if (oneLineThesis.length < 45) {
+      thesisSpecificityScore -= 35;
+      reasonCodes.add("one_line_thesis_too_short");
+    }
+    if (
+      /\b(attractive|supports|available evidence|monitor|may|could|watch for|balanced)\b/i.test(
+        oneLineThesis,
+      )
+    ) {
+      thesisSpecificityScore -= 20;
+      reasonCodes.add("one_line_thesis_generic_wording");
+    }
+    if (!this.containsSelectedKpiReference(oneLineThesis, selectedKpis)) {
+      thesisSpecificityScore -= 25;
+      reasonCodes.add("one_line_thesis_missing_selected_kpi");
+    }
+    if (
+      !/\b(revenue|margin|demand|pricing|volume|cash flow|backlog|utilization|segment|execution|customer|bookings)\b/i.test(
+        oneLineThesis,
+      )
+    ) {
+      thesisSpecificityScore -= 20;
+      reasonCodes.add("one_line_thesis_missing_business_driver");
+    }
+    if (!/\b(\d+(\.\d+)?%?|\bweek|\bquarter|\byear|Q[1-4])\b/i.test(oneLineThesis)) {
+      thesisSpecificityScore -= 15;
+      reasonCodes.add("one_line_thesis_missing_time_or_numeric_anchor");
+    }
+    thesisSpecificityScore = Math.max(
+      0,
+      Math.min(100, Math.round(thesisSpecificityScore)),
+    );
+
+    let falsifierSpecificityScore = 100;
+    if (args.falsification.length === 0) {
+      falsifierSpecificityScore = 20;
+      reasonCodes.add("falsifiers_missing");
+    } else {
+      const topFalsifiers = args.falsification.slice(0, 2);
+      const hasKpiReference = topFalsifiers.some((item) =>
+        this.containsSelectedKpiReference(
+          `${item.condition} ${item.thresholdOrOutcome}`,
+          selectedKpis,
+        ),
+      );
+      const hasNumericThreshold = topFalsifiers.some((item) =>
+        /\d+(\.\d+)?%?/.test(`${item.condition} ${item.thresholdOrOutcome}`),
+      );
+      const hasEventAnchor = topFalsifiers.some((item) =>
+        /\b(earnings|guidance|filing|contract|launch|approval|margin|revenue|cash flow|backlog|demand)\b/i.test(
+          `${item.condition} ${item.thresholdOrOutcome}`,
+        ),
+      );
+      const hasDeadline = topFalsifiers.some(
+        (item) => item.deadline.trim().length > 6 && !/tbd|unknown/i.test(item.deadline),
+      );
+      falsifierSpecificityScore = 45;
+      falsifierSpecificityScore += hasKpiReference ? 20 : 0;
+      falsifierSpecificityScore += hasNumericThreshold ? 15 : 0;
+      falsifierSpecificityScore += hasEventAnchor ? 10 : 0;
+      falsifierSpecificityScore += hasDeadline ? 10 : 0;
+      if (!hasKpiReference) {
+        reasonCodes.add("falsifiers_missing_selected_kpi_anchor");
+      }
+      if (!hasNumericThreshold && !hasEventAnchor) {
+        reasonCodes.add("falsifiers_generic");
+      }
+    }
+    falsifierSpecificityScore = Math.max(
+      0,
+      Math.min(100, Math.round(falsifierSpecificityScore)),
+    );
+
+    let catalystSpecificityScore = 100;
+    if (args.catalysts.length === 0) {
+      catalystSpecificityScore = 25;
+      reasonCodes.add("catalysts_missing");
+    } else {
+      const topCatalysts = args.catalysts.slice(0, 2);
+      const hasKpiReference = topCatalysts.some((item) =>
+        this.containsSelectedKpiReference(item.event, selectedKpis),
+      );
+      const hasCheckpointLanguage = topCatalysts.some((item) =>
+        /\b(earnings|guidance|filing|launch|contract|approval|margin|revenue|cash flow|backlog|demand|bookings)\b/i.test(
+          item.event,
+        ),
+      );
+      const hasWindowSpecificity = topCatalysts.some((item) =>
+        /\b(week|month|quarter|year|Q[1-4]|next)\b/i.test(item.window),
+      );
+      const hasEvidenceRef = topCatalysts.some((item) => item.evidenceRefs.length > 0);
+      const genericCatalystCount = topCatalysts.filter((item) =>
+        /\b(update|monitor|execution|operating update)\b/i.test(item.event),
+      ).length;
+      catalystSpecificityScore = 45;
+      catalystSpecificityScore += hasKpiReference ? 20 : 0;
+      catalystSpecificityScore += hasCheckpointLanguage ? 15 : 0;
+      catalystSpecificityScore += hasWindowSpecificity ? 10 : 0;
+      catalystSpecificityScore += hasEvidenceRef ? 10 : 0;
+      catalystSpecificityScore -= genericCatalystCount * 10;
+      if (!hasKpiReference) {
+        reasonCodes.add("catalysts_missing_selected_kpi_anchor");
+      }
+      if (!hasCheckpointLanguage) {
+        reasonCodes.add("catalysts_generic");
+      }
+    }
+    catalystSpecificityScore = Math.max(
+      0,
+      Math.min(100, Math.round(catalystSpecificityScore)),
+    );
+
+    const score = Math.round(
+      kpiRelevanceScore * 0.35 +
+        thesisSpecificityScore * 0.3 +
+        falsifierSpecificityScore * 0.2 +
+        catalystSpecificityScore * 0.15,
+    );
+    return {
+      score: Math.max(0, Math.min(100, score)),
+      kpiRelevanceScore,
+      thesisSpecificityScore,
+      falsifierSpecificityScore,
+      catalystSpecificityScore,
+      reasonCodes: Array.from(reasonCodes).slice(0, 12),
+    };
+  }
+
+  /**
+   * Applies a specificity-based cap so thesis confidence cannot exceed thesis precision quality.
+   */
+  private specificityConfidenceCap(score: number): number {
+    if (score >= 85) {
+      return 90;
+    }
+    if (score >= 70) {
+      return 82;
+    }
+    if (score >= 60) {
+      return 74;
+    }
+    if (score >= 45) {
+      return 65;
+    }
+    return 55;
+  }
+
+  /**
+   * Detects valuation metrics so KPI quality checks can separate valuation context from business KPIs.
+   */
+  private isValuationMetricName(metricName: string): boolean {
+    return /price_to_earnings|price_to_book|market_cap|ev_to_sales|ev_to_ebit/.test(
+      metricName,
+    );
+  }
+
+  /**
+   * Checks whether narrative text references at least one selected KPI anchor.
+   */
+  private containsSelectedKpiReference(text: string, selectedKpiNames: string[]): boolean {
+    const normalizedText = text.toLowerCase();
+    return selectedKpiNames.some((name) =>
+      normalizedText.includes(name.toLowerCase().replace(/_/g, " ")),
+    );
+  }
+
+  /**
+   * Extracts a markdown section body so specificity checks can target investor-facing sections.
+   */
+  private extractSectionBody(thesis: string, heading: string): string | null {
+    const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = thesis.match(new RegExp(`# ${escapedHeading}\\n([\\s\\S]*?)(\\n# |$)`, "i"));
+    return match?.[1]?.trim() ?? null;
+  }
+
+  /**
    * Renders compact extracted-fact highlights so filing evidence contributes concrete signals instead of metadata-only labels.
    */
   private formatFilingFactHighlights(filing: FilingEntity): string {
@@ -1164,6 +1417,11 @@ export class SynthesisService {
       now,
       fallbackSelectedKpiNames,
     });
+    const anchoredKpiNames = this.resolveAnchoredKpiNames(
+      kpiCoverage.selectedCurrentKpiNames,
+      payload.kpiContext?.required ?? [],
+      latestMetrics.map((metric) => metric.metricName),
+    );
     const sufficiencyDiagnostics = this.decisionPolicy.buildSufficiencyDiagnostics({
       selection: relevanceSelection,
       signalPack,
@@ -1239,6 +1497,7 @@ export class SynthesisService {
       macroLines,
       filingLines,
       memoryLines,
+      selectedKpiNames: anchoredKpiNames,
       decisionFromContext: decisionResult.decision,
       decisionReasonLines,
       relevanceSelection,
@@ -1265,6 +1524,7 @@ export class SynthesisService {
       shouldForceIdentityUncertainty,
       evidenceWeak,
       memoryMatches.length,
+      anchoredKpiNames,
     );
     let finalValidationIssues = initialValidationIssues;
 
@@ -1291,6 +1551,7 @@ export class SynthesisService {
         shouldForceIdentityUncertainty,
         evidenceWeak,
         memoryMatches.length,
+        anchoredKpiNames,
       );
       if (repairedIssues.length <= initialValidationIssues.length) {
         thesis = repairedThesis;
@@ -1322,6 +1583,7 @@ export class SynthesisService {
         shouldForceIdentityUncertainty,
         evidenceWeak,
         memoryMatches.length,
+        anchoredKpiNames,
       );
       thesisQuality = this.thesisGuard.scoreThesisQuality(
         thesis,
@@ -1352,12 +1614,6 @@ export class SynthesisService {
       now,
       relevanceCoverage,
     );
-    thesis = this.thesisGuard.upsertFinalDecisionPresentation(
-      thesis,
-      fallbackApplied && conservativeActionDecision === "buy"
-        ? "watch"
-        : conservativeActionDecision,
-    );
     const finalActionDecision: ActionDecision =
       fallbackApplied && conservativeActionDecision === "buy"
         ? "watch"
@@ -1376,7 +1632,7 @@ export class SynthesisService {
     });
     const citationDiagnostics = this.thesisGuard.computeCitationDiagnostics(thesis);
     const investorKpis = this.investorViewBuilder.buildInvestorKpis(
-      kpiCoverage.selectedCurrentKpiNames,
+      anchoredKpiNames,
       metricLabelByName,
       latestMetrics,
     );
@@ -1474,6 +1730,44 @@ export class SynthesisService {
       confidence: confidenceV2,
     };
 
+    const specificityDiagnostics = this.computeSpecificityDiagnostics({
+      thesis,
+      selectedKpiNames: anchoredKpiNames,
+      investorKpis,
+      catalysts: investorCatalysts,
+      falsification,
+    });
+    investorViewV2.confidence.thesisConfidence = Math.min(
+      investorViewV2.confidence.thesisConfidence,
+      this.specificityConfidenceCap(specificityDiagnostics.score),
+    );
+    if (specificityDiagnostics.score < 60) {
+      investorViewV2.confidence.timingConfidence = Math.min(
+        investorViewV2.confidence.timingConfidence,
+        65,
+      );
+    }
+    const specificityConstrainedDecision =
+      specificityDiagnostics.score < 45
+        ? "insufficient_evidence"
+        : specificityDiagnostics.score < 60 &&
+            (investorViewV2.action.decision === "buy" ||
+              investorViewV2.action.decision === "avoid")
+          ? "watch"
+          : investorViewV2.action.decision;
+    investorViewV2.action.decision = specificityConstrainedDecision;
+    investorViewV2.action.positionSizing =
+      specificityConstrainedDecision === "insufficient_evidence"
+        ? "none"
+        : specificityDiagnostics.score < 70 &&
+            specificityConstrainedDecision === "buy"
+          ? "small"
+          : this.decisionPolicy.toPositionSizing(specificityConstrainedDecision);
+    thesis = this.thesisGuard.upsertFinalDecisionPresentation(
+      thesis,
+      investorViewV2.action.decision,
+    );
+
     await this.snapshotRepo.save({
       id: this.ids.next(),
       runId: payload.runId,
@@ -1566,6 +1860,7 @@ export class SynthesisService {
         signalDiagnostics: signalPack,
         sufficiencyDiagnostics,
         decisionScoreBreakdown: decisionResult.scoreBreakdown,
+        specificityDiagnostics,
         insufficientEvidenceReasons,
         missingFields: sufficiencyDiagnostics.missingCriticalDimensions,
         citationCoveragePct: citationDiagnostics.citationCoveragePct,

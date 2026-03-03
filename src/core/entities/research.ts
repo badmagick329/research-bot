@@ -212,6 +212,15 @@ export type DecisionScoreBreakdown = {
   }>;
 };
 
+export type SpecificityDiagnostics = {
+  score: number;
+  kpiRelevanceScore: number;
+  thesisSpecificityScore: number;
+  falsifierSpecificityScore: number;
+  catalystSpecificityScore: number;
+  reasonCodes: string[];
+};
+
 export type ResearchTaskEntity = {
   id: string;
   runId: string;
@@ -382,6 +391,7 @@ export type SnapshotDiagnostics = {
   signalDiagnostics?: SignalPack;
   sufficiencyDiagnostics?: SufficiencyDiagnostics;
   decisionScoreBreakdown?: DecisionScoreBreakdown;
+  specificityDiagnostics?: SpecificityDiagnostics;
   insufficientEvidenceReasons?: string[];
   missingFields?: string[];
   citationCoveragePct?: number;
