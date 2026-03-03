@@ -78,6 +78,17 @@ export type RelevanceSelection = {
     payload: number;
     payloadOnlyRejected: number;
   };
+  payloadOnlyRecovery: {
+    payloadOnlyRatio: number;
+    recoveryInvoked: boolean;
+    recoveryStatus: "not_needed" | "recovered" | "not_recovered";
+    recoveryReason: string;
+    issuerAnchorAvailableBefore: boolean;
+    issuerAnchorAvailableAfter: boolean;
+    issuerAnchorSelectedBefore: number;
+    issuerAnchorSelectedAfter: number;
+    metricHeavyDueToNarrativeGap: boolean;
+  };
   scoreBreakdownSample: Array<{
     title: string;
     composite: number;
@@ -131,6 +142,7 @@ export type ActionMatrixRow = {
   label: string;
   currentValue: string;
   condition: string;
+  conditionDirection: "downside" | "upside" | "neutral";
   action: string;
   citations: string[];
   hasNumericThreshold: boolean;

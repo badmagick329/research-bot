@@ -306,6 +306,15 @@ export type SnapshotDiagnostics = {
     issuerAnchorAvailable?: boolean;
     issuerAnchorAvailableCount?: number;
     issuerAnchorSelectedCount?: number;
+    payloadOnlyRatio?: number;
+    recoveryInvoked?: boolean;
+    recoveryStatus?: "not_needed" | "recovered" | "not_recovered";
+    recoveryReason?: string;
+    issuerAnchorAvailableBefore?: boolean;
+    issuerAnchorAvailableAfter?: boolean;
+    issuerAnchorSelectedBefore?: number;
+    issuerAnchorSelectedAfter?: number;
+    metricHeavyDueToNarrativeGap?: boolean;
     excludedByReason: Record<string, number>;
     scoreBreakdownSample: Array<{
       title: string;

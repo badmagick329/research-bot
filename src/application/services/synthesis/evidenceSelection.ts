@@ -35,6 +35,8 @@ const evidenceClassSortOrder: Record<NewsEvidenceClass, number> = {
 export class DeterministicSynthesisEvidenceSelector
   implements SynthesisEvidenceSelectorPort
 {
+  private readonly payloadOnlyRecoveryRatioThreshold = 0.8;
+
   constructor(
     private readonly relevanceMode: RelevanceMode,
     private readonly issuerMatchMinFields: number,
@@ -106,6 +108,17 @@ export class DeterministicSynthesisEvidenceSelector
           payload: 0,
           payloadOnlyRejected: 0,
         },
+        payloadOnlyRecovery: {
+          payloadOnlyRatio: 0,
+          recoveryInvoked: false,
+          recoveryStatus: "not_needed",
+          recoveryReason: "no_documents",
+          issuerAnchorAvailableBefore: false,
+          issuerAnchorAvailableAfter: false,
+          issuerAnchorSelectedBefore: 0,
+          issuerAnchorSelectedAfter: 0,
+          metricHeavyDueToNarrativeGap: false,
+        },
         scoreBreakdownSample: [],
       };
     }
@@ -114,6 +127,82 @@ export class DeterministicSynthesisEvidenceSelector
       args.symbol,
       args.identity,
     );
+    const baseline = this.evaluateRelevanceSelection({
+      docs: args.docs,
+      identityPatterns,
+      horizon: args.horizon,
+      selectedKpiNames: args.selectedKpiNames,
+    });
+    const payloadOnlyRatio =
+      args.docs.length === 0
+        ? 0
+        : Number.parseFloat(
+            (
+              baseline.issuerMatchDiagnostics.payloadOnlyRejected /
+              Math.max(1, args.docs.length)
+            ).toFixed(4),
+          );
+    const shouldAttemptRecovery =
+      payloadOnlyRatio >= this.payloadOnlyRecoveryRatioThreshold &&
+      baseline.issuerAnchorCount === 0;
+
+    const recoveryTokens = shouldAttemptRecovery
+      ? this.buildCompanyRecoveryTokens(args.identity)
+      : new Set<string>();
+    const recovered =
+      shouldAttemptRecovery && recoveryTokens.size > 0
+        ? this.evaluateRelevanceSelection({
+            docs: args.docs,
+            identityPatterns,
+            horizon: args.horizon,
+            selectedKpiNames: args.selectedKpiNames,
+            recoveryCompanyTokens: recoveryTokens,
+          })
+        : undefined;
+    const recoveredIssuerAnchorCount = recovered?.issuerAnchorCount ?? 0;
+    const useRecovered =
+      Boolean(recovered) && recoveredIssuerAnchorCount > baseline.issuerAnchorCount;
+    const selected = useRecovered && recovered ? recovered : baseline;
+    const recoveryStatus = !shouldAttemptRecovery
+      ? "not_needed"
+      : useRecovered
+        ? "recovered"
+        : "not_recovered";
+    const recoveryReason = !shouldAttemptRecovery
+      ? "payload_only_ratio_below_threshold_or_issuer_anchor_present"
+      : recoveryTokens.size === 0
+        ? "missing_company_tokens"
+        : useRecovered
+          ? "issuer_anchor_recovered"
+          : "issuer_anchor_not_recovered";
+
+    return {
+      ...selected,
+      payloadOnlyRecovery: {
+        payloadOnlyRatio,
+        recoveryInvoked: shouldAttemptRecovery,
+        recoveryStatus,
+        recoveryReason,
+        issuerAnchorAvailableBefore: baseline.issuerAnchorAvailable,
+        issuerAnchorAvailableAfter: selected.issuerAnchorAvailable,
+        issuerAnchorSelectedBefore: baseline.issuerAnchorCount,
+        issuerAnchorSelectedAfter: selected.issuerAnchorCount,
+        metricHeavyDueToNarrativeGap:
+          selected.issuerAnchorCount === 0 && selected.selected.length === 0,
+      },
+    };
+  }
+
+  /**
+   * Executes one deterministic relevance pass so baseline and recovery runs share identical ranking logic.
+   */
+  private evaluateRelevanceSelection(args: {
+    docs: DocumentEntity[];
+    identityPatterns: IssuerIdentityPatterns;
+    horizon: HorizonBucket;
+    selectedKpiNames: string[];
+    recoveryCompanyTokens?: Set<string>;
+  }): Omit<RelevanceSelection, "payloadOnlyRecovery"> {
     const excludedHeadlineReasons: ExcludedHeadlineReason[] = [];
     const excludedHeadlineReasonSamples: string[] = [];
     const excludedByReason: Record<string, number> = {};
@@ -133,10 +222,16 @@ export class DeterministicSynthesisEvidenceSelector
     };
     const excludedByClassAndReason: Record<string, Record<string, number>> = {};
     const prefilterClassCountsBefore: Record<NewsDocumentClass, number> = {
-      ...emptyPrefilterClassCounts,
+      issuer_news: 0,
+      read_through_news: 0,
+      market_context: 0,
+      generic_market_noise: 0,
     };
     const prefilterClassCountsAfter: Record<NewsDocumentClass, number> = {
-      ...emptyPrefilterClassCounts,
+      issuer_news: 0,
+      read_through_news: 0,
+      market_context: 0,
+      generic_market_noise: 0,
     };
     const issuerMatchDiagnostics = {
       title: 0,
@@ -149,7 +244,11 @@ export class DeterministicSynthesisEvidenceSelector
     const seenUrl = new Set<string>();
     const scored: NewsScoredItem[] = [];
     args.docs.forEach((doc) => {
-      const match = this.matchesIssuerIdentity(doc, identityPatterns);
+      const match = this.matchesIssuerIdentity(
+        doc,
+        args.identityPatterns,
+        args.recoveryCompanyTokens,
+      );
       if (match.matchedFields.includes("title")) {
         issuerMatchDiagnostics.title += 1;
       }
@@ -445,6 +544,41 @@ export class DeterministicSynthesisEvidenceSelector
   }
 
   /**
+   * Builds strict recovery tokens from company name words so payload-only spikes can retry narrative matching without using payload hints.
+   */
+  private buildCompanyRecoveryTokens(
+    identity: ResolvedCompanyIdentity | undefined,
+  ): Set<string> {
+    if (!identity) {
+      return new Set<string>();
+    }
+    const ignored = new Set([
+      "inc",
+      "incorporated",
+      "corp",
+      "corporation",
+      "co",
+      "company",
+      "ltd",
+      "limited",
+      "plc",
+      "holdings",
+      "group",
+      "class",
+      "common",
+      "com",
+    ]);
+    return new Set(
+      identity.companyName
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 4 && !ignored.has(token)),
+    );
+  }
+
+  /**
    * Decides whether synthesis must force identity uncertainty messaging based on resolution confidence and evidence quality.
    */
   shouldForceIdentityUncertainty(
@@ -593,6 +727,7 @@ export class DeterministicSynthesisEvidenceSelector
   private matchesIssuerIdentity(
     doc: DocumentEntity,
     patterns: IssuerIdentityPatterns,
+    recoveryCompanyTokens?: Set<string>,
   ): IssuerMatchResult {
     const normalize = (value: string) =>
       value
@@ -634,8 +769,24 @@ export class DeterministicSynthesisEvidenceSelector
 
       return false;
     };
+    const matchesRecoveryCompanyTokens = (
+      fieldValue: string,
+      tokens: Set<string>,
+    ): boolean => {
+      if (!fieldValue || tokens.size === 0) {
+        return false;
+      }
+      for (const token of tokens) {
+        const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp(`\\b${escaped}\\b`, "i").test(fieldValue)) {
+          return true;
+        }
+      }
+      return false;
+    };
 
     const matchedFields = new Set<IssuerMatchField>();
+    const narrativeRecoveryTokens = recoveryCompanyTokens ?? new Set<string>();
     let titleMatched = false;
     let summaryMatched = false;
     let contentMatched = false;
@@ -664,7 +815,10 @@ export class DeterministicSynthesisEvidenceSelector
           patterns.companyExactTokens,
           patterns.companyPhraseTokens,
         );
-        if (tokenMatch || aliasMatch || companyMatch) {
+        const recoveryTokenMatch =
+          field !== "payload" &&
+          matchesRecoveryCompanyTokens(fieldValue, narrativeRecoveryTokens);
+        if (tokenMatch || aliasMatch || companyMatch || recoveryTokenMatch) {
           matchedFields.add(field);
           if (field === "title") {
             titleMatched = true;
@@ -680,6 +834,9 @@ export class DeterministicSynthesisEvidenceSelector
           matchedFields.add("alias");
         }
         if (companyMatch) {
+          matchedFields.add("company");
+        }
+        if (recoveryTokenMatch) {
           matchedFields.add("company");
         }
       });

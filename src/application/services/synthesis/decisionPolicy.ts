@@ -49,11 +49,20 @@ export class DeterministicSynthesisDecisionPolicy
 
       const currentValue = `${this.formatMetricValue(metric)}${metric.metricUnit ? ` ${metric.metricUnit}` : ""}`;
       const threshold = this.deriveThreshold(metric.metricName, metric.metricValue, signal.direction);
-      const condition = `If ${metric.metricName.replace(/_/g, " ")} ${signal.direction === "negative" ? "moves above" : "moves below"} ${threshold}`;
+      const conditionDirection: ActionMatrixRow["conditionDirection"] =
+        signal.direction === "neutral" ? "neutral" : signal.direction === "negative" ? "downside" : "upside";
+      const condition =
+        conditionDirection === "downside"
+          ? `If ${metric.metricName.replace(/_/g, " ")} deteriorates above ${threshold}`
+          : conditionDirection === "upside"
+            ? `If ${metric.metricName.replace(/_/g, " ")} improves above ${threshold}`
+            : `If ${metric.metricName.replace(/_/g, " ")} remains near ${threshold}`;
       const action =
-        signal.direction === "negative"
+        conditionDirection === "downside"
           ? "then reduce risk exposure"
-          : "then add selectively";
+          : conditionDirection === "upside"
+            ? "then add selectively"
+            : "then hold size constant";
       const citation = metricLabelByName.get(metric.metricName) ?? "M1";
 
       return [
@@ -62,6 +71,7 @@ export class DeterministicSynthesisDecisionPolicy
           label: `${metric.metricName.replace(/_/g, " ")} regime`,
           currentValue,
           condition,
+          conditionDirection,
           action,
           citations: [citation],
           hasNumericThreshold: true,
@@ -80,6 +90,7 @@ export class DeterministicSynthesisDecisionPolicy
         label: "Regulatory filing risk",
         currentValue: filingRisk ? "true" : "false",
         condition: "If mentions_regulatory_action becomes true",
+        conditionDirection: "downside",
         action: filingRisk ? "then reduce risk exposure" : "then hold size constant",
         citations: [filingLabelByFactName.get("mentions_regulatory_action") ?? "F1"],
         hasNumericThreshold: true,
@@ -95,6 +106,7 @@ export class DeterministicSynthesisDecisionPolicy
         label: "Signal coverage checkpoint",
         currentValue: `${signalPack.coverage.totalSignals} signals`,
         condition: `If total normalized signals moves below ${this.thesisTriggerMinNumeric}`,
+        conditionDirection: "neutral",
         action: "then re-evaluate decision confidence",
         citations: ["M1"],
         hasNumericThreshold: true,

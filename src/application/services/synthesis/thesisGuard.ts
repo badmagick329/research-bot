@@ -327,6 +327,14 @@ export class DeterministicSynthesisThesisGuard implements SynthesisThesisGuardPo
       if (!/(upgrade|downgrade|add|reduce|hold|re-evaluate)/.test(normalized)) {
         issues.push(`Trigger missing explicit action verb: ${line}`);
       }
+      const downsideCondition =
+        /\b(deteriorates|moves below|falls below|drops below|declines below|becomes true)\b/.test(
+          normalized,
+        );
+      const additiveAction = /\b(add|upgrade)\b/.test(normalized);
+      if (downsideCondition && additiveAction) {
+        issues.push(`Trigger action contradicts downside condition: ${line}`);
+      }
       if (
         normalized.includes("monitor developments") ||
         normalized.includes("watch news") ||
@@ -494,6 +502,7 @@ export class DeterministicSynthesisThesisGuard implements SynthesisThesisGuardPo
         : [
             {
               condition: "If signal coverage remains below 3",
+              conditionDirection: "neutral",
               action: "then re-evaluate decision confidence",
               citations: [primaryCitation],
             },

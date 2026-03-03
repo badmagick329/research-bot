@@ -491,6 +491,7 @@ describe("SynthesisService", () => {
     expect(
       saved?.diagnostics?.newsQualityV2?.issuerAnchorSelectedCount ?? 0,
     ).toBeGreaterThan(0);
+    expect(saved?.diagnostics?.newsQualityV2?.recoveryStatus).toBe("not_needed");
     expect(saved?.thesis).toContain(
       '- N_issuer1: news "Amazon updates AWS demand outlook and margin guidance"',
     );
@@ -546,6 +547,9 @@ describe("SynthesisService", () => {
         .payload_only_issuer_match ?? 0,
     ).toBeGreaterThan(0);
     expect(saved?.diagnostics?.issuerMatchDiagnostics?.payloadOnlyRejected).toBe(1);
+    expect(saved?.diagnostics?.newsQualityV2?.recoveryInvoked).toBeTrue();
+    expect(saved?.diagnostics?.newsQualityV2?.recoveryStatus).toBe("not_recovered");
+    expect(saved?.diagnostics?.newsQualityV2?.payloadOnlyRatio).toBe(1);
   });
 
   it("uses metric and filing refs when selected news is empty and filters unresolved investor KPIs", async () => {

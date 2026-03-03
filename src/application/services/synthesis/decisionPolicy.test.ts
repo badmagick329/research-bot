@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { SignalPack, SufficiencyDiagnostics } from "../../../core/entities/research";
+import type { MetricPointEntity } from "../../../core/entities/metric";
 import { DeterministicSynthesisDecisionPolicy } from "./decisionPolicy";
 
 const baseSignalPack = (): SignalPack => ({
@@ -118,6 +119,17 @@ describe("DeterministicSynthesisDecisionPolicy", () => {
         issuerAnchorAvailable: true,
         issuerAnchorAvailableCount: 2,
         issuerMatchDiagnostics: { title: 2, summary: 0, content: 0, payload: 0, payloadOnlyRejected: 0 },
+        payloadOnlyRecovery: {
+          payloadOnlyRatio: 0,
+          recoveryInvoked: false,
+          recoveryStatus: "not_needed",
+          recoveryReason: "payload_only_ratio_below_threshold_or_issuer_anchor_present",
+          issuerAnchorAvailableBefore: true,
+          issuerAnchorAvailableAfter: true,
+          issuerAnchorSelectedBefore: 2,
+          issuerAnchorSelectedAfter: 2,
+          metricHeavyDueToNarrativeGap: false,
+        },
         scoreBreakdownSample: [],
       },
       filings: [],
@@ -126,5 +138,98 @@ describe("DeterministicSynthesisDecisionPolicy", () => {
     expect(result.decision).toBe("buy");
     expect(result.scoreBreakdown.netScore).toBeGreaterThan(0.2);
     expect(result.reasons).toContain("weighted_signals_support_buy");
+  });
+
+  it("maps downside conditions to defensive actions and upside conditions to constructive actions", () => {
+    const policy = new DeterministicSynthesisDecisionPolicy(3, true, () => "1.00");
+    const signalPack: SignalPack = {
+      signals: [
+        {
+          signalId: "signal_inventory_days",
+          metricName: "inventory_days",
+          sourceMetricNames: ["inventory_days"],
+          normalizedValue: -0.6,
+          direction: "negative",
+          level: -0.6,
+          trend: -0.4,
+          acceleration: -0.1,
+          freshnessDays: 5,
+          historyZScore: -1.1,
+          confidenceContribution: 0.8,
+        },
+        {
+          signalId: "signal_revenue_growth_yoy",
+          metricName: "revenue_growth_yoy",
+          sourceMetricNames: ["revenue_growth_yoy"],
+          normalizedValue: 0.7,
+          direction: "positive",
+          level: 0.7,
+          trend: 0.5,
+          acceleration: 0.2,
+          freshnessDays: 5,
+          historyZScore: 1.4,
+          confidenceContribution: 0.9,
+        },
+      ],
+      coverage: {
+        totalSignals: 2,
+        freshSignals: 2,
+        staleSignals: 0,
+        hasPeerRelativeContext: false,
+      },
+    };
+    const metrics: MetricPointEntity[] = [
+      {
+        id: "m1",
+        symbol: "AMZN",
+        provider: "alphavantage",
+        metricName: "inventory_days",
+        metricValue: 45,
+        metricUnit: "days",
+        currency: "USD",
+        asOf: new Date("2026-02-20T00:00:00.000Z"),
+        periodType: "quarter",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.9,
+        rawPayload: {},
+        createdAt: new Date("2026-02-20T00:00:00.000Z"),
+      },
+      {
+        id: "m2",
+        symbol: "AMZN",
+        provider: "alphavantage",
+        metricName: "revenue_growth_yoy",
+        metricValue: 0.12,
+        metricUnit: "ratio",
+        currency: "USD",
+        asOf: new Date("2026-02-20T00:00:00.000Z"),
+        periodType: "quarter",
+        periodStart: undefined,
+        periodEnd: undefined,
+        confidence: 0.9,
+        rawPayload: {},
+        createdAt: new Date("2026-02-20T00:00:00.000Z"),
+      },
+    ];
+
+    const rows = policy.buildActionMatrix(
+      signalPack,
+      metrics,
+      [],
+      new Map([
+        ["inventory_days", "M1"],
+        ["revenue_growth_yoy", "M2"],
+      ]),
+      new Map(),
+    );
+
+    const downside = rows.find((row) => row.signalId === "signal_inventory_days");
+    const upside = rows.find((row) => row.signalId === "signal_revenue_growth_yoy");
+    expect(downside?.conditionDirection).toBe("downside");
+    expect(downside?.action).toContain("reduce risk exposure");
+    expect(upside?.conditionDirection).toBe("upside");
+    expect(upside?.action).toContain("add selectively");
+    expect(rows.some((row) => /deteriorates/.test(row.condition) && /add selectively/.test(row.action))).toBeFalse();
   });
 });

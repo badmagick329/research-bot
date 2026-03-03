@@ -223,6 +223,11 @@ This is the important part for model behavior and output quality.
 - News candidates are issuer-matched using:
   - title, summary, content, payload ticker hints, alias/company tokens.
 - Payload-only match is hard-rejected.
+- High payload-only recovery path:
+  - invoked when payload-only concentration is high and no issuer anchor is selected.
+  - retries issuer narrative matching with strict company-name word tokens on narrative fields only (`title|summary|content`).
+  - does **not** allow payload-only acceptance.
+  - keeps standard News V2 thresholds/exclusions unchanged.
 
 ### 8.2 News Scoring V2
 Files:
@@ -265,6 +270,10 @@ Selection constraints:
 - Builds `DecisionContext` from evidence strength + valuation + filing risk + anchor count.
 - Produces deterministic seed `buy|watch|avoid`.
 - Builds deterministic action matrix rows with thresholds + citations.
+- Trigger semantics are direction-locked:
+  - downside condition => defensive action (`reduce risk exposure` / `hold size constant`)
+  - upside condition => constructive action (`add selectively`)
+  - neutral condition => neutral action (`hold size constant` / `re-evaluate decision confidence`)
 
 ### 8.5 KPI coverage gate
 - Core KPI floor checked separately from sector KPI quality.
@@ -277,6 +286,7 @@ Selection constraints:
 - Output validation checks:
   - heading/order constraints
   - trigger quality (threshold/action semantics)
+  - contradiction checks (downside condition must not map to additive action)
   - evidence citation linkage
 - One repair pass allowed.
 - If quality score below floor:
@@ -295,6 +305,14 @@ Selection constraints:
   - monitoring quality regressions
   - explaining sparse/weak outputs
   - debugging provider and stage degradation
+- `newsQualityV2` includes payload-only recovery visibility:
+  - `payloadOnlyRatio`
+  - `recoveryInvoked`
+  - `recoveryStatus` (`not_needed|recovered|not_recovered`)
+  - `recoveryReason`
+  - `issuerAnchorAvailableBefore/After`
+  - `issuerAnchorSelectedBefore/After`
+  - `metricHeavyDueToNarrativeGap`
 
 ---
 
@@ -337,6 +355,8 @@ File: `src/shared/config/env.ts`
 3. `bun run snapshot --symbol AMZN --prettify --show-raw-thesis`
 4. Inspect in output:
    - `newsQualityV2`
+   - `newsQualityV2.recoveryStatus`
+   - `newsQualityV2.payloadOnlyRatio`
    - `readThroughQualityV2`
    - `thesisQuality`
    - `fallbackReasonCodes`

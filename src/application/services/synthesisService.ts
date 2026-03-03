@@ -97,6 +97,17 @@ type RelevanceSelection = {
     payload: number;
     payloadOnlyRejected: number;
   };
+  payloadOnlyRecovery: {
+    payloadOnlyRatio: number;
+    recoveryInvoked: boolean;
+    recoveryStatus: "not_needed" | "recovered" | "not_recovered";
+    recoveryReason: string;
+    issuerAnchorAvailableBefore: boolean;
+    issuerAnchorAvailableAfter: boolean;
+    issuerAnchorSelectedBefore: number;
+    issuerAnchorSelectedAfter: number;
+    metricHeavyDueToNarrativeGap: boolean;
+  };
   scoreBreakdownSample: Array<{
     title: string;
     composite: number;
@@ -157,6 +168,7 @@ type ActionMatrixRow = {
   label: string;
   currentValue: string;
   condition: string;
+  conditionDirection: "downside" | "upside" | "neutral";
   action: string;
   citations: string[];
   hasNumericThreshold: boolean;
@@ -1525,6 +1537,20 @@ export class SynthesisService {
           issuerAnchorAvailable: relevanceSelection.issuerAnchorAvailable,
           issuerAnchorAvailableCount: relevanceSelection.issuerAnchorAvailableCount,
           issuerAnchorSelectedCount: relevanceSelection.issuerAnchorCount,
+          payloadOnlyRatio: relevanceSelection.payloadOnlyRecovery.payloadOnlyRatio,
+          recoveryInvoked: relevanceSelection.payloadOnlyRecovery.recoveryInvoked,
+          recoveryStatus: relevanceSelection.payloadOnlyRecovery.recoveryStatus,
+          recoveryReason: relevanceSelection.payloadOnlyRecovery.recoveryReason,
+          issuerAnchorAvailableBefore:
+            relevanceSelection.payloadOnlyRecovery.issuerAnchorAvailableBefore,
+          issuerAnchorAvailableAfter:
+            relevanceSelection.payloadOnlyRecovery.issuerAnchorAvailableAfter,
+          issuerAnchorSelectedBefore:
+            relevanceSelection.payloadOnlyRecovery.issuerAnchorSelectedBefore,
+          issuerAnchorSelectedAfter:
+            relevanceSelection.payloadOnlyRecovery.issuerAnchorSelectedAfter,
+          metricHeavyDueToNarrativeGap:
+            relevanceSelection.payloadOnlyRecovery.metricHeavyDueToNarrativeGap,
           excludedByReason: relevanceSelection.excludedByReason,
           scoreBreakdownSample: relevanceSelection.scoreBreakdownSample.slice(0, 8),
         },
