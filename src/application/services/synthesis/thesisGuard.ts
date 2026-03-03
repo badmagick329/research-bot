@@ -502,7 +502,9 @@ export class DeterministicSynthesisThesisGuard implements SynthesisThesisGuardPo
         : [
             {
               condition: "If signal coverage remains below 3",
+              triggerKind: "coverage",
               conditionDirection: "neutral",
+              actionClass: "neutral",
               action: "then re-evaluate decision confidence",
               citations: [primaryCitation],
             },

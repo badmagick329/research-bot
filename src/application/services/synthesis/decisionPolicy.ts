@@ -41,7 +41,7 @@ export class DeterministicSynthesisDecisionPolicy
       .sort((left, right) => Math.abs(right.normalizedValue) - Math.abs(left.normalizedValue))
       .slice(0, 4);
 
-    const rows: ActionMatrixRow[] = topSignals.flatMap((signal) => {
+    const metricRows: ActionMatrixRow[] = topSignals.flatMap((signal) => {
       const metric = byMetricName.get(signal.metricName);
       if (!metric) {
         return [];
@@ -70,8 +70,15 @@ export class DeterministicSynthesisDecisionPolicy
           signalId: signal.signalId,
           label: `${metric.metricName.replace(/_/g, " ")} regime`,
           currentValue,
+          triggerKind: "metric",
           condition,
           conditionDirection,
+          actionClass:
+            conditionDirection === "downside"
+              ? "defensive"
+              : conditionDirection === "upside"
+                ? "constructive"
+                : "neutral",
           action,
           citations: [citation],
           hasNumericThreshold: true,
@@ -79,6 +86,7 @@ export class DeterministicSynthesisDecisionPolicy
       ];
     });
 
+    const rows = [...metricRows];
     const filingRisk = filings.some((filing) =>
       filing.extractedFacts.some(
         (fact) => fact.name === "mentions_regulatory_action" && fact.value === "true",
@@ -89,29 +97,82 @@ export class DeterministicSynthesisDecisionPolicy
         signalId: "signal_filing_risk",
         label: "Regulatory filing risk",
         currentValue: filingRisk ? "true" : "false",
+        triggerKind: "filing",
         condition: "If mentions_regulatory_action becomes true",
         conditionDirection: "downside",
-        action: filingRisk ? "then reduce risk exposure" : "then hold size constant",
+        actionClass: "defensive",
+        action: "then reduce risk exposure",
         citations: [filingLabelByFactName.get("mentions_regulatory_action") ?? "F1"],
         hasNumericThreshold: true,
       });
     }
 
-    const deduped = rows
-      .filter((row, index, all) => all.findIndex((item) => item.signalId === row.signalId) === index)
+    const deduped = rows.filter(
+      (row, index, all) =>
+        all.findIndex((item) => item.signalId === row.signalId) === index,
+    );
+    const ordered = deduped
+      .slice()
+      .sort((left, right) => {
+        const rank = (row: ActionMatrixRow) =>
+          row.triggerKind === "metric"
+            ? 0
+            : row.triggerKind === "filing"
+              ? 1
+              : 2;
+        if (rank(left) !== rank(right)) {
+          return rank(left) - rank(right);
+        }
+        return left.signalId.localeCompare(right.signalId);
+      })
       .slice(0, 5);
-    return deduped.length > 0 ? deduped : [
-      {
-        signalId: "signal_minimum_coverage",
-        label: "Signal coverage checkpoint",
-        currentValue: `${signalPack.coverage.totalSignals} signals`,
-        condition: `If total normalized signals moves below ${this.thesisTriggerMinNumeric}`,
-        conditionDirection: "neutral",
-        action: "then re-evaluate decision confidence",
-        citations: ["M1"],
-        hasNumericThreshold: true,
-      },
-    ];
+
+    const withFloor = this.ensureMinimumTriggerRows(
+      ordered,
+      signalPack,
+      metricLabelByName,
+    );
+    return withFloor.slice(0, 5);
+  }
+
+  /**
+   * Validates compiled trigger rows so synthesis can detect semantic contradictions before rendering output.
+   */
+  validateTriggerRows(rows: ActionMatrixRow[]): string[] {
+    const violations: string[] = [];
+    if (rows.length < 3 || rows.length > 5) {
+      violations.push(`trigger_count_out_of_bounds_${rows.length}`);
+    }
+    rows.forEach((row) => {
+      if (row.citations.length === 0) {
+        violations.push(`missing_citation_${row.signalId}`);
+      }
+      if (
+        !row.hasNumericThreshold &&
+        !/(true|false)/i.test(row.condition) &&
+        !/\d/.test(row.condition)
+      ) {
+        violations.push(`missing_threshold_${row.signalId}`);
+      }
+      if (row.conditionDirection === "downside" && row.actionClass === "constructive") {
+        violations.push(`downside_constructive_contradiction_${row.signalId}`);
+      }
+      if (row.conditionDirection === "upside" && row.actionClass === "defensive") {
+        violations.push(`upside_defensive_contradiction_${row.signalId}`);
+      }
+    });
+    return Array.from(new Set(violations)).slice(0, 12);
+  }
+
+  /**
+   * Builds a deterministic fallback trigger set when compiled rows violate invariants.
+   */
+  buildFallbackTriggerRows(args: {
+    signalPack: SignalPack;
+    metricLabelByName: Map<string, string>;
+  }): ActionMatrixRow[] {
+    const coverageRows = this.buildCoverageRows(args.signalPack, args.metricLabelByName);
+    return coverageRows.slice(0, 3);
   }
 
   /**
@@ -349,7 +410,7 @@ export class DeterministicSynthesisDecisionPolicy
    * Projects trigger rows into investor-facing falsification blocks without leaking policy internals.
    */
   buildFalsification(actionMatrix: ActionMatrixRow[]) {
-    return actionMatrix.slice(0, 3).map((row) => ({
+    return actionMatrix.slice(0, 5).map((row) => ({
       condition: row.condition,
       type: row.hasNumericThreshold ? "numeric" : "event",
       thresholdOrOutcome: row.currentValue,
@@ -382,6 +443,80 @@ export class DeterministicSynthesisDecisionPolicy
       return `${Math.max(1, Math.round(metricValue * multiplier))} days`;
     }
     return Number.parseFloat((metricValue * multiplier).toFixed(2)).toString();
+  }
+
+  /**
+   * Enforces a minimum trigger floor so outputs keep actionable falsification structure even in sparse runs.
+   */
+  private ensureMinimumTriggerRows(
+    rows: ActionMatrixRow[],
+    signalPack: SignalPack,
+    metricLabelByName: Map<string, string>,
+  ): ActionMatrixRow[] {
+    if (rows.length >= 3) {
+      return rows;
+    }
+    const seen = new Set(rows.map((row) => row.signalId));
+    const enriched = [...rows];
+    for (const row of this.buildCoverageRows(signalPack, metricLabelByName)) {
+      if (enriched.length >= 3) {
+        break;
+      }
+      if (seen.has(row.signalId)) {
+        continue;
+      }
+      enriched.push(row);
+      seen.add(row.signalId);
+    }
+    return enriched;
+  }
+
+  /**
+   * Builds deterministic neutral coverage triggers as fillers when signal-specific rows are insufficient.
+   */
+  private buildCoverageRows(
+    signalPack: SignalPack,
+    metricLabelByName: Map<string, string>,
+  ): ActionMatrixRow[] {
+    const primaryMetricCitation = Array.from(metricLabelByName.values())[0] ?? "M1";
+    return [
+      {
+        signalId: "signal_minimum_coverage",
+        label: "Signal coverage checkpoint",
+        currentValue: `${signalPack.coverage.totalSignals} signals`,
+        triggerKind: "coverage",
+        condition: `If total normalized signals moves below ${this.thesisTriggerMinNumeric}`,
+        conditionDirection: "neutral",
+        actionClass: "neutral",
+        action: "then re-evaluate decision confidence",
+        citations: [primaryMetricCitation],
+        hasNumericThreshold: true,
+      },
+      {
+        signalId: "signal_freshness_coverage",
+        label: "Signal freshness checkpoint",
+        currentValue: `${signalPack.coverage.freshSignals} fresh signals`,
+        triggerKind: "coverage",
+        condition: "If fresh signal count moves below 2",
+        conditionDirection: "neutral",
+        actionClass: "neutral",
+        action: "then hold size constant",
+        citations: [primaryMetricCitation],
+        hasNumericThreshold: true,
+      },
+      {
+        signalId: "signal_staleness_coverage",
+        label: "Signal staleness checkpoint",
+        currentValue: `${signalPack.coverage.staleSignals} stale signals`,
+        triggerKind: "coverage",
+        condition: "If stale signal count moves above 2",
+        conditionDirection: "downside",
+        actionClass: "defensive",
+        action: "then reduce risk exposure",
+        citations: [primaryMetricCitation],
+        hasNumericThreshold: true,
+      },
+    ];
   }
 
   /**

@@ -492,6 +492,10 @@ describe("SynthesisService", () => {
       saved?.diagnostics?.newsQualityV2?.issuerAnchorSelectedCount ?? 0,
     ).toBeGreaterThan(0);
     expect(saved?.diagnostics?.newsQualityV2?.recoveryStatus).toBe("not_needed");
+    expect(saved?.diagnostics?.triggerDiagnostics?.compiledCount ?? 0).toBeGreaterThanOrEqual(3);
+    expect(saved?.diagnostics?.triggerDiagnostics?.renderedCount ?? 0).toBeGreaterThanOrEqual(3);
+    expect(saved?.diagnostics?.triggerDiagnostics?.invariantViolations ?? []).toHaveLength(0);
+    expect(saved?.diagnostics?.triggerDiagnostics?.fallbackTriggerSetApplied).toBeFalse();
     expect(saved?.thesis).toContain(
       '- N_issuer1: news "Amazon updates AWS demand outlook and margin guidance"',
     );

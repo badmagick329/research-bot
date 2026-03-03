@@ -367,6 +367,12 @@ export type SnapshotDiagnostics = {
   signalDiagnostics?: SignalPack;
   sufficiencyDiagnostics?: SufficiencyDiagnostics;
   decisionScoreBreakdown?: DecisionScoreBreakdown;
+  triggerDiagnostics?: {
+    compiledCount: number;
+    renderedCount: number;
+    invariantViolations: string[];
+    fallbackTriggerSetApplied: boolean;
+  };
   insufficientEvidenceReasons?: string[];
   missingFields?: string[];
   citationCoveragePct?: number;

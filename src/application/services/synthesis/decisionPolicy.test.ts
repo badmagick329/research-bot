@@ -227,9 +227,47 @@ describe("DeterministicSynthesisDecisionPolicy", () => {
     const downside = rows.find((row) => row.signalId === "signal_inventory_days");
     const upside = rows.find((row) => row.signalId === "signal_revenue_growth_yoy");
     expect(downside?.conditionDirection).toBe("downside");
+    expect(downside?.actionClass).toBe("defensive");
     expect(downside?.action).toContain("reduce risk exposure");
     expect(upside?.conditionDirection).toBe("upside");
+    expect(upside?.actionClass).toBe("constructive");
     expect(upside?.action).toContain("add selectively");
+    expect(rows.length).toBeGreaterThanOrEqual(3);
     expect(rows.some((row) => /deteriorates/.test(row.condition) && /add selectively/.test(row.action))).toBeFalse();
+  });
+
+  it("validates compiled rows and returns fallback trigger rows when invariants are violated", () => {
+    const policy = new DeterministicSynthesisDecisionPolicy(3, true, () => "1.00");
+    const invalidRows = [
+      {
+        signalId: "bad_row",
+        label: "Bad row",
+        currentValue: "n/a",
+        triggerKind: "metric" as const,
+        condition: "If inventory days deteriorates above 50",
+        conditionDirection: "downside" as const,
+        actionClass: "constructive" as const,
+        action: "then add selectively",
+        citations: [],
+        hasNumericThreshold: true,
+      },
+    ];
+    const violations = policy.validateTriggerRows(invalidRows);
+    expect(violations.length).toBeGreaterThan(0);
+
+    const fallbackRows = policy.buildFallbackTriggerRows({
+      signalPack: {
+        signals: [],
+        coverage: {
+          totalSignals: 0,
+          freshSignals: 0,
+          staleSignals: 0,
+          hasPeerRelativeContext: false,
+        },
+      },
+      metricLabelByName: new Map(),
+    });
+    expect(fallbackRows.length).toBe(3);
+    expect(policy.validateTriggerRows(fallbackRows)).toHaveLength(0);
   });
 });

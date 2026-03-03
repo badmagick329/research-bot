@@ -141,8 +141,10 @@ export type ActionMatrixRow = {
   signalId: string;
   label: string;
   currentValue: string;
+  triggerKind: "metric" | "filing" | "coverage";
   condition: string;
   conditionDirection: "downside" | "upside" | "neutral";
+  actionClass: "defensive" | "constructive" | "neutral";
   action: string;
   citations: string[];
   hasNumericThreshold: boolean;
@@ -201,6 +203,19 @@ export interface SynthesisDecisionPolicyPort {
     metricLabelByName: Map<string, string>,
     filingLabelByFactName: Map<string, string>,
   ): ActionMatrixRow[];
+
+  /**
+   * Validates compiled trigger rows so synthesis can detect semantic contradictions before rendering output.
+   */
+  validateTriggerRows(rows: ActionMatrixRow[]): string[];
+
+  /**
+   * Builds a deterministic fallback trigger set when compiled rows violate invariants.
+   */
+  buildFallbackTriggerRows(args: {
+    signalPack: SignalPack;
+    metricLabelByName: Map<string, string>;
+  }): ActionMatrixRow[];
 
   /**
    * Scores evidence sufficiency on a continuous scale before directional decisioning.

@@ -167,8 +167,10 @@ type ActionMatrixRow = {
   signalId: string;
   label: string;
   currentValue: string;
+  triggerKind: "metric" | "filing" | "coverage";
   condition: string;
   conditionDirection: "downside" | "upside" | "neutral";
+  actionClass: "defensive" | "constructive" | "neutral";
   action: string;
   citations: string[];
   hasNumericThreshold: boolean;
@@ -1188,13 +1190,27 @@ export class SynthesisService {
     });
     const valuationView = this.deriveValuationView(latestMetrics);
     const derivedCatalysts = this.deriveCatalysts(selectedDocs, latestMetrics, filings);
-    const actionMatrix = this.decisionPolicy.buildActionMatrix(
+    let actionMatrix = this.decisionPolicy.buildActionMatrix(
       signalPack,
       latestMetrics,
       filings,
       metricLabelByName,
       filingLabelByFactName,
     );
+    let triggerInvariantViolations = this.decisionPolicy.validateTriggerRows(
+      actionMatrix,
+    );
+    let fallbackTriggerSetApplied = false;
+    if (triggerInvariantViolations.length > 0) {
+      actionMatrix = this.decisionPolicy.buildFallbackTriggerRows({
+        signalPack,
+        metricLabelByName,
+      });
+      fallbackTriggerSetApplied = true;
+      triggerInvariantViolations = this.decisionPolicy.validateTriggerRows(
+        actionMatrix,
+      );
+    }
     const actionMatrixLines = this.decisionPolicy.formatActionMatrix(actionMatrix);
     const falsification = this.decisionPolicy.buildFalsification(actionMatrix);
     const fallbackSelectedKpiNames = latestMetrics
@@ -1590,6 +1606,12 @@ export class SynthesisService {
         signalDiagnostics: signalPack,
         sufficiencyDiagnostics,
         decisionScoreBreakdown: decisionResult.scoreBreakdown,
+        triggerDiagnostics: {
+          compiledCount: actionMatrix.length,
+          renderedCount: falsification.length,
+          invariantViolations: triggerInvariantViolations,
+          fallbackTriggerSetApplied,
+        },
         insufficientEvidenceReasons,
         missingFields: sufficiencyDiagnostics.missingCriticalDimensions,
         citationCoveragePct: citationDiagnostics.citationCoveragePct,
