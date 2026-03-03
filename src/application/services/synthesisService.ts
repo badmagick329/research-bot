@@ -126,7 +126,6 @@ type RelevanceSelection = {
   }>;
 };
 
-type ThesisDecision = "buy" | "watch" | "avoid";
 type RelevanceMode = "high_precision" | "balanced";
 type IssuerIdentityPatterns = {
   symbolExactTokens: Set<string>;
@@ -163,23 +162,6 @@ type ExcludedHeadlineReason =
   | "stale_for_horizon"
   | "read_through_without_issuer_anchor"
   | "read_through_capped";
-type ActionMatrixRow = {
-  signalId: string;
-  label: string;
-  currentValue: string;
-  triggerKind: "metric" | "filing" | "coverage";
-  condition: string;
-  conditionDirection: "downside" | "upside" | "neutral";
-  actionClass: "defensive" | "constructive" | "neutral";
-  action: string;
-  citations: string[];
-  hasNumericThreshold: boolean;
-};
-type ThesisQualityScore = {
-  score: number;
-  failedChecks: string[];
-};
-
 type KpiCoverageComputation = {
   selectedCurrentKpiNames: string[];
   diagnostics: KpiCoverageDiagnostics;
@@ -933,40 +915,6 @@ export class SynthesisService {
   }
 
   /**
-   * Derives near-term catalysts from observed evidence coverage so catalysts avoid generic repetition.
-   */
-  private deriveCatalysts(
-    docs: Awaited<ReturnType<DocumentRepositoryPort["listBySymbol"]>>,
-    metrics: MetricPointEntity[],
-    filings: FilingEntity[],
-  ): string[] {
-    const catalysts: string[] = [];
-    const byName = new Map(
-      metrics.map((metric) => [metric.metricName, metric]),
-    );
-    const growthPercent = this.asPercent(byName.get("revenue_growth_yoy"));
-
-    if (growthPercent !== null && growthPercent >= 10) {
-      catalysts.push("Sustained top-line growth confirmation");
-    }
-
-    if (filings.length > 0) {
-      catalysts.push("Upcoming filing disclosures and guidance updates");
-    }
-
-    if (docs.length >= 5) {
-      catalysts.push("Execution updates from product and demand headlines");
-    }
-
-    if (catalysts.length === 0) {
-      catalysts.push("Product cycle");
-      catalysts.push("Margin expansion");
-    }
-
-    return catalysts.slice(0, 4);
-  }
-
-  /**
    * Merges current-run KPI coverage with fresh prior-run KPI names so evidence gates can tolerate sparse single-run windows.
    */
   private async computeKpiCoverage(args: {
@@ -1198,30 +1146,16 @@ export class SynthesisService {
       });
     });
     const valuationView = this.deriveValuationView(latestMetrics);
-    const derivedCatalysts = this.deriveCatalysts(selectedDocs, latestMetrics, filings);
-    let actionMatrix = this.decisionPolicy.buildActionMatrix(
+    const checkpoints = this.decisionPolicy.buildCheckpoints({
       signalPack,
-      latestMetrics,
+      metrics: latestMetrics,
       filings,
       metricLabelByName,
       filingLabelByFactName,
-    );
-    let triggerInvariantViolations = this.decisionPolicy.validateTriggerRows(
-      actionMatrix,
-    );
-    let fallbackTriggerSetApplied = false;
-    if (triggerInvariantViolations.length > 0) {
-      actionMatrix = this.decisionPolicy.buildFallbackTriggerRows({
-        signalPack,
-        metricLabelByName,
-      });
-      fallbackTriggerSetApplied = true;
-      triggerInvariantViolations = this.decisionPolicy.validateTriggerRows(
-        actionMatrix,
-      );
-    }
-    const actionMatrixLines = this.decisionPolicy.formatActionMatrix(actionMatrix);
-    const falsification = this.decisionPolicy.buildFalsification(actionMatrix);
+      selectedNewsLabels: relevanceSelection.selectedNewsLabels,
+      horizon: (payload.horizonContext?.horizon ?? "1_2_quarters") as HorizonBucket,
+    });
+    const falsification = this.decisionPolicy.buildFalsification(checkpoints);
     const fallbackSelectedKpiNames = latestMetrics
       .slice(0, 8)
       .map((metric) => metric.metricName);
@@ -1236,7 +1170,7 @@ export class SynthesisService {
       kpiCoverage: kpiCoverage.diagnostics,
       filingsCount: filings.length,
       valuationAvailable: !valuationView.toLowerCase().includes("unavailable"),
-      catalystsCount: derivedCatalysts.length,
+      catalystsCount: checkpoints.filter((item) => item.kind === "catalyst").length,
       falsifiersCount: falsification.length,
     });
     const decisionResult = this.decisionPolicy.deriveDecisionFromSignals({
@@ -1305,7 +1239,6 @@ export class SynthesisService {
       macroLines,
       filingLines,
       memoryLines,
-      actionMatrixLines,
       decisionFromContext: decisionResult.decision,
       decisionReasonLines,
       relevanceSelection,
@@ -1321,10 +1254,9 @@ export class SynthesisService {
       );
     }
 
-    let thesis = this.thesisGuard.upsertActionSummaryDeterminism(
-      this.thesisGuard.upsertEvidenceMapSection(thesisResult.value, evidenceMapLines),
-      decisionResult.decision,
-      actionMatrix,
+    let thesis = this.thesisGuard.upsertEvidenceMapSection(
+      thesisResult.value,
+      evidenceMapLines,
     );
     const hasEvidence = selectedDocs.length + promptMetrics.length + filings.length > 0;
     const initialValidationIssues = this.thesisGuard.validateThesis(
@@ -1349,10 +1281,9 @@ export class SynthesisService {
         );
       }
 
-      const repairedThesis = this.thesisGuard.upsertActionSummaryDeterminism(
-        this.thesisGuard.upsertEvidenceMapSection(repairedResult.value, evidenceMapLines),
-        decisionResult.decision,
-        actionMatrix,
+      const repairedThesis = this.thesisGuard.upsertEvidenceMapSection(
+        repairedResult.value,
+        evidenceMapLines,
       );
       const repairedIssues = this.thesisGuard.validateThesis(
         repairedThesis,
@@ -1377,7 +1308,7 @@ export class SynthesisService {
     if (fallbackTriggeredByScore < this.thesisQualityMinScore) {
       thesis = this.thesisGuard.buildDeterministicFallbackThesis({
         actionDecision: conservativeActionDecision,
-        actionMatrix,
+        checkpoints,
         evidenceMapLines,
         selectedDocs,
         metrics: promptMetrics,
@@ -1426,7 +1357,6 @@ export class SynthesisService {
       fallbackApplied && conservativeActionDecision === "buy"
         ? "watch"
         : conservativeActionDecision,
-      actionMatrix,
     );
     const finalActionDecision: ActionDecision =
       fallbackApplied && conservativeActionDecision === "buy"
@@ -1450,22 +1380,28 @@ export class SynthesisService {
       metricLabelByName,
       latestMetrics,
     );
-    const investorCatalysts: InvestorCatalyst[] = derivedCatalysts.map((catalyst, index) => ({
-      event: catalyst,
+    const investorCatalysts: InvestorCatalyst[] = checkpoints
+      .filter((item) => item.kind === "catalyst")
+      .slice(0, 2)
+      .map((catalyst, index) => ({
+      event: catalyst.text,
       window:
         (payload.horizonContext?.horizon ?? "1_2_quarters") === "0_4_weeks"
           ? "next 0-4 weeks"
           : (payload.horizonContext?.horizon ?? "1_2_quarters") === "1_3_years"
             ? "next 1-3 years"
             : "next 1-2 quarters",
-      expectedDirection: "supports or weakens thesis depending on observed KPI trajectory",
+      expectedDirection: "confirms or weakens the thesis",
       whyItMatters: "Catalyst determines whether current expectations need to be revised.",
-      evidenceRefs: this.investorViewBuilder.resolveCatalystEvidenceRefs({
-        index,
-        selectedNewsLabels: relevanceSelection.selectedNewsLabels,
-        metricCount: promptMetrics.length,
-        filingCount: Math.min(6, filings.length),
-      }),
+      evidenceRefs:
+        catalyst.evidenceRefs.length > 0
+          ? catalyst.evidenceRefs
+          : this.investorViewBuilder.resolveCatalystEvidenceRefs({
+              index,
+              selectedNewsLabels: relevanceSelection.selectedNewsLabels,
+              metricCount: promptMetrics.length,
+              filingCount: Math.min(6, filings.length),
+            }),
     }));
     const investorDrivers: InvestorDriver[] = [
       {
@@ -1517,7 +1453,7 @@ export class SynthesisService {
       },
       drivers: investorDrivers.slice(0, 4),
       keyKpis: investorKpis.slice(0, 10),
-      catalysts: investorCatalysts.slice(0, 5),
+      catalysts: investorCatalysts.slice(0, 2),
       falsification: falsification.slice(0, 2),
       valuation: {
         valuationFramework: "multiples + growth durability + filing context",
@@ -1547,7 +1483,7 @@ export class SynthesisService {
       score,
       thesis,
       risks: this.deriveRisks(selectedDocs, latestMetrics, filings),
-      catalysts: derivedCatalysts,
+      catalysts: investorCatalysts.map((item) => item.event),
       valuationView,
       confidence,
       sources: this.uniqueSources(selectedDocs, promptMetrics, filings),
@@ -1630,12 +1566,6 @@ export class SynthesisService {
         signalDiagnostics: signalPack,
         sufficiencyDiagnostics,
         decisionScoreBreakdown: decisionResult.scoreBreakdown,
-        triggerDiagnostics: {
-          compiledCount: actionMatrix.length,
-          renderedCount: falsification.length,
-          invariantViolations: triggerInvariantViolations,
-          fallbackTriggerSetApplied,
-        },
         insufficientEvidenceReasons,
         missingFields: sufficiencyDiagnostics.missingCriticalDimensions,
         citationCoveragePct: citationDiagnostics.citationCoveragePct,

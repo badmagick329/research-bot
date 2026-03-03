@@ -3,10 +3,9 @@ import type { FilingEntity } from "../../../core/entities/filing";
 import type { MetricPointEntity } from "../../../core/entities/metric";
 import type { ActionDecision } from "../../../core/entities/research";
 import type {
-  ActionMatrixRow,
   RelevanceSelection,
   SynthesisThesisGuardPort,
-  ThesisDecision,
+  ThesisCheckpoint,
   ThesisQualityScore,
 } from "./types";
 
@@ -38,23 +37,11 @@ export class DeterministicSynthesisThesisGuard implements SynthesisThesisGuardPo
   }
 
   /**
-   * Keeps signature compatibility while leaving investor-note structure untouched.
-   */
-  upsertActionSummaryDeterminism(
-    thesis: string,
-    _decision: ThesisDecision,
-    _actionMatrix: ActionMatrixRow[],
-  ): string {
-    return thesis;
-  }
-
-  /**
    * Aligns markdown decision wording with final action decision in the Decision section only.
    */
   upsertFinalDecisionPresentation(
     thesis: string,
     decision: ActionDecision,
-    _actionMatrix: ActionMatrixRow[],
   ): string {
     const decisionLabel =
       decision === "buy"
@@ -233,7 +220,7 @@ export class DeterministicSynthesisThesisGuard implements SynthesisThesisGuardPo
    */
   buildDeterministicFallbackThesis(args: {
     actionDecision: ActionDecision;
-    actionMatrix: ActionMatrixRow[];
+    checkpoints: ThesisCheckpoint[];
     evidenceMapLines: string;
     selectedDocs: DocumentEntity[];
     metrics: MetricPointEntity[];
@@ -248,7 +235,8 @@ export class DeterministicSynthesisThesisGuard implements SynthesisThesisGuardPo
           : args.actionDecision === "insufficient_evidence"
             ? "Insufficient Evidence"
             : "Watch";
-    const primaryCitation = args.actionMatrix.flatMap((row) => row.citations).at(0) ?? "M1";
+    const primaryCitation =
+      args.checkpoints.flatMap((item) => item.evidenceRefs).at(0) ?? "M1";
     const topMetrics = args.metrics
       .slice(0, 3)
       .map((metric, index) => `- ${metric.metricName}: ${this.formatMetricValue(metric)} [M${index + 1}]`)

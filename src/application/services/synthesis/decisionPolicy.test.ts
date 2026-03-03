@@ -63,7 +63,7 @@ const sufficiency = (overrides?: Partial<SufficiencyDiagnostics>): SufficiencyDi
 });
 
 describe("DeterministicSynthesisDecisionPolicy", () => {
-  it("returns insufficient_evidence when sufficiency fails", () => {
+  it("returns watch when only sector weakness fails under grace mode", () => {
     const policy = new DeterministicSynthesisDecisionPolicy(3, true, () => "1.00");
 
     const decision = policy.toActionDecision(
@@ -86,7 +86,7 @@ describe("DeterministicSynthesisDecisionPolicy", () => {
       },
     );
 
-    expect(decision).toBe("insufficient_evidence");
+    expect(decision).toBe("watch");
   });
 
   it("builds buy seed when weighted signals are strong and sufficiency passes", () => {
@@ -140,7 +140,7 @@ describe("DeterministicSynthesisDecisionPolicy", () => {
     expect(result.reasons).toContain("weighted_signals_support_buy");
   });
 
-  it("maps downside conditions to defensive actions and upside conditions to constructive actions", () => {
+  it("builds business checkpoints with capped falsifiers and catalysts", () => {
     const policy = new DeterministicSynthesisDecisionPolicy(3, true, () => "1.00");
     const signalPack: SignalPack = {
       signals: [
@@ -213,61 +213,95 @@ describe("DeterministicSynthesisDecisionPolicy", () => {
       },
     ];
 
-    const rows = policy.buildActionMatrix(
+    const checkpoints = policy.buildCheckpoints({
       signalPack,
       metrics,
-      [],
-      new Map([
+      filings: [],
+      metricLabelByName: new Map([
         ["inventory_days", "M1"],
         ["revenue_growth_yoy", "M2"],
       ]),
-      new Map(),
-    );
+      filingLabelByFactName: new Map(),
+      selectedNewsLabels: ["N_issuer1"],
+      horizon: "1_2_quarters",
+    });
 
-    const downside = rows.find((row) => row.signalId === "signal_inventory_days");
-    const upside = rows.find((row) => row.signalId === "signal_revenue_growth_yoy");
-    expect(downside?.conditionDirection).toBe("downside");
-    expect(downside?.actionClass).toBe("defensive");
-    expect(downside?.action).toContain("reduce risk exposure");
-    expect(upside?.conditionDirection).toBe("upside");
-    expect(upside?.actionClass).toBe("constructive");
-    expect(upside?.action).toContain("add selectively");
-    expect(rows.length).toBeGreaterThanOrEqual(2);
-    expect(rows.some((row) => /deteriorates/.test(row.condition) && /add selectively/.test(row.action))).toBeFalse();
+    expect(checkpoints.some((item) => item.kind === "falsifies")).toBeTrue();
+    expect(checkpoints.some((item) => item.kind === "supports")).toBeTrue();
+    expect(checkpoints.some((item) => item.kind === "catalyst")).toBeTrue();
+    expect(checkpoints.filter((item) => item.kind === "falsifies").length).toBeLessThanOrEqual(2);
+    expect(checkpoints.filter((item) => item.kind === "catalyst").length).toBeLessThanOrEqual(2);
   });
 
-  it("validates compiled rows and returns fallback trigger rows when invariants are violated", () => {
+  it("builds structured falsification rows from falsifying checkpoints", () => {
     const policy = new DeterministicSynthesisDecisionPolicy(3, true, () => "1.00");
-    const invalidRows = [
+    const falsification = policy.buildFalsification([
       {
-        signalId: "bad_row",
-        label: "Bad row",
-        currentValue: "n/a",
-        triggerKind: "metric" as const,
-        condition: "If inventory days deteriorates above 50",
-        conditionDirection: "downside" as const,
-        actionClass: "constructive" as const,
-        action: "then add selectively",
-        citations: [],
-        hasNumericThreshold: true,
+        kind: "falsifies",
+        text: "Revenue growth deteriorates from current levels.",
+        evidenceRefs: ["M1"],
+        deadline: "next 1-2 quarters",
       },
-    ];
-    const violations = policy.validateTriggerRows(invalidRows);
-    expect(violations.length).toBeGreaterThan(0);
+      {
+        kind: "supports",
+        text: "Margin expands despite investment cycle.",
+        evidenceRefs: ["M2"],
+      },
+    ]);
 
-    const fallbackRows = policy.buildFallbackTriggerRows({
-      signalPack: {
-        signals: [],
-        coverage: {
-          totalSignals: 0,
-          freshSignals: 0,
-          staleSignals: 0,
-          hasPeerRelativeContext: false,
-        },
+    expect(falsification).toHaveLength(1);
+    expect(falsification[0]?.condition).toContain("Revenue growth");
+    expect(falsification[0]?.evidenceRefs).toContain("M1");
+    expect(falsification[0]?.type).toBe("numeric");
+  });
+
+  it("returns watch in grace mode when only sector weakness fails sufficiency", () => {
+    const policy = new DeterministicSynthesisDecisionPolicy(3, true, () => "1.00");
+    const decision = policy.toActionDecision(
+      "watch",
+      sufficiency({
+        passed: false,
+        reasonCodes: ["sector_kpi_depth_weak"],
+        missingCriticalDimensions: [],
+      }),
+      {
+        mode: "grace_low_quality",
+        coreRequiredCount: 2,
+        coreCurrentCount: 2,
+        coreCarriedCount: 0,
+        sectorExpectedCount: 2,
+        sectorCurrentCount: 0,
+        sectorCarriedCount: 0,
+        carryForwardMaxAgeDays: 90,
+        carriedKpis: [],
       },
-      metricLabelByName: new Map(),
-    });
-    expect(fallbackRows.length).toBe(0);
-    expect(policy.validateTriggerRows(fallbackRows)).toHaveLength(0);
+    );
+
+    expect(decision).toBe("watch");
+  });
+
+  it("returns insufficient_evidence when critical dimensions are missing", () => {
+    const policy = new DeterministicSynthesisDecisionPolicy(3, true, () => "1.00");
+    const decision = policy.toActionDecision(
+      "buy",
+      sufficiency({
+        passed: false,
+        reasonCodes: ["insufficient_core_kpi_coverage"],
+        missingCriticalDimensions: ["core_kpi_coverage"],
+      }),
+      {
+        mode: "strict",
+        coreRequiredCount: 2,
+        coreCurrentCount: 1,
+        coreCarriedCount: 0,
+        sectorExpectedCount: 2,
+        sectorCurrentCount: 1,
+        sectorCarriedCount: 0,
+        carryForwardMaxAgeDays: 90,
+        carriedKpis: [],
+      },
+    );
+
+    expect(decision).toBe("insufficient_evidence");
   });
 });

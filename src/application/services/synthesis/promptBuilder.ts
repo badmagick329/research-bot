@@ -27,7 +27,6 @@ export class SynthesisPromptBuilder implements SynthesisPromptBuilderPort {
     macroLines: string;
     filingLines: string;
     memoryLines: string;
-    actionMatrixLines: string;
     decisionFromContext: ThesisDecision;
     decisionReasonLines: string;
     relevanceSelection: RelevanceSelection;
@@ -128,6 +127,7 @@ export class SynthesisPromptBuilder implements SynthesisPromptBuilderPort {
       "- Include 3-5 KPIs with interpretation; at least two must be operational or financial business KPIs (not valuation ratios).",
       "- Include at most 2 catalysts and at most 2 falsifiers. Do not fabricate if evidence is weak.",
       "- Use R# memory references only as supporting context, never as primary support for a buy call.",
+      "- Mention macro only when it is directly thesis-critical; otherwise keep macro context out of the investor note.",
       "- If evidenceWeak=true, default decision to Watch or Insufficient Evidence unless contradiction is strong.",
       "- Do not mention internal mechanics such as normalized signals, sufficiency checks, trigger matrix, policy gates, repair passes, fallback mechanics, evidence coverage counters, stage issues, or compiled triggers.",
       "- Avoid generic filler language like 'monitor', 'could', 'may', or 'watch for' without a concrete business condition.",

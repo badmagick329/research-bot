@@ -8,13 +8,13 @@ import type {
   SufficiencyDiagnostics,
 } from "../../../core/entities/research";
 import type {
-  ActionMatrixRow,
   RelevanceSelection,
   SynthesisDecisionPolicyPort,
+  ThesisCheckpoint,
 } from "./types";
 
 /**
- * Implements deterministic decision scoring so directional output comes from normalized numeric evidence first.
+ * Implements conservative deterministic decisioning while keeping investor-facing checkpoints business-specific.
  */
 export class DeterministicSynthesisDecisionPolicy
   implements SynthesisDecisionPolicyPort
@@ -26,151 +26,106 @@ export class DeterministicSynthesisDecisionPolicy
   ) {}
 
   /**
-   * Builds deterministic checkpoint rows from strongest metric/filing evidence so investor-facing falsifiers stay business-specific.
+   * Produces concise business checkpoints from the strongest current-run evidence.
    */
-  buildActionMatrix(
-    signalPack: SignalPack,
-    metrics: MetricPointEntity[],
-    filings: FilingEntity[],
-    metricLabelByName: Map<string, string>,
-    filingLabelByFactName: Map<string, string>,
-  ): ActionMatrixRow[] {
-    const byMetricName = new Map(metrics.map((metric) => [metric.metricName, metric]));
-    const topSignals = signalPack.signals
+  buildCheckpoints(args: {
+    signalPack: SignalPack;
+    metrics: MetricPointEntity[];
+    filings: FilingEntity[];
+    metricLabelByName: Map<string, string>;
+    filingLabelByFactName: Map<string, string>;
+    selectedNewsLabels: string[];
+    horizon: "0_4_weeks" | "1_2_quarters" | "1_3_years";
+  }): ThesisCheckpoint[] {
+    const byMetricName = new Map(
+      args.metrics.map((metric) => [metric.metricName, metric]),
+    );
+    const deadline =
+      args.horizon === "0_4_weeks"
+        ? "next 0-4 weeks"
+        : args.horizon === "1_3_years"
+          ? "next 1-3 years"
+          : "next 1-2 quarters";
+
+    const metricCheckpoints: ThesisCheckpoint[] = args.signalPack.signals
       .slice()
-      .sort((left, right) => Math.abs(right.normalizedValue) - Math.abs(left.normalizedValue))
-      .slice(0, 4);
+      .sort(
+        (left, right) =>
+          Math.abs(right.normalizedValue) - Math.abs(left.normalizedValue),
+      )
+      .slice(0, 4)
+      .flatMap<ThesisCheckpoint>((signal) => {
+        const metric = byMetricName.get(signal.metricName);
+        const citation = args.metricLabelByName.get(signal.metricName) ?? "M1";
+        if (!metric) {
+          return [];
+        }
+        const metricLabel = signal.metricName.replace(/_/g, " ");
+        const currentValue = this.formatMetricValue(metric);
 
-    const metricRows: ActionMatrixRow[] = topSignals.flatMap((signal) => {
-      const metric = byMetricName.get(signal.metricName);
-      if (!metric) {
+        if (signal.direction === "negative") {
+          return [
+            {
+              kind: "falsifies",
+              text: `${metricLabel} deteriorates versus current level (${currentValue}).`,
+              evidenceRefs: [citation],
+              deadline,
+            },
+          ];
+        }
+        if (signal.direction === "positive") {
+          return [
+            {
+              kind: "supports",
+              text: `${metricLabel} holds or improves from current level (${currentValue}).`,
+              evidenceRefs: [citation],
+              deadline,
+            },
+          ];
+        }
         return [];
-      }
+      });
 
-      const currentValue = `${this.formatMetricValue(metric)}${metric.metricUnit ? ` ${metric.metricUnit}` : ""}`;
-      const threshold = this.deriveThreshold(metric.metricName, metric.metricValue, signal.direction);
-      const conditionDirection: ActionMatrixRow["conditionDirection"] =
-        signal.direction === "neutral" ? "neutral" : signal.direction === "negative" ? "downside" : "upside";
-      const condition =
-        conditionDirection === "downside"
-          ? `If ${metric.metricName.replace(/_/g, " ")} deteriorates above ${threshold}`
-          : conditionDirection === "upside"
-            ? `If ${metric.metricName.replace(/_/g, " ")} improves above ${threshold}`
-            : `If ${metric.metricName.replace(/_/g, " ")} remains near ${threshold}`;
-      const action =
-        conditionDirection === "downside"
-          ? "then reduce risk exposure"
-          : conditionDirection === "upside"
-            ? "then add selectively"
-            : "then hold size constant";
-      const citation = metricLabelByName.get(metric.metricName) ?? "M1";
-
-      return [
-        {
-          signalId: signal.signalId,
-          label: `${metric.metricName.replace(/_/g, " ")} regime`,
-          currentValue,
-          triggerKind: "metric",
-          condition,
-          conditionDirection,
-          actionClass:
-            conditionDirection === "downside"
-              ? "defensive"
-              : conditionDirection === "upside"
-                ? "constructive"
-                : "neutral",
-          action,
-          citations: [citation],
-          hasNumericThreshold: true,
-        },
-      ];
-    });
-
-    const rows = [...metricRows];
-    const filingRisk = filings.some((filing) =>
+    const filingRisk = args.filings.some((filing) =>
       filing.extractedFacts.some(
-        (fact) => fact.name === "mentions_regulatory_action" && fact.value === "true",
+        (fact) =>
+          fact.name === "mentions_regulatory_action" && fact.value === "true",
       ),
     );
-    if (filingRisk || filings.length > 0) {
-      rows.push({
-        signalId: "signal_filing_risk",
-        label: "Regulatory filing risk",
-        currentValue: filingRisk ? "true" : "false",
-        triggerKind: "filing",
-        condition: "If filings indicate rising regulatory or legal pressure",
-        conditionDirection: "downside",
-        actionClass: "defensive",
-        action: "then reduce risk exposure",
-        citations: [filingLabelByFactName.get("mentions_regulatory_action") ?? "F1"],
-        hasNumericThreshold: true,
-      });
-    }
+    const filingCheckpoint: ThesisCheckpoint[] = filingRisk
+      ? [
+          {
+            kind: "falsifies",
+            text: "Regulatory or legal pressure rises in subsequent filings.",
+            evidenceRefs: [
+              args.filingLabelByFactName.get("mentions_regulatory_action") ?? "F1",
+            ],
+            deadline,
+          },
+        ]
+      : [];
 
-    const deduped = rows.filter(
-      (row, index, all) =>
-        all.findIndex((item) => item.signalId === row.signalId) === index,
-    );
-    const ordered = deduped
-      .slice()
-      .sort((left, right) => {
-        const rank = (row: ActionMatrixRow) =>
-          row.triggerKind === "metric"
-            ? 0
-            : row.triggerKind === "filing"
-              ? 1
-              : 2;
-        if (rank(left) !== rank(right)) {
-          return rank(left) - rank(right);
-        }
-        return left.signalId.localeCompare(right.signalId);
-      })
-      .slice(0, 5);
+    const catalysts: ThesisCheckpoint[] =
+      args.selectedNewsLabels.length > 0
+        ? [
+            {
+              kind: "catalyst",
+              text: "Company-specific operating updates provide the next confirmation checkpoint.",
+              evidenceRefs: [args.selectedNewsLabels[0] ?? "N_issuer1"],
+              deadline,
+            },
+          ]
+        : [];
 
-    return ordered.slice(0, 5);
+    const supports = metricCheckpoints
+      .filter((item) => item.kind === "supports")
+      .slice(0, 2);
+    const falsifies = [...filingCheckpoint, ...metricCheckpoints.filter((item) => item.kind === "falsifies")].slice(0, 2);
+    return [...supports, ...falsifies, ...catalysts.slice(0, 2)].slice(0, 6);
   }
 
   /**
-   * Validates compiled trigger rows so synthesis can detect semantic contradictions before rendering output.
-   */
-  validateTriggerRows(rows: ActionMatrixRow[]): string[] {
-    const violations: string[] = [];
-    if (rows.length > 5) {
-      violations.push(`trigger_count_out_of_bounds_${rows.length}`);
-    }
-    rows.forEach((row) => {
-      if (row.citations.length === 0) {
-        violations.push(`missing_citation_${row.signalId}`);
-      }
-      if (
-        !row.hasNumericThreshold &&
-        !/(true|false)/i.test(row.condition) &&
-        !/\d/.test(row.condition)
-      ) {
-        violations.push(`missing_threshold_${row.signalId}`);
-      }
-      if (row.conditionDirection === "downside" && row.actionClass === "constructive") {
-        violations.push(`downside_constructive_contradiction_${row.signalId}`);
-      }
-      if (row.conditionDirection === "upside" && row.actionClass === "defensive") {
-        violations.push(`upside_defensive_contradiction_${row.signalId}`);
-      }
-    });
-    return Array.from(new Set(violations)).slice(0, 12);
-  }
-
-  /**
-   * Builds a deterministic fallback trigger set when compiled rows violate invariants.
-   */
-  buildFallbackTriggerRows(args: {
-    signalPack: SignalPack;
-    metricLabelByName: Map<string, string>;
-  }): ActionMatrixRow[] {
-    return [];
-  }
-
-  /**
-   * Builds continuous sufficiency diagnostics so evidence quality can degrade gracefully instead of hard-failing early.
+   * Builds continuous sufficiency diagnostics so weak evidence downgrades action cleanly.
    */
   buildSufficiencyDiagnostics(args: {
     selection: RelevanceSelection;
@@ -211,7 +166,8 @@ export class DeterministicSynthesisDecisionPolicy
     const freshRatio =
       args.signalPack.coverage.totalSignals === 0
         ? 0
-        : args.signalPack.coverage.freshSignals / args.signalPack.coverage.totalSignals;
+        : args.signalPack.coverage.freshSignals /
+          args.signalPack.coverage.totalSignals;
     score += freshRatio * 15;
     if (args.signalPack.coverage.totalSignals < this.thesisTriggerMinNumeric) {
       missingCriticalDimensions.push("numeric_signal_coverage");
@@ -263,14 +219,15 @@ export class DeterministicSynthesisDecisionPolicy
     return {
       score: normalizedScore,
       threshold,
-      passed: normalizedScore >= threshold && missingCriticalDimensions.length === 0,
+      passed:
+        normalizedScore >= threshold && missingCriticalDimensions.length === 0,
       missingCriticalDimensions: Array.from(new Set(missingCriticalDimensions)),
       reasonCodes: Array.from(new Set(reasonCodes)).slice(0, 12),
     };
   }
 
   /**
-   * Converts normalized signals into weighted buy/avoid pressure scores for deterministic directional seeds.
+   * Converts normalized signals into weighted buy/avoid pressure scores.
    */
   deriveDecisionFromSignals(args: {
     signalPack: SignalPack;
@@ -288,7 +245,9 @@ export class DeterministicSynthesisDecisionPolicy
         signalId: signal.signalId,
         weight,
         normalizedValue: signal.normalizedValue,
-        contribution: Number.parseFloat((weight * signal.normalizedValue).toFixed(4)),
+        contribution: Number.parseFloat(
+          (weight * signal.normalizedValue).toFixed(4),
+        ),
       };
     });
     const netScoreRaw = contributions.reduce(
@@ -308,11 +267,14 @@ export class DeterministicSynthesisDecisionPolicy
     if (args.selection.lowRelevance) {
       netScore -= 0.2;
     }
-    if (args.filings.some((filing) =>
-      filing.extractedFacts.some(
-        (fact) => fact.name === "mentions_regulatory_action" && fact.value === "true",
-      ),
-    )) {
+    if (
+      args.filings.some((filing) =>
+        filing.extractedFacts.some(
+          (fact) =>
+            fact.name === "mentions_regulatory_action" && fact.value === "true",
+        ),
+      )
+    ) {
       netScore -= 0.35;
     }
     if (!args.sufficiency.passed) {
@@ -342,18 +304,6 @@ export class DeterministicSynthesisDecisionPolicy
   }
 
   /**
-   * Formats action matrix rows for prompt constraints.
-   */
-  formatActionMatrix(rows: ActionMatrixRow[]): string {
-    return rows
-      .map(
-        (row, index) =>
-          `- T${index + 1} ${row.label}: current=${row.currentValue}; ${row.condition}, ${row.action} (${row.citations.join(", ")})`,
-      )
-      .join("\n");
-  }
-
-  /**
    * Maps directional seed and sufficiency diagnostics into conservative public action states.
    */
   toActionDecision(
@@ -362,10 +312,23 @@ export class DeterministicSynthesisDecisionPolicy
     kpiCoverage: KpiCoverageDiagnostics,
   ): ActionDecision {
     if (!sufficiency.passed) {
+      const onlySectorWeakness =
+        sufficiency.missingCriticalDimensions.length === 0 &&
+        sufficiency.reasonCodes.includes("sector_kpi_depth_weak");
+      if (
+        this.graceAllowOnSectorWeakness &&
+        onlySectorWeakness &&
+        kpiCoverage.mode === "grace_low_quality"
+      ) {
+        return "watch";
+      }
       return "insufficient_evidence";
     }
 
-    if (decision === "buy" && kpiCoverage.coreCurrentCount + kpiCoverage.coreCarriedCount < 3) {
+    if (
+      decision === "buy" &&
+      kpiCoverage.coreCurrentCount + kpiCoverage.coreCarriedCount < 3
+    ) {
       return "watch";
     }
 
@@ -373,7 +336,7 @@ export class DeterministicSynthesisDecisionPolicy
   }
 
   /**
-   * Derives position sizing from final action decision so downstream consumers can keep portfolio controls deterministic.
+   * Derives position sizing from final action decision.
    */
   toPositionSizing(decision: ActionDecision): "none" | "small" | "medium" {
     if (decision === "insufficient_evidence") {
@@ -386,46 +349,26 @@ export class DeterministicSynthesisDecisionPolicy
   }
 
   /**
-   * Projects trigger rows into investor-facing falsification blocks without leaking policy internals.
+   * Converts falsifying checkpoints into structured investor-facing falsification blocks.
    */
-  buildFalsification(actionMatrix: ActionMatrixRow[]) {
-    return actionMatrix.slice(0, 2).map((row) => ({
-      condition: row.condition,
-      type: row.hasNumericThreshold ? "numeric" : "event",
-      thresholdOrOutcome: row.currentValue,
-      deadline: "next earnings cycle",
-      actionIfHit: row.action,
-      evidenceRefs: row.citations,
-    })) as Array<{
-      condition: string;
-      type: "numeric" | "event" | "timing";
-      thresholdOrOutcome: string;
-      deadline: string;
-      actionIfHit: string;
-      evidenceRefs: string[];
-    }>;
+  buildFalsification(checkpoints: ThesisCheckpoint[]) {
+    return checkpoints
+      .filter((item) => item.kind === "falsifies")
+      .slice(0, 2)
+      .map((item) => ({
+        condition: item.text,
+        type: /\bmargin|growth|revenue|cash|ratio|percent|%\b/i.test(item.text)
+          ? ("numeric" as const)
+          : ("event" as const),
+        thresholdOrOutcome: "business deterioration confirmed",
+        deadline: item.deadline ?? "next 1-2 quarters",
+        actionIfHit: "reduce risk exposure",
+        evidenceRefs: item.evidenceRefs,
+      }));
   }
 
   /**
-   * Calibrates metric threshold strings from current values so triggers remain symbol-specific instead of static templates.
-   */
-  private deriveThreshold(
-    metricName: string,
-    metricValue: number,
-    direction: "positive" | "negative" | "neutral",
-  ): string {
-    const multiplier = direction === "negative" ? 1.1 : 0.9;
-    if (/ratio|margin|growth/.test(metricName)) {
-      return `${(metricValue * multiplier * 100).toFixed(1)}%`;
-    }
-    if (/days/.test(metricName)) {
-      return `${Math.max(1, Math.round(metricValue * multiplier))} days`;
-    }
-    return Number.parseFloat((metricValue * multiplier).toFixed(2)).toString();
-  }
-
-  /**
-   * Encodes metric family importance so weighted scoring emphasizes valuation, growth, and profitability anchors.
+   * Encodes metric family importance so weighted scoring emphasizes business durability anchors.
    */
   private signalWeight(metricName: string): number {
     if (/price_to_earnings|peer_pe_premium|ev_to_sales|ev_to_ebit/.test(metricName)) {
@@ -444,7 +387,7 @@ export class DeterministicSynthesisDecisionPolicy
   }
 
   /**
-   * Bounds derived directional score after quality penalties so weak-evidence runs cannot overstate conviction.
+   * Bounds derived directional score after quality penalties.
    */
   private clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, Number.parseFloat(value.toFixed(4))));

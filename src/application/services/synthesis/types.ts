@@ -8,7 +8,6 @@ import type {
   ActionDecision,
   ConfidenceDecomposition,
   DecisionScoreBreakdown,
-  FalsificationCondition,
   HorizonBucket,
   InvestorKpi,
   KpiCoverageDiagnostics,
@@ -137,17 +136,11 @@ export type IssuerMatchResult = {
   reason?: ExcludedHeadlineReason;
 };
 
-export type ActionMatrixRow = {
-  signalId: string;
-  label: string;
-  currentValue: string;
-  triggerKind: "metric" | "filing" | "coverage";
-  condition: string;
-  conditionDirection: "downside" | "upside" | "neutral";
-  actionClass: "defensive" | "constructive" | "neutral";
-  action: string;
-  citations: string[];
-  hasNumericThreshold: boolean;
+export type ThesisCheckpoint = {
+  kind: "supports" | "falsifies" | "catalyst";
+  text: string;
+  evidenceRefs: string[];
+  deadline?: string;
 };
 
 export type ThesisQualityScore = {
@@ -194,28 +187,17 @@ export interface SynthesisEvidenceSelectorPort {
 
 export interface SynthesisDecisionPolicyPort {
   /**
-   * Produces deterministic if/then triggers from normalized signals and available filings.
+   * Produces concise business checkpoints for investor-facing catalysts/falsifiers/supporting conditions.
    */
-  buildActionMatrix(
-    signalPack: SignalPack,
-    metrics: MetricPointEntity[],
-    filings: FilingEntity[],
-    metricLabelByName: Map<string, string>,
-    filingLabelByFactName: Map<string, string>,
-  ): ActionMatrixRow[];
-
-  /**
-   * Validates compiled trigger rows so synthesis can detect semantic contradictions before rendering output.
-   */
-  validateTriggerRows(rows: ActionMatrixRow[]): string[];
-
-  /**
-   * Builds a deterministic fallback trigger set when compiled rows violate invariants.
-   */
-  buildFallbackTriggerRows(args: {
+  buildCheckpoints(args: {
     signalPack: SignalPack;
+    metrics: MetricPointEntity[];
+    filings: FilingEntity[];
     metricLabelByName: Map<string, string>;
-  }): ActionMatrixRow[];
+    filingLabelByFactName: Map<string, string>;
+    selectedNewsLabels: string[];
+    horizon: HorizonBucket;
+  }): ThesisCheckpoint[];
 
   /**
    * Scores evidence sufficiency on a continuous scale before directional decisioning.
@@ -245,11 +227,6 @@ export interface SynthesisDecisionPolicyPort {
   };
 
   /**
-   * Formats action matrix rows for prompt constraints.
-   */
-  formatActionMatrix(rows: ActionMatrixRow[]): string;
-
-  /**
    * Maps directional seed plus sufficiency result into public action decision.
    */
   toActionDecision(
@@ -264,9 +241,16 @@ export interface SynthesisDecisionPolicyPort {
   toPositionSizing(decision: ActionDecision): "none" | "small" | "medium";
 
   /**
-   * Projects action matrix rows into structured falsification conditions.
+   * Converts business checkpoints into structured falsification blocks.
    */
-  buildFalsification(actionMatrix: ActionMatrixRow[]): FalsificationCondition[];
+  buildFalsification(checkpoints: ThesisCheckpoint[]): Array<{
+    condition: string;
+    type: "numeric" | "event" | "timing";
+    thresholdOrOutcome: string;
+    deadline: string;
+    actionIfHit: string;
+    evidenceRefs: string[];
+  }>;
 }
 
 export interface SynthesisPromptBuilderPort {
@@ -284,7 +268,6 @@ export interface SynthesisPromptBuilderPort {
     macroLines: string;
     filingLines: string;
     memoryLines: string;
-    actionMatrixLines: string;
     decisionFromContext: ThesisDecision;
     decisionReasonLines: string;
     relevanceSelection: RelevanceSelection;
@@ -325,21 +308,11 @@ export interface SynthesisThesisGuardPort {
   upsertEvidenceMapSection(thesis: string, evidenceMapLines: string): string;
 
   /**
-   * Rewrites action summary decision and trigger block to deterministic policy.
-   */
-  upsertActionSummaryDeterminism(
-    thesis: string,
-    decision: ThesisDecision,
-    actionMatrix: ActionMatrixRow[],
-  ): string;
-
-  /**
    * Aligns markdown decision wording with final action decision.
    */
   upsertFinalDecisionPresentation(
     thesis: string,
     decision: ActionDecision,
-    actionMatrix: ActionMatrixRow[],
   ): string;
 
   /**
@@ -367,7 +340,7 @@ export interface SynthesisThesisGuardPort {
    */
   buildDeterministicFallbackThesis(args: {
     actionDecision: ActionDecision;
-    actionMatrix: ActionMatrixRow[];
+    checkpoints: ThesisCheckpoint[];
     evidenceMapLines: string;
     selectedDocs: DocumentEntity[];
     metrics: MetricPointEntity[];

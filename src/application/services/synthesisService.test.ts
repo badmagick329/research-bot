@@ -488,10 +488,6 @@ describe("SynthesisService", () => {
       saved?.diagnostics?.newsQualityV2?.issuerAnchorSelectedCount ?? 0,
     ).toBeGreaterThan(0);
     expect(saved?.diagnostics?.newsQualityV2?.recoveryStatus).toBe("not_needed");
-    expect(saved?.diagnostics?.triggerDiagnostics?.compiledCount ?? 0).toBeGreaterThanOrEqual(0);
-    expect(saved?.diagnostics?.triggerDiagnostics?.renderedCount ?? 0).toBeGreaterThanOrEqual(0);
-    expect(saved?.diagnostics?.triggerDiagnostics?.invariantViolations ?? []).toHaveLength(0);
-    expect(saved?.diagnostics?.triggerDiagnostics?.fallbackTriggerSetApplied).toBeFalse();
     expect(saved?.thesis).toContain(
       '- N_issuer1: news "Amazon updates AWS demand outlook and margin guidance"',
     );
@@ -829,8 +825,8 @@ describe("SynthesisService", () => {
     });
 
     const saved = savedSnapshots[0];
-    expect(saved?.investorViewV2?.action.decision).toBe("watch");
-    expect(saved?.investorViewV2?.action.positionSizing).toBe("small");
+    expect(saved?.investorViewV2?.action.decision).toBe("insufficient_evidence");
+    expect(saved?.investorViewV2?.action.positionSizing).toBe("none");
     expect(saved?.diagnostics?.kpiCoverage?.mode).toBe("grace_low_quality");
   });
 
@@ -1011,12 +1007,12 @@ describe("SynthesisService", () => {
 
     const saved = savedSnapshots[0];
     expect(saved?.diagnostics?.thesisQuality?.fallbackApplied).toBeTrue();
-    expect(saved?.investorViewV2?.action.decision).toBe("watch");
+    expect(saved?.investorViewV2?.action.decision).toBe("insufficient_evidence");
     expect(saved?.diagnostics?.thesisQuality?.failedChecks).not.toContain(
       "weak_or_uncited_decision_line",
     );
     expect(saved?.thesis).toContain("# Decision");
-    expect(saved?.thesis).toContain("- Watch");
+    expect(saved?.thesis).toContain("- Insufficient Evidence");
   });
 
   it("uses carried-forward KPI coverage in diagnostics only", async () => {
